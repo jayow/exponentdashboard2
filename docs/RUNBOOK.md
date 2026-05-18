@@ -184,7 +184,13 @@ strip        2,488
 `notional_underlying = max(|signer_outflow|, signer_inflow)` per swap action.
 Matches v1's `usdNet` (user capital-flow perspective, not flash-loan-inflated gross AMM notional). To swap to true gross notional later, add an `int_amm_swaps_gross` model that walks `stg_inner_ix` for pool-token-account transfers.
 
-**Unmatched trades**: 53,430 of 286,157 classified trades (18.7%) didn't produce a notional row — typically expired markets that don't have a `source='api'` entry in `raw_markets` (active API drops them). Logged as a followup.
+**Unmatched trades**: 53,418 of 286,157 classified trades (18.7%) don't produce a notional row. These are all on **expired markets** that:
+- Don't have a `source='api'` row (the active API drops them)
+- Only have `source='onchain'` rows (which lack underlying_mint until we resolve token metadata)
+
+40% of the unmatched bucket (~21K trades) belongs to a single market with SY mint `GEcqNxrpRrUvY25AWNey1BoVWmkMnuRa...` (market_key `UNKNOWN-30APR25`). Resolving the SY-mint → underlying-mint mapping (via Helius DAS getAsset or by parsing the SY token's stake-pool metadata) would unblock most of the remaining 18.7%.
+
+For the dashboard, this gap is acceptable: expired markets aren't on the current view anyway.
 
 ### Known gaps (followups, not blocking)
 
