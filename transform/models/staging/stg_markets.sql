@@ -74,15 +74,48 @@ resolved_onchain as (
         cast(current_timestamp as timestamp)                   as fetched_at
     from {{ ref('stg_resolved_markets') }} r
 ),
--- Priority: api > resolved_onchain > pt_yt_derived
+-- Coalesce across the 3 layers: api > resolved_onchain > pt_yt_derived.
+-- For each market_key, take the FIRST non-null value of each column from
+-- the highest-priority layer that has it. This way an api active market
+-- gets api's pt/yt mints, but an expired market gets sy_mint from
+-- resolved_onchain AND pt_mint from pt_yt_derived.
+all_layers as (
+    select 1 as priority, * from api
+    union all
+    select 2 as priority, * from resolved_onchain
+    union all
+    select 3 as priority, * from pt_yt_derived
+),
 final as (
-    select * from api
-    union all
-    select r.* from resolved_onchain r
-    where not exists (select 1 from api a where a.market_key = r.market_key)
-    union all
-    select d.* from pt_yt_derived d
-    where not exists (select 1 from api a where a.market_key = d.market_key)
-      and not exists (select 1 from resolved_onchain r where r.market_key = d.market_key)
+    select
+        market_key,
+        min(priority)                              as min_priority,
+        any_value(source order by priority)        as source,
+        any_value(sy_mint              order by priority asc) filter (where sy_mint is not null)              as sy_mint,
+        any_value(vault                order by priority asc) filter (where vault is not null)                as vault,
+        any_value(pt_mint              order by priority asc) filter (where pt_mint is not null)              as pt_mint,
+        any_value(yt_mint              order by priority asc) filter (where yt_mint is not null)              as yt_mint,
+        any_value(lp_mint              order by priority asc) filter (where lp_mint is not null)              as lp_mint,
+        any_value(amm_pool             order by priority asc) filter (where amm_pool is not null)             as amm_pool,
+        any_value(clmm_orderbook       order by priority asc) filter (where clmm_orderbook is not null)       as clmm_orderbook,
+        any_value(pool                 order by priority asc) filter (where pool is not null)                 as pool,
+        any_value(underlying_mint      order by priority asc) filter (where underlying_mint is not null)      as underlying_mint,
+        any_value(ticker               order by priority asc) filter (where ticker is not null)               as ticker,
+        any_value(underlying_decimals  order by priority asc) filter (where underlying_decimals is not null)  as underlying_decimals,
+        any_value(platform             order by priority asc) filter (where platform is not null)             as platform,
+        any_value(maturity_ts          order by priority asc) filter (where maturity_ts is not null)          as maturity_ts,
+        any_value(maturity_date        order by priority asc) filter (where maturity_date is not null)        as maturity_date,
+        any_value(status               order by priority asc) filter (where status is not null)               as status,
+        any_value(interface_type       order by priority asc) filter (where interface_type is not null)       as interface_type,
+        max(fetched_at)                                                                                       as fetched_at
+    from all_layers
+    group by market_key
 )
-select * from final
+select
+    market_key, source,
+    sy_mint, vault, pt_mint, yt_mint, lp_mint,
+    amm_pool, clmm_orderbook, pool,
+    underlying_mint, ticker, underlying_decimals, platform,
+    maturity_ts, maturity_date, status, interface_type,
+    fetched_at
+from final

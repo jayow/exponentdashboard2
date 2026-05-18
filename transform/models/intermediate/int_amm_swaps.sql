@@ -28,29 +28,47 @@ with trade_events as (
 -- Step 1: figure out which market each trade touched. Match on any of the
 -- 4 market-identifying mints (sy/pt/yt/lp). A single tx may touch >1 market
 -- (rare — migration markets); we pick the first match.
-tx_to_market as (
+-- For each (signature, market) pair, compute the strongest match-signal:
+-- PT/YT/LP mints are unique per market, SY mints are shared across maturities.
+-- A match via PT/YT/LP wins over a match via SY for the same tx.
+tx_market_matches as (
     select distinct
         t.signature,
         t.block_time,
         t.action,
-        -- Prefer api rows (most metadata) over resolved onchain. Within
-        -- ties, prefer the market whose maturity is closest in the future
-        -- to the trade timestamp (the one the user actually traded).
-        first_value(m.market_key) over (
-            partition by t.signature
-            order by
-                case when m.source = 'api' then 0 else 1 end,
-                case when m.maturity_ts >= t.block_time then 0 else 1 end,
-                abs(m.maturity_ts - t.block_time)
-        ) as market_key
+        m.market_key,
+        m.source,
+        m.maturity_ts,
+        -- match_strength: 2 = via PT/YT/LP (unique), 1 = via SY (shared)
+        max(case
+            when c.mint = m.pt_mint then 2
+            when c.mint = m.yt_mint then 2
+            when c.mint = m.lp_mint then 2
+            when c.mint = m.sy_mint then 1
+            else 0
+        end) as match_strength
     from trade_events t
     join {{ ref('stg_token_changes') }} c using (signature)
     join {{ ref('stg_markets') }} m
-        on m.underlying_mint is not null   -- need a resolvable underlying to compute notional
+        on m.underlying_mint is not null
        and (c.mint = m.sy_mint
             or c.mint = m.pt_mint
             or c.mint = m.yt_mint
             or c.mint = m.lp_mint)
+    group by t.signature, t.block_time, t.action, m.market_key, m.source, m.maturity_ts
+),
+-- Pick the single best market per signature.
+tx_to_market as (
+    select distinct
+        signature, block_time, action,
+        first_value(market_key) over (
+            partition by signature
+            order by
+                match_strength desc,                                    -- unique PT/YT match beats shared SY match
+                case when source = 'api' then 0 else 1 end,             -- API metadata richest
+                abs(coalesce(maturity_ts, 0) - block_time)              -- closest maturity wins
+        ) as market_key
+    from tx_market_matches
 ),
 -- Step 2: for the identified market, sum signer-side underlying-mint deltas
 signer_underlying_deltas as (
