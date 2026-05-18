@@ -1,0 +1,36 @@
+version: 2
+
+sources:
+  - name: raw
+    description: Raw extract from Helius RPC + Exponent API. Immutable, append-only.
+    schema: main
+    tables:
+      - name: raw_helius_tx
+        description: Full jsonParsed tx payloads keyed by signature.
+        columns:
+          - name: signature
+            tests: [unique, not_null]
+          - name: block_time
+            tests: [not_null]
+          - name: payload
+            tests: [not_null]
+
+      - name: raw_signatures
+        description: Discovered tx signatures per Exponent-related address.
+        columns:
+          - name: signature
+            tests: [unique, not_null]
+          - name: address
+            tests: [not_null]
+
+      - name: raw_markets
+        description: Market metadata, sourced from Exponent API and on-chain.
+        columns:
+          - name: market_key
+            tests: [unique, not_null]
+
+      - name: raw_prices
+        description: Daily USD prices for tracked underlyings.
+
+      - name: raw_holders
+        description: Daily holder snapshots per PT/YT/LP mint.

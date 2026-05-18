@@ -1,0 +1,43 @@
+# Data (canonical store + backups + logs)
+data/
+!data/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+.python-version
+*.egg-info/
+dist/
+build/
+
+# dbt
+transform/target/
+transform/dbt_packages/
+transform/logs/
+transform/.user.yml
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+
+# Env / secrets
+.env
+.env.local
+.env*.local
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Vercel
+.vercel/
+
+# Logs
+*.log
