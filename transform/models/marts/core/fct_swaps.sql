@@ -22,6 +22,9 @@ select
     side,         -- 'PT' / 'YT' (which user-intent class)
     direction,    -- 'buy' / 'sell'
     notional_underlying,
+    notional_usd,
+    underlying_price_usd,
+    price_source,
     amm_pool,
     clmm_orderbook
 from {{ ref('int_amm_swaps') }}

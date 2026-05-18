@@ -7,18 +7,28 @@ import {
 type Side = 'PT' | 'YT' | 'TOTAL';
 type Range = '30d' | '90d' | '1y' | 'all';
 type View = 'protocol' | 'topMarkets';
+type Unit = 'usd' | 'underlying';
 
 type VolumeData = {
   meta: {
     generatedAt: string;
     dateRange: [string, string];
-    totals: { pt: number; yt: number; total: number };
+    totalsUsd: { pt: number; yt: number; total: number };
+    totalsUnderlying: { pt: number; yt: number; total: number };
     source: string;
+    priceSources: string;
   };
   dates: string[];
-  protocol: { pt: number[]; yt: number[]; total: number[] };
-  byMarket: Record<string, { ticker: string; pt: number[]; yt: number[]; total: number[] }>;
-  topMarkets: { marketKey: string; ticker: string; total: number }[];
+  protocol: {
+    ptUsd: number[]; ytUsd: number[]; totalUsd: number[];
+    ptUnderlying: number[]; ytUnderlying: number[]; totalUnderlying: number[];
+  };
+  byMarket: Record<string, {
+    ticker: string;
+    ptUsd: number[]; ytUsd: number[]; totalUsd: number[];
+    ptUnderlying: number[]; ytUnderlying: number[]; totalUnderlying: number[];
+  }>;
+  topMarkets: { marketKey: string; ticker: string; totalUsd: number }[];
 };
 
 const COLORS = [
@@ -26,6 +36,12 @@ const COLORS = [
   '#fb923c', '#22d3ee', '#e879f9', '#a3e635', '#818cf8',
 ];
 
+function fmtUsd(n: number) {
+  if (n >= 1e9) return `$${(n / 1e9).toFixed(2)}B`;
+  if (n >= 1e6) return `$${(n / 1e6).toFixed(2)}M`;
+  if (n >= 1e3) return `$${(n / 1e3).toFixed(1)}K`;
+  return `$${n.toFixed(2)}`;
+}
 function fmtNum(n: number) {
   if (n >= 1e9) return `${(n / 1e9).toFixed(2)}B`;
   if (n >= 1e6) return `${(n / 1e6).toFixed(2)}M`;
@@ -48,6 +64,7 @@ export function TradingVolumeChart() {
   const [view, setView] = useState<View>('protocol');
   const [side, setSide] = useState<Side>('TOTAL');
   const [range, setRange] = useState<Range>('90d');
+  const [unit, setUnit] = useState<Unit>('usd');
 
   useEffect(() => {
     fetch('/volume.json')
@@ -56,19 +73,25 @@ export function TradingVolumeChart() {
       .catch(e => setErr(String(e)));
   }, []);
 
+  const fmt = unit === 'usd' ? fmtUsd : fmtNum;
+  const fieldKey = (s: 'pt' | 'yt' | 'total') =>
+    unit === 'usd'
+      ? (s === 'pt' ? 'ptUsd' : s === 'yt' ? 'ytUsd' : 'totalUsd')
+      : (s === 'pt' ? 'ptUnderlying' : s === 'yt' ? 'ytUnderlying' : 'totalUnderlying');
+
   const chartData = useMemo(() => {
     if (!data) return [];
     const startIdx = Math.max(0, rangeStartIdx(data.dates, range));
     const dates = data.dates.slice(startIdx);
 
     if (view === 'protocol') {
-      const ptSlice = data.protocol.pt.slice(startIdx);
-      const ytSlice = data.protocol.yt.slice(startIdx);
+      const pt = (data.protocol as any)[fieldKey('pt')].slice(startIdx) as number[];
+      const yt = (data.protocol as any)[fieldKey('yt')].slice(startIdx) as number[];
       let cum = 0;
       return dates.map((d, i) => {
-        const v = side === 'PT' ? ptSlice[i] : side === 'YT' ? ytSlice[i] : ptSlice[i] + ytSlice[i];
+        const v = side === 'PT' ? pt[i] : side === 'YT' ? yt[i] : pt[i] + yt[i];
         cum += v;
-        return { date: d, PT: ptSlice[i], YT: ytSlice[i], Volume: v, Cumulative: cum };
+        return { date: d, PT: pt[i], YT: yt[i], Volume: v, Cumulative: cum };
       });
     }
 
@@ -80,8 +103,8 @@ export function TradingVolumeChart() {
       const row: Record<string, number | string> = { date: d };
       let others = 0;
       for (const [mk, series] of Object.entries(data.byMarket)) {
-        const arr = side === 'PT' ? series.pt : side === 'YT' ? series.yt : series.total;
-        const val = arr[idx] || 0;
+        const arr = (series as any)[fieldKey(side === 'TOTAL' ? 'total' : side === 'PT' ? 'pt' : 'yt')] as number[];
+        const val = (arr && arr[idx]) || 0;
         if (topKeys.has(mk)) {
           row[mk] = val;
         } else {
@@ -91,12 +114,13 @@ export function TradingVolumeChart() {
       row['Others'] = others;
       return row;
     });
-  }, [data, view, side, range]);
+  }, [data, view, side, range, unit]);
 
   if (err) return <div className="text-red-400 text-sm p-4">Failed to load volume.json: {err}</div>;
   if (!data) return <div className="text-white/40 text-sm p-4">Loading trading volume…</div>;
 
   const meta = data.meta;
+  const totals = unit === 'usd' ? meta.totalsUsd : meta.totalsUnderlying;
   const topKeys = data.topMarkets.slice(0, 5).map(m => m.marketKey);
 
   return (
@@ -107,10 +131,18 @@ export function TradingVolumeChart() {
           <p className="text-xs text-white/40">
             {meta.dateRange[0]} → {meta.dateRange[1]}
             {' • '}
-            cumulative {fmtNum(meta.totals.total)} ({fmtNum(meta.totals.pt)} PT + {fmtNum(meta.totals.yt)} YT)
+            cumulative {fmt(totals.total)} ({fmt(totals.pt)} PT + {fmt(totals.yt)} YT)
+            <span className="text-white/30"> • prices: {meta.priceSources}</span>
           </p>
         </div>
         <div className="flex items-center gap-1 flex-wrap">
+          {(['usd', 'underlying'] as Unit[]).map(u => (
+            <button key={u} onClick={() => setUnit(u)}
+              className={`text-xs px-3 py-1 rounded-lg border ${unit === u ? 'border-white/30 bg-white/10' : 'border-white/10 text-white/40'}`}>
+              {u === 'usd' ? 'USD' : 'Underlying'}
+            </button>
+          ))}
+          <span className="w-2" />
           {(['protocol', 'topMarkets'] as View[]).map(v => (
             <button key={v} onClick={() => setView(v)}
               className={`text-xs px-3 py-1 rounded-lg border ${view === v ? 'border-white/30 bg-white/10' : 'border-white/10 text-white/40'}`}>
@@ -137,13 +169,13 @@ export function TradingVolumeChart() {
       <ResponsiveContainer width="100%" height={320}>
         <ComposedChart data={chartData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
           <XAxis dataKey="date" tick={{ fill: '#888', fontSize: 11 }} />
-          <YAxis yAxisId="left" tick={{ fill: '#888', fontSize: 11 }} tickFormatter={fmtNum} />
+          <YAxis yAxisId="left" tick={{ fill: '#888', fontSize: 11 }} tickFormatter={fmt} />
           {view === 'protocol' && (
-            <YAxis yAxisId="right" orientation="right" tick={{ fill: '#888', fontSize: 11 }} tickFormatter={fmtNum} />
+            <YAxis yAxisId="right" orientation="right" tick={{ fill: '#888', fontSize: 11 }} tickFormatter={fmt} />
           )}
           <Tooltip
             contentStyle={{ backgroundColor: '#0a0a0a', border: '1px solid #333', fontSize: 12 }}
-            formatter={(val: number) => fmtNum(val)}
+            formatter={(val: number) => fmt(val)}
           />
           <Legend wrapperStyle={{ fontSize: 11, color: '#aaa' }} />
           {view === 'protocol' ? (

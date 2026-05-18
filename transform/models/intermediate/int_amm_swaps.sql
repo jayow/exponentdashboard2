@@ -173,27 +173,34 @@ unioned as (
     from unclassified_best
 )
 select
-    signature,
-    block_time,
-    to_timestamp(block_time)::date as date,
-    market_key,
-    ticker,
-    platform,
-    underlying_mint,
-    action,
-    amm_pool,
-    clmm_orderbook,
-    greatest(abs(outflow_ui), inflow_ui) as notional_underlying,
+    u.signature,
+    u.block_time,
+    to_timestamp(u.block_time)::date as date,
+    u.market_key,
+    u.ticker,
+    u.platform,
+    u.underlying_mint,
+    u.action,
+    u.amm_pool,
+    u.clmm_orderbook,
+    greatest(abs(u.outflow_ui), u.inflow_ui) as notional_underlying,
+    -- USD: notional × daily close price. NULL if no price coverage that day.
+    greatest(abs(u.outflow_ui), u.inflow_ui) * p.price_usd as notional_usd,
+    p.price_usd                       as underlying_price_usd,
+    p.source                          as price_source,
     case
-        when action in ('buyYt', 'sellYt') then 'YT'
-        when action = 'tradePt'             then 'PT'
+        when u.action in ('buyYt', 'sellYt') then 'YT'
+        when u.action = 'tradePt'             then 'PT'
         else 'OTHER'
     end as side,
     case
-        when action = 'tradePt' and inflow_ui > abs(outflow_ui) then 'buy'
-        when action = 'tradePt'                                  then 'sell'
-        when action = 'buyYt'                                    then 'buy'
-        when action = 'sellYt'                                   then 'sell'
+        when u.action = 'tradePt' and u.inflow_ui > abs(u.outflow_ui) then 'buy'
+        when u.action = 'tradePt'                                      then 'sell'
+        when u.action = 'buyYt'                                        then 'buy'
+        when u.action = 'sellYt'                                       then 'sell'
     end as direction
-from unioned
-where greatest(abs(outflow_ui), inflow_ui) > 0
+from unioned u
+left join {{ ref('stg_prices') }} p
+    on  p.mint = u.underlying_mint
+    and p.date = to_timestamp(u.block_time)::date
+where greatest(abs(u.outflow_ui), u.inflow_ui) > 0

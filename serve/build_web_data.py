@@ -70,71 +70,99 @@ def build_volume_json(con: duckdb.DuckDBPyConnection) -> dict:
         ).fetchall()
     ]
 
-    # Protocol-wide daily totals per side
+    # Protocol-wide daily totals per side. Emit both USD and underlying-unit
+    # variants so the frontend can toggle.
     proto_rows = con.execute(
         """
         SELECT date::VARCHAR,
-               COALESCE(SUM(volume_underlying) FILTER (WHERE side = 'PT'), 0) AS pt,
-               COALESCE(SUM(volume_underlying) FILTER (WHERE side = 'YT'), 0) AS yt
+               COALESCE(SUM(volume_usd)         FILTER (WHERE side = 'PT'), 0) AS pt_usd,
+               COALESCE(SUM(volume_usd)         FILTER (WHERE side = 'YT'), 0) AS yt_usd,
+               COALESCE(SUM(volume_underlying)  FILTER (WHERE side = 'PT'), 0) AS pt_und,
+               COALESCE(SUM(volume_underlying)  FILTER (WHERE side = 'YT'), 0) AS yt_und
         FROM main_analytics.trading_volume_daily
         GROUP BY 1 ORDER BY 1
         """
     ).fetchall()
-    by_date = {r[0]: (float(r[1]), float(r[2])) for r in proto_rows}
-    pt_series = [by_date.get(d, (0.0, 0.0))[0] for d in dates]
-    yt_series = [by_date.get(d, (0.0, 0.0))[1] for d in dates]
-    total_series = [a + b for a, b in zip(pt_series, yt_series)]
+    by_date = {r[0]: (float(r[1]), float(r[2]), float(r[3]), float(r[4])) for r in proto_rows}
+    pt_usd  = [by_date.get(d, (0.0, 0.0, 0.0, 0.0))[0] for d in dates]
+    yt_usd  = [by_date.get(d, (0.0, 0.0, 0.0, 0.0))[1] for d in dates]
+    pt_und  = [by_date.get(d, (0.0, 0.0, 0.0, 0.0))[2] for d in dates]
+    yt_und  = [by_date.get(d, (0.0, 0.0, 0.0, 0.0))[3] for d in dates]
+    total_usd = [a + b for a, b in zip(pt_usd, yt_usd)]
+    total_und = [a + b for a, b in zip(pt_und, yt_und)]
 
-    # Per-market series + top
+    # Per-market series + top (USD)
     per_market_rows = con.execute(
         """
-        SELECT market_key, ticker, date::VARCHAR, side, SUM(volume_underlying) AS v
+        SELECT market_key, ticker, date::VARCHAR, side,
+               SUM(volume_usd) AS v_usd, SUM(volume_underlying) AS v_und
         FROM main_analytics.trading_volume_daily
         GROUP BY 1, 2, 3, 4
         """
     ).fetchall()
     by_market: dict[str, dict] = {}
-    for market_key, ticker, date, side, v in per_market_rows:
+    for market_key, ticker, date, side, v_usd, v_und in per_market_rows:
         entry = by_market.setdefault(
             market_key,
-            {"ticker": ticker, "pt_map": {}, "yt_map": {}},
+            {
+                "ticker": ticker,
+                "pt_usd_map": {}, "yt_usd_map": {},
+                "pt_und_map": {}, "yt_und_map": {},
+            },
         )
         if side == "PT":
-            entry["pt_map"][date] = float(v)
+            entry["pt_usd_map"][date] = float(v_usd or 0)
+            entry["pt_und_map"][date] = float(v_und or 0)
         elif side == "YT":
-            entry["yt_map"][date] = float(v)
+            entry["yt_usd_map"][date] = float(v_usd or 0)
+            entry["yt_und_map"][date] = float(v_und or 0)
 
     by_market_out: dict[str, dict] = {}
     market_totals: list[tuple[str, str, float]] = []
     for market_key, entry in by_market.items():
-        pt = [entry["pt_map"].get(d, 0.0) for d in dates]
-        yt = [entry["yt_map"].get(d, 0.0) for d in dates]
-        total = [a + b for a, b in zip(pt, yt)]
-        total_sum = sum(total)
+        pt_usd_arr = [entry["pt_usd_map"].get(d, 0.0) for d in dates]
+        yt_usd_arr = [entry["yt_usd_map"].get(d, 0.0) for d in dates]
+        pt_und_arr = [entry["pt_und_map"].get(d, 0.0) for d in dates]
+        yt_und_arr = [entry["yt_und_map"].get(d, 0.0) for d in dates]
+        total_usd_arr = [a + b for a, b in zip(pt_usd_arr, yt_usd_arr)]
+        total_und_arr = [a + b for a, b in zip(pt_und_arr, yt_und_arr)]
+        total_usd_sum = sum(total_usd_arr)
         by_market_out[market_key] = {
             "ticker": entry["ticker"],
-            "pt": pt,
-            "yt": yt,
-            "total": total,
+            "ptUsd": pt_usd_arr,
+            "ytUsd": yt_usd_arr,
+            "totalUsd": total_usd_arr,
+            "ptUnderlying": pt_und_arr,
+            "ytUnderlying": yt_und_arr,
+            "totalUnderlying": total_und_arr,
         }
-        market_totals.append((market_key, entry["ticker"] or "", total_sum))
+        market_totals.append((market_key, entry["ticker"] or "", total_usd_sum))
 
     market_totals.sort(key=lambda x: -x[2])
-    top = [{"marketKey": mk, "ticker": tk, "total": tot} for mk, tk, tot in market_totals[:20]]
+    top = [{"marketKey": mk, "ticker": tk, "totalUsd": tot} for mk, tk, tot in market_totals[:20]]
 
     payload = {
         "meta": {
             "generatedAt": datetime.now(timezone.utc).isoformat(),
             "dateRange": [min_d, max_d],
-            "totals": {
-                "pt": sum(pt_series),
-                "yt": sum(yt_series),
-                "total": sum(total_series),
+            "totalsUsd": {
+                "pt": sum(pt_usd),
+                "yt": sum(yt_usd),
+                "total": sum(total_usd),
+            },
+            "totalsUnderlying": {
+                "pt": sum(pt_und),
+                "yt": sum(yt_und),
+                "total": sum(total_und),
             },
             "source": "trading_volume_daily",
+            "priceSources": "pyth+jupiter (matches Exponent's price_source)",
         },
         "dates": dates,
-        "protocol": {"pt": pt_series, "yt": yt_series, "total": total_series},
+        "protocol": {
+            "ptUsd": pt_usd, "ytUsd": yt_usd, "totalUsd": total_usd,
+            "ptUnderlying": pt_und, "ytUnderlying": yt_und, "totalUnderlying": total_und,
+        },
         "byMarket": by_market_out,
         "topMarkets": top,
     }
@@ -149,10 +177,10 @@ def build() -> None:
         payload = build_volume_json(con)
         _write_atomic(WEB_PUBLIC / "volume.json", payload)
         meta = payload.get("meta") or {}
-        totals = meta.get("totals") or {}
+        usd = meta.get("totalsUsd") or {}
         rprint(
             f"  wrote volume.json  range={meta.get('dateRange')}  "
-            f"PT={totals.get('pt', 0):,.0f}  YT={totals.get('yt', 0):,.0f}"
+            f"PT_USD={usd.get('pt', 0):,.0f}  YT_USD={usd.get('yt', 0):,.0f}"
         )
     finally:
         con.close()

@@ -43,13 +43,20 @@ RAW_DDL = {
         )
     """,
     "raw_prices": """
+        -- Daily USD price candles per (mint, date).
+        -- source: 'jupiter' (datapi.jup.ag/v2/charts) | 'pyth' (benchmarks.pyth.network) | 'stable' (1.0 fallback)
+        -- OHLC kept so we can sample any time of day; close is the canonical "daily price".
         CREATE TABLE IF NOT EXISTS raw_prices (
-            price_key   VARCHAR NOT NULL,
+            mint        VARCHAR NOT NULL,
             date        DATE NOT NULL,
-            price_usd   DOUBLE,
-            source      VARCHAR,
+            close_usd   DOUBLE,
+            open_usd    DOUBLE,
+            high_usd    DOUBLE,
+            low_usd     DOUBLE,
+            volume_usd  DOUBLE,
+            source      VARCHAR NOT NULL,
             fetched_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            PRIMARY KEY (price_key, date)
+            PRIMARY KEY (mint, date)
         )
     """,
     "raw_holders": """
@@ -131,11 +138,17 @@ RAW_DDL = {
 }
 
 
-# Lightweight ALTER migrations for columns that we added after the initial
-# DDL shipped. Each entry is (table, column, type_sql). Skipped if the column
-# already exists. Removes the need to drop and recreate the warehouse.
+# Lightweight ALTER migrations for columns added after initial DDL shipped.
+# Each entry is (table, column, type_sql). Skipped if column already exists.
 COLUMN_MIGRATIONS: list[tuple[str, str, str]] = [
     ("raw_signatures", "discovered_via", "VARCHAR"),
+]
+
+# Tables that had breaking schema changes — drop + recreate (data loss is OK
+# because these are extract-rebuildable). Each entry is (table, sentinel_column)
+# — if sentinel_column doesn't exist on the table, drop and recreate.
+TABLE_REBUILDS: list[tuple[str, str]] = [
+    ("raw_prices", "mint"),  # used to have 'price_key', renamed to 'mint' for clarity
 ]
 
 
@@ -144,6 +157,11 @@ def _apply_column_migrations(con: duckdb.DuckDBPyConnection) -> None:
         existing = {r[1] for r in con.execute(f"PRAGMA table_info('{table}')").fetchall()}
         if column not in existing:
             con.execute(f"ALTER TABLE {table} ADD COLUMN {column} {type_sql}")
+    for table, sentinel in TABLE_REBUILDS:
+        existing = {r[1] for r in con.execute(f"PRAGMA table_info('{table}')").fetchall()}
+        if existing and sentinel not in existing:
+            con.execute(f"DROP TABLE {table}")
+            con.execute(RAW_DDL[table])
 
 
 @contextmanager
