@@ -59,6 +59,39 @@ RAW_DDL = {
             PRIMARY KEY (snapshot_date, mint, owner)
         )
     """,
+    "raw_tvl_snapshots": """
+        CREATE TABLE IF NOT EXISTS raw_tvl_snapshots (
+            snapshot_date DATE NOT NULL,
+            market_key    VARCHAR NOT NULL,
+            slot          BIGINT,
+            underlying_balance DOUBLE,    -- raw token amount (UI decimals)
+            fetched_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (snapshot_date, market_key)
+        )
+    """,
+    "raw_pool_state": """
+        CREATE TABLE IF NOT EXISTS raw_pool_state (
+            snapshot_date DATE NOT NULL,
+            market_key    VARCHAR NOT NULL,
+            slot          BIGINT,
+            sy_reserve    DOUBLE,
+            pt_reserve    DOUBLE,
+            lp_supply     DOUBLE,
+            fetched_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (snapshot_date, market_key)
+        )
+    """,
+    "raw_lst_rates": """
+        CREATE TABLE IF NOT EXISTS raw_lst_rates (
+            snapshot_date DATE NOT NULL,
+            lst_mint      VARCHAR NOT NULL,
+            base_mint     VARCHAR NOT NULL,
+            lst_per_base  DOUBLE,    -- 1 base = lst_per_base LST tokens
+            slot          BIGINT,
+            fetched_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (snapshot_date, lst_mint)
+        )
+    """,
 }
 
 

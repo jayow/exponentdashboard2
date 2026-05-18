@@ -19,8 +19,11 @@ extract:
 	python3 -m extract_load.extract_markets
 	python3 -m extract_load.extract_signatures
 	python3 -m extract_load.extract_transactions
-	python3 -m extract_load.extract_prices
 	python3 -m extract_load.extract_holders
+	python3 -m extract_load.extract_tvl_snapshots
+	python3 -m extract_load.extract_pool_state
+	python3 -m extract_load.extract_lst_rates
+	python3 -m extract_load.extract_prices
 
 transform:
 	cd transform && dbt build

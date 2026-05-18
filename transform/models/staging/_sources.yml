@@ -34,3 +34,27 @@ sources:
 
       - name: raw_holders
         description: Daily holder snapshots per PT/YT/LP mint.
+
+      - name: raw_tvl_snapshots
+        description: Daily on-chain TVL — underlying balance held by each market PDA.
+        columns:
+          - name: snapshot_date
+            tests: [not_null]
+          - name: market_key
+            tests: [not_null]
+
+      - name: raw_pool_state
+        description: Daily AMM pool reserves (SY, PT) + LP supply per market.
+        columns:
+          - name: snapshot_date
+            tests: [not_null]
+          - name: market_key
+            tests: [not_null]
+
+      - name: raw_lst_rates
+        description: Daily LST→base exchange rates from on-chain stake pool accounts.
+        columns:
+          - name: snapshot_date
+            tests: [not_null]
+          - name: lst_mint
+            tests: [not_null]

@@ -47,6 +47,32 @@ Source of truth for every column in the warehouse. Update when you add models.
 | owner | VARCHAR | Wallet |
 | amount | DOUBLE | Token amount (UI decimals) |
 
+### raw_tvl_snapshots
+| Column | Type | Notes |
+|---|---|---|
+| snapshot_date | DATE | UTC close-of-day |
+| market_key | VARCHAR | |
+| slot | BIGINT | Solana slot the snapshot was read at |
+| underlying_balance | DOUBLE | Underlying token balance in the market PDA (UI decimals) |
+
+### raw_pool_state
+| Column | Type | Notes |
+|---|---|---|
+| snapshot_date | DATE | |
+| market_key | VARCHAR | |
+| slot | BIGINT | |
+| sy_reserve | DOUBLE | SY token balance in the AMM pool |
+| pt_reserve | DOUBLE | PT token balance in the AMM pool |
+| lp_supply | DOUBLE | Total LP tokens minted |
+
+### raw_lst_rates
+| Column | Type | Notes |
+|---|---|---|
+| snapshot_date | DATE | |
+| lst_mint | VARCHAR | jitoSOL / mSOL / fragSOL / ... |
+| base_mint | VARCHAR | Usually wrapped SOL |
+| lst_per_base | DOUBLE | 1 base = N LST tokens. Derived from stake pool account on-chain |
+
 ## Marts (the contract serve/ reads from)
 
 ### fct_swaps — *the* trading volume source

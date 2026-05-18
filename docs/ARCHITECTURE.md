@@ -15,17 +15,36 @@ v2 keeps raw payloads forever and does all transformation in SQL.
 ## Layers
 
 ```
-┌─ Sources ─────────┐    ┌─ Extract+Load ─┐    ┌─ Warehouse ──────────┐    ┌─ Transform ─────┐    ┌─ Serve ───┐
-│ Helius RPC        │ ─► │ Python         │ ─► │ raw_helius_tx        │ ─► │ stg_*  (views)  │ ─► │ Python    │
-│ Exponent API      │    │ async + dual-  │    │ raw_signatures       │    │ int_*  (views)  │    │ duckdb    │
-│ Token price feeds │    │ key, retries   │    │ raw_markets          │    │ fct_*  (tables) │    │ → JSONs   │
-│ Solana RPC        │    │ Idempotent     │    │ raw_prices           │    │ dim_*  (tables) │    │           │
-└───────────────────┘    │ upserts        │    │ raw_holders          │    │ analytics_*     │    └───────────┘
-                          └────────────────┘    └──────────────────────┘    └─────────────────┘          │
-                                                  DuckDB single file                                     ▼
-                                                  data/warehouse.duckdb                          web/public/*.json
-                                                                                                  (slim, per-tab)
+┌─ Sources ──────────┐   ┌─ Extract+Load ─┐   ┌─ Warehouse ─────────┐   ┌─ Transform ─────┐   ┌─ Serve ──┐
+│ Solana RPC (Helius)│ ─►│ Python         │ ─►│ raw_helius_tx       │ ─►│ stg_*  (views)  │ ─►│ Python   │
+│ Pyth on-chain      │   │ async + dual-  │   │ raw_signatures      │   │ int_*  (views)  │   │ duckdb   │
+│ Pyth Hermes API    │   │ key, retries   │   │ raw_markets         │   │ fct_*  (tables) │   │ → JSONs  │
+│ Stake pool accts   │   │ Idempotent     │   │ raw_holders         │   │ dim_*  (tables) │   │          │
+│ Exponent API*      │   │ upserts        │   │ raw_tvl_snapshots   │   │ analytics_*     │   └──────────┘
+└────────────────────┘   └────────────────┘   │ raw_pool_state      │   └─────────────────┘         │
+* discovery + labels only                     │ raw_lst_rates       │                                ▼
+                                              │ raw_prices          │                       web/public/*.json
+                                              └─────────────────────┘                       (slim, per-tab)
+                                              DuckDB single file
+                                              data/warehouse.duckdb
 ```
+
+## On-chain-first sourcing
+
+All quantitative state is derived from chain. The Exponent API is consulted
+**only** for market discovery + human-readable labels.
+
+| What | Source |
+|---|---|
+| Market universe | Exponent API (labels) + on-chain `MarketThree` decode (truth) |
+| TVL per market | `getAccountInfo` on market PDA underlying balance, sampled daily |
+| AMM pool state (PT/SY reserves, LP supply) | `getAccountInfo` on pool account, sampled daily |
+| Trading volume | `getTransaction` inner instructions — AMM pool's underlying flow |
+| Holders | `getProgramAccounts` per PT/YT/LP mint |
+| Base-asset USD prices | Pyth Hermes (historical) + Pyth on-chain accounts (live) |
+| LST→base exchange rates | Stake pool account decode on-chain |
+| LST USD price | `lst_per_base * base_usd` — composed in `stg_prices` |
+| Underlyings without a Pyth feed | `price_usd = NULL`; downstream marts skip USD aggregation for those markets |
 
 ## Boundary rules
 
