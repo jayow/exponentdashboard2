@@ -184,13 +184,45 @@ strip        2,488
 `notional_underlying = max(|signer_outflow|, signer_inflow)` per swap action.
 Matches v1's `usdNet` (user capital-flow perspective, not flash-loan-inflated gross AMM notional). To swap to true gross notional later, add an `int_amm_swaps_gross` model that walks `stg_inner_ix` for pool-token-account transfers.
 
-**Unmatched trades**: 53,418 of 286,157 classified trades (18.7%) don't produce a notional row. These are all on **expired markets** that:
-- Don't have a `source='api'` row (the active API drops them)
-- Only have `source='onchain'` rows (which lack underlying_mint until we resolve token metadata)
+### Phase 5: SY-mint symbol resolution (2026-05-18)
 
-40% of the unmatched bucket (~21K trades) belongs to a single market with SY mint `GEcqNxrpRrUvY25AWNey1BoVWmkMnuRa...` (market_key `UNKNOWN-30APR25`). Resolving the SY-mint → underlying-mint mapping (via Helius DAS getAsset or by parsing the SY token's stake-pool metadata) would unblock most of the remaining 18.7%.
+The 18.7% gap from Phase 3 was caused by expired markets with no `source='api'`
+row — they had a SY mint but no resolvable ticker → underlying mapping.
 
-For the dashboard, this gap is acceptable: expired markets aren't on the current view anyway.
+**Approach (fully on-chain):**
+1. `extract_token_metadata.py` calls Helius DAS `getAsset` for every distinct
+   mint in `raw_markets.payload` → Metaplex Token Metadata (`name`, `symbol`,
+   `decimals`).
+2. `extract_token_metadata.py` also snapshots Exponent's `/tokens` endpoint
+   into `raw_exponent_tokens` (~63 underlying tokens with mint, symbol, decimals).
+3. `stg_resolved_markets` parses `name="Exponent Wrapped <X>"` (or falls back
+   to `symbol` for partner tokens like `kUSDC`, `mUSDC`) and cross-references
+   against `raw_exponent_tokens` to resolve the underlying mint.
+4. `stg_markets` unions API rows + resolved onchain rows, deduped by `market_key`.
+5. `int_amm_swaps` joins on `m.underlying_mint IS NOT NULL` (instead of
+   `m.source='api'`) — now includes resolved expired markets.
+
+Picker logic in `tx_to_market` CTE prefers api markets (most metadata) over
+resolved onchain, then by maturity-closest-to-trade-time. This prevents an
+expired market from "winning" an active market's trade.
+
+**Results:**
+- 32 unique SY mints, **32/32 have Metaplex metadata** (100%)
+- 90 onchain markets → **57/57 previously-UNKNOWN now resolved** with ticker
+- 84/90 onchain markets have a resolved underlying_mint
+- Trade coverage: **97.4%** (278,676 / 286,157), up from 81.3%
+- New markets surfaced with real notional: USD* ($28M cumulative), sHYUSD ($9M),
+  USDC+, syrupUSDC, mUSDC, kUSDC, MLP, ALP, kySOL, jlUSDG
+
+**Note on v1's data:** v1's `mint_symbols.json` was **hand-curated**, no code
+generated it. v2's on-chain DAS approach is the canonical (and automatable)
+source.
+
+**Unmatched trades**: 7,481 of 286,157 (2.6%) still don't produce a notional. These are on **expired markets** that:
+- Have a SY mint whose `name` field on-chain doesn't match the `Exponent Wrapped <X>` pattern AND whose `symbol` doesn't match an entry in `/tokens`
+- Or didn't have a delta in the resolved underlying mint (unusual swap structure)
+
+This is acceptable for the dashboard — 97.4% coverage is more than enough to render meaningful volume charts.
 
 ### Known gaps (followups, not blocking)
 

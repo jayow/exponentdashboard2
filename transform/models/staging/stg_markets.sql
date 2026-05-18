@@ -1,5 +1,7 @@
--- Typed market dim. Unions API and on-chain sources, dedup by market_key.
--- API rows win when both sources have the same market_key (richer metadata).
+-- Typed market dim. Three layers, unioned and deduped by market_key:
+--   1. API rows  (source='api')      — richest, only active markets
+--   2. Resolved onchain rows         — onchain MarketThree + DAS metadata → ticker + underlying
+--   3. Raw onchain rows (fallback)   — only when resolution failed
 {{ config(materialized='view') }}
 
 with api as (
@@ -26,33 +28,33 @@ with api as (
     from {{ source('raw', 'raw_markets') }}
     where source = 'api'
 ),
-onchain as (
+resolved_onchain as (
     select
-        market_key,
-        'onchain'                                              as source,
-        payload->>'$.syMint'                                   as sy_mint,
-        payload->>'$.vault'                                    as vault,
+        r.market_key                                           as market_key,
+        'onchain_resolved'                                     as source,
+        r.sy_mint                                              as sy_mint,
+        r.vault                                                as vault,
         cast(null as varchar)                                  as pt_mint,
         cast(null as varchar)                                  as yt_mint,
         cast(null as varchar)                                  as lp_mint,
         cast(null as varchar)                                  as amm_pool,
         cast(null as varchar)                                  as clmm_orderbook,
         cast(null as varchar)                                  as pool,
-        cast(null as varchar)                                  as underlying_mint,
-        payload->>'$.underlyingTicker'                         as ticker,
-        cast(null as int)                                      as underlying_decimals,
+        r.underlying_mint                                      as underlying_mint,
+        r.resolved_ticker                                      as ticker,
+        r.underlying_decimals                                  as underlying_decimals,
         cast(null as varchar)                                  as platform,
-        cast(payload->>'$.maturityTs' as bigint)               as maturity_ts,
-        cast(payload->>'$.maturityDate' as date)               as maturity_date,
+        r.maturity_ts                                          as maturity_ts,
+        r.maturity_date                                        as maturity_date,
         'expired'                                              as status,
         cast(null as varchar)                                  as interface_type,
-        fetched_at
-    from {{ source('raw', 'raw_markets') }}
-    where source = 'onchain'
+        cast(current_timestamp as timestamp)                   as fetched_at
+    from {{ ref('stg_resolved_markets') }} r
+),
+final as (
+    select * from api
+    union all
+    select r.* from resolved_onchain r
+    where not exists (select 1 from api a where a.market_key = r.market_key)
 )
-select * from api
-union all
-select * from onchain o
-where not exists (
-    select 1 from api a where a.market_key = o.market_key
-)
+select * from final

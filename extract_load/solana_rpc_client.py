@@ -182,6 +182,25 @@ class SolanaRpcClient:
         result = await self._post(body)
         return (result.get("result") or {}).get("value") or []
 
+    async def get_asset(self, mint: str) -> dict | None:
+        """Helius DAS getAsset — reads on-chain Metaplex Token Metadata.
+
+        Returns the asset dict with content.metadata.{name,symbol},
+        token_info.{decimals,symbol}, etc. None if the mint has no
+        Metaplex metadata account.
+
+        Only works against Helius endpoints (DAS is a Helius extension).
+        Returns None silently on non-Helius RPC endpoints.
+        """
+        body = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "getAsset",
+            "params": {"id": mint},
+        }
+        result = await self._post(body)
+        return result.get("result")
+
     async def get_program_accounts(
         self, program_id: str, filters: list[dict] | None = None, encoding: str = "base64"
     ) -> list[dict]:

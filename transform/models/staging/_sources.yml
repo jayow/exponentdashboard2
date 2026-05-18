@@ -63,3 +63,15 @@ sources:
             tests: [not_null]
           - name: lst_mint
             tests: [not_null]
+
+      - name: raw_token_metadata
+        description: Helius DAS Metaplex token metadata, keyed by mint.
+        columns:
+          - name: mint
+            tests: [unique, not_null]
+
+      - name: raw_exponent_tokens
+        description: Exponent /tokens endpoint snapshot. Underlying token universe.
+        columns:
+          - name: mint
+            tests: [unique, not_null]

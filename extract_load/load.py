@@ -94,6 +94,28 @@ RAW_DDL = {
             PRIMARY KEY (snapshot_date, lst_mint)
         )
     """,
+    "raw_token_metadata": """
+        CREATE TABLE IF NOT EXISTS raw_token_metadata (
+            mint        VARCHAR PRIMARY KEY,
+            name        VARCHAR,
+            symbol      VARCHAR,
+            decimals    INT,
+            source      VARCHAR NOT NULL,   -- 'das' (Helius DAS) | 'api' (exponent /tokens)
+            fetched_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            payload     JSON
+        )
+    """,
+    "raw_exponent_tokens": """
+        -- Exponent's known underlying-token universe (from /tokens endpoint)
+        CREATE TABLE IF NOT EXISTS raw_exponent_tokens (
+            mint        VARCHAR PRIMARY KEY,
+            name        VARCHAR,
+            symbol      VARCHAR,
+            decimals    INT,
+            fetched_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            payload     JSON NOT NULL
+        )
+    """,
     # Internal bookkeeping — not a source.
     "scan_state": """
         CREATE TABLE IF NOT EXISTS scan_state (

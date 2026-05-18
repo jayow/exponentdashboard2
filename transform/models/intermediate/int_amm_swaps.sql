@@ -33,13 +33,20 @@ tx_to_market as (
         t.signature,
         t.block_time,
         t.action,
+        -- Prefer api rows (most metadata) over resolved onchain. Within
+        -- ties, prefer the market whose maturity is closest in the future
+        -- to the trade timestamp (the one the user actually traded).
         first_value(m.market_key) over (
-            partition by t.signature order by m.maturity_date desc
+            partition by t.signature
+            order by
+                case when m.source = 'api' then 0 else 1 end,
+                case when m.maturity_ts >= t.block_time then 0 else 1 end,
+                abs(m.maturity_ts - t.block_time)
         ) as market_key
     from trade_events t
     join {{ ref('stg_token_changes') }} c using (signature)
     join {{ ref('stg_markets') }} m
-        on m.source = 'api'
+        on m.underlying_mint is not null   -- need a resolvable underlying to compute notional
        and (c.mint = m.sy_mint
             or c.mint = m.pt_mint
             or c.mint = m.yt_mint
@@ -62,7 +69,8 @@ signer_underlying_deltas as (
         coalesce(sum(c.delta_ui) filter (where c.delta_raw > 0), 0) as inflow_ui
     from tx_to_market tm
     join {{ ref('stg_markets') }} m
-        on m.market_key = tm.market_key and m.source = 'api'
+        on m.market_key = tm.market_key
+       and m.underlying_mint is not null
     left join {{ ref('stg_token_changes') }} c
         on c.signature = tm.signature
        and c.mint      = m.underlying_mint
