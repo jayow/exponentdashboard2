@@ -92,6 +92,18 @@ RAW_DDL = {
             PRIMARY KEY (snapshot_date, lst_mint)
         )
     """,
+    # Internal bookkeeping — not a source.
+    "scan_state": """
+        CREATE TABLE IF NOT EXISTS scan_state (
+            scope                VARCHAR NOT NULL,   -- e.g. 'signatures'
+            address              VARCHAR NOT NULL,
+            is_fully_backfilled  BOOLEAN DEFAULT FALSE,
+            newest_sig           VARCHAR,
+            oldest_sig           VARCHAR,
+            last_run_at          TIMESTAMP,
+            PRIMARY KEY (scope, address)
+        )
+    """,
 }
 
 

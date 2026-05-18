@@ -17,6 +17,13 @@ EXTRACT_BATCH_SIZE = int(os.getenv("EXTRACT_BATCH_SIZE", "100"))
 EXTRACT_CONCURRENCY = int(os.getenv("EXTRACT_CONCURRENCY", "12"))
 EXTRACT_RETRY_MAX = int(os.getenv("EXTRACT_RETRY_MAX", "5"))
 
-EXPONENT_PROGRAM = "ExponentnaRg3CQbW6dqQNZKXp7gtZ9DGMp1cwC4HAS7"
+EXPONENT_CORE_PROGRAM = "ExponentnaRg3CQbW6dqQNZKXp7gtZ9DGMp1cwC4HAS7"
+EXPONENT_CLMM_PROGRAM = "XPC1MM4dYACDfykNuXYZ5una2DsMDWL24CrYubCvarC"
+
+# Every Exponent-related tx invokes one of these — scanning both is exhaustive.
+EXPONENT_PROGRAMS = [EXPONENT_CORE_PROGRAM, EXPONENT_CLMM_PROGRAM]
+
+# Backwards-compat alias used by helius_client smoke test.
+EXPONENT_PROGRAM = EXPONENT_CORE_PROGRAM
 
 DATA_DIR.mkdir(parents=True, exist_ok=True)
