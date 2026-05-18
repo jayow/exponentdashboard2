@@ -118,6 +118,34 @@ blockTime, meta, slot, transaction, version
         logMessages, pre/postBalances, pre/postTokenBalances
 ```
 
+### Phase 3a: dbt staging layer (2026-05-18)
+
+First materialization of the staging layer against the full backfill.
+
+| Model | Materialization | Rows | Build time |
+|---|---|---|---|
+| `stg_helius_tx` | view | 567,978 | <1s |
+| `stg_markets` | view | 92 | <1s |
+| `stg_prices` | view | 0 (no extract yet) | <1s |
+| `stg_inner_ix` | **table** | **13,135,634** | 4:09 (and 8:26 in concurrent build) |
+| `stg_token_changes` | **table** | **2,903,942** | 3:50 (concurrent) |
+
+**Why tables for stg_inner_ix and stg_token_changes:** UNNESTing JSON arrays across 568K rows is expensive (~4 min). Marts will join against these heavily; cheaper to materialize once than recompute per query.
+
+**Verified data quality:**
+- Top 10 mints by delta-count in `stg_token_changes` match Exponent's known SY mints (HvbiURJrV... = fragSOL, 4CEd2syXcV... = USX, 7EtXTvy1NB... = eUSX)
+- Top program in `stg_inner_ix`: spl-token (6.1M ix), Exponent core (3.1M), XP1BRLn8 (2.3M — likely orderbook), system (540K)
+- Top parsed types: `transfer` (3.76M), `mintTo` (756K), `burn` (629K), `transferChecked` (31K) — the swap-leg primitives are all there
+- All 28 dbt tests (16 source + 12 staging) green
+
+**New programs surfaced** that we don't yet have in `EXPONENT_PROGRAMS`:
+- `XP1BRLn8eCYSygrd8er5P4GKdzqKbC3DLoSsS5UYVZy` — heavy use, possibly Exponent orderbook
+- `XPerenaJPyvnjseLCn7rgzxF` — Perena platform integration
+- `XPJitopeUEhMZVF72Cvswnwr` — Jito platform integration
+- `XPBookgQTN2p8Yw1C2La35Xk` — another XP* program
+
+Worth investigating before Phase 3b classifies user-intent (we need to know which programs count as "trades" vs "admin").
+
 ### Known gaps (followups, not blocking)
 
 1. **CLMM market decoder.** `extract_markets` decodes MarketThree accounts only on the core program (disc `d404847ea9797914`). The CLMM program uses different discriminators (`69f125c8e002fc5a`, `7a68298dd624de25`, `f2f01a0f94bab9cd`) and a different account layout. Result: 7 of 10 currently-active markets exist only via `source='api'` in `raw_markets`. Active coverage is still 100% (API has them); on-chain coverage of expired CLMM markets is missing.
