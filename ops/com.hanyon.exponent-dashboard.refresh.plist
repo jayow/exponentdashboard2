@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  macOS launchd job for the daily Exponent dashboard refresh.
+
+  Install:
+    1. Edit WorkingDirectory below to point at your local copy of this repo.
+    2. Copy to ~/Library/LaunchAgents/:
+         cp ops/com.hanyon.exponent-dashboard.refresh.plist \
+            ~/Library/LaunchAgents/
+
+    3. Load it:
+         launchctl load ~/Library/LaunchAgents/com.hanyon.exponent-dashboard.refresh.plist
+
+    4. (Optional) trigger a manual run to verify:
+         launchctl start com.hanyon.exponent-dashboard.refresh
+
+  Schedule: 06:00 local time, every day. Adjust StartCalendarInterval to change.
+
+  Logs:
+    - data/logs/refresh.log   (own format, written by `make refresh`)
+    - data/logs/launchd.{out,err}.log  (raw stdout/stderr — should be empty in steady state)
+
+  Unload (to disable):
+    launchctl unload ~/Library/LaunchAgents/com.hanyon.exponent-dashboard.refresh.plist
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.hanyon.exponent-dashboard.refresh</string>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/jakeolaso/Downloads/Claude Projects/ExponentDashboard2</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>-l</string>
+        <string>-c</string>
+        <string>cd "$PWD" &amp;&amp; source .venv/bin/activate &amp;&amp; make refresh</string>
+    </array>
+
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>6</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/Users/jakeolaso/Downloads/Claude Projects/ExponentDashboard2/data/logs/launchd.out.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/jakeolaso/Downloads/Claude Projects/ExponentDashboard2/data/logs/launchd.err.log</string>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <!-- Make launchd retry on failure with exponential backoff (up to ~1 hour) -->
+    <key>ThrottleInterval</key>
+    <integer>3600</integer>
+</dict>
+</plist>

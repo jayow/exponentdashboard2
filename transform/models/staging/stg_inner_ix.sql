@@ -1,27 +1,40 @@
 -- One row per inner instruction across all txs.
--- Key fields:
---   (signature, outer_ix_index, inner_ix_index) — unique
---   program_id      → which program was CPI'd
---   program_name    → SPL parser shorthand if available ('spl-token', 'system')
---   parsed_type     → for parsed ix: 'transfer', 'transferChecked', 'mintTo', 'burn', etc.
---   parsed_info     → full parsed instruction JSON object (mint, source, destination, amount, ...)
---   data_b58        → raw base58 instruction data when not parsed
---   accounts        → JSON array of account addresses (raw form)
+-- Key: (signature, outer_ix_index, inner_ix_index). ~13M rows full backfill.
 --
--- Materialized as a table because (a) downstream marts hit this very often and
--- (b) UNNESTing 568K JSON columns on every query is wasteful. Expect ~5-7M rows.
-{{ config(materialized='table') }}
+-- INCREMENTAL: only process txs whose signature isn't yet in the target.
+-- First run does a full build (8 min); daily refresh picks up only new sigs
+-- (~3K/day → ~5 sec).
+--
+-- To force a full rebuild after schema/logic changes:
+--   dbt run --full-refresh --select stg_inner_ix
+{{ config(
+    materialized='incremental',
+    unique_key=['signature', 'outer_ix_index', 'inner_ix_index'],
+    incremental_strategy='delete+insert'
+) }}
 
-with groups as (
+with src as (
+    select * from {{ ref('stg_helius_tx') }}
+    where inner_instructions is not null
+    {% if is_incremental() %}
+      -- Process txs from the last day onward. Cheap aggregate (single MAX)
+      -- instead of NOT IN against 13M rows. The unique_key delete+insert
+      -- strategy idempotently handles any overlap.
+      and block_time >= coalesce(
+            (select max(block_time) from {{ this }}) - 86400,
+            0
+          )
+    {% endif %}
+),
+groups as (
     select
         s.signature,
         s.block_time,
         s.slot,
         cast(g.value->>'$.index' as integer)              as outer_ix_index,
         cast(g.value->'$.instructions' as json[])          as instructions_arr
-    from {{ ref('stg_helius_tx') }} s,
+    from src s,
         unnest(cast(s.inner_instructions as json[])) as g(value)
-    where s.inner_instructions is not null
 )
 select
     signature,

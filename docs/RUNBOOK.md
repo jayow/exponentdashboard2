@@ -13,19 +13,73 @@ cd transform && dbt deps && cd ..
 ## Daily refresh
 
 ```bash
-make all          # extract (incremental) → transform (full rebuild) → serve (slim JSONs)
+make all          # extract (incremental) → transform (incremental) → serve (slim JSONs)
+make refresh      # same as 'all' but writes a timestamped log to data/logs/refresh.log
 ```
 
-Idempotent. Safe to run repeatedly. ~30 min on first full run, ~5 min incremental thereafter.
+Both are idempotent and safe to run repeatedly. Performance:
+- First full backfill: ~4 h (568K txs from Helius)
+- Steady-state incremental: **~2 min** total
+
+Incremental materialization breakdown:
+- `extract_signatures`     ~30 s  (only new sigs via `until=<newest_known>`)
+- `extract_transactions`   ~30 s  (anti-join on raw_signatures vs raw_helius_tx)
+- `extract_markets/tokens/prices` ~10 s (all idempotent upserts)
+- `dbt build`              ~60 s  (stg_inner_ix + stg_token_changes process only
+                                    last 24h via `block_time >= max - 1 day`)
+- `serve/build_web_data`   ~5 s
+
+## Scheduling on macOS
+
+Daily at 06:00 local via `launchd`:
+
+```bash
+# 1. Edit ops/com.hanyon.exponent-dashboard.refresh.plist:
+#    Change WorkingDirectory and log paths to match your local clone.
+
+# 2. Install:
+cp ops/com.hanyon.exponent-dashboard.refresh.plist ~/Library/LaunchAgents/
+launchctl load ~/Library/LaunchAgents/com.hanyon.exponent-dashboard.refresh.plist
+
+# 3. Verify with a manual trigger:
+launchctl start com.hanyon.exponent-dashboard.refresh
+tail -f data/logs/refresh.log
+
+# 4. To change schedule: edit StartCalendarInterval in the plist + reload:
+launchctl unload ~/Library/LaunchAgents/com.hanyon.exponent-dashboard.refresh.plist
+launchctl load ~/Library/LaunchAgents/com.hanyon.exponent-dashboard.refresh.plist
+
+# 5. To stop running daily:
+launchctl unload ~/Library/LaunchAgents/com.hanyon.exponent-dashboard.refresh.plist
+```
+
+The plist runs `bash -l -c 'source .venv/bin/activate && make refresh'`, which:
+- Picks up your shell PATH (so Homebrew Python/dbt resolve)
+- Activates the venv
+- Appends one timestamped block per run to `data/logs/refresh.log`
+- launchd's raw stdout/stderr go to `data/logs/launchd.{out,err}.log` (should be empty in steady state)
+
+If your Mac sleeps at 06:00, launchd will run the job at the next wake. Set
+"Wake for network access" in System Settings → Battery if you need true reliability.
 
 ## Backfill / fresh build
 
 ```bash
 rm data/warehouse.duckdb     # nuke the warehouse
 make extract                  # this is the expensive step — pulls everything from Helius
-make transform
+make full-rebuild             # dbt with --full-refresh; needed after schema/logic changes
 make serve
 ```
+
+After a schema/logic change in stg_inner_ix or stg_token_changes (the
+incremental tables), force a full rebuild ONCE:
+
+```bash
+make full-rebuild  # cd transform && dbt build --full-refresh
+```
+
+This re-processes all 568K txs (~8 min). Subsequent `make refresh` runs go
+back to incremental.
 
 ## Adding a new metric
 

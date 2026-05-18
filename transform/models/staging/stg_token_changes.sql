@@ -7,16 +7,23 @@
 -- A `delta` of 0 means the account ended the tx with the same balance it
 -- started with — filtered out, no useful signal.
 --
--- Key fields:
---   account_index — position in the tx's accountKeys array (lets you map
---                   back to the actual address via stg_helius_tx.account_keys)
---   owner         — wallet/PDA that owns the token account
---   mint          — token mint
---   delta_raw     — post.amount - pre.amount (integer, raw decimals)
---   delta_ui      — same in display units (delta_raw / 10^decimals)
-{{ config(materialized='table') }}
+-- INCREMENTAL: only process new sigs since last run.
+{{ config(
+    materialized='incremental',
+    unique_key=['signature', 'account_index', 'mint', 'owner'],
+    incremental_strategy='delete+insert'
+) }}
 
-with pre as (
+with new_sigs as (
+    select signature from {{ ref('stg_helius_tx') }}
+    {% if is_incremental() %}
+      where block_time >= coalesce(
+            (select max(block_time) from {{ this }}) - 86400,
+            0
+          )
+    {% endif %}
+),
+pre as (
     select
         s.signature,
         s.block_time,
@@ -25,7 +32,8 @@ with pre as (
         b.value->>'$.owner'                                  as owner,
         cast(b.value->'$.uiTokenAmount'->>'$.amount' as hugeint) as amount,
         cast(b.value->'$.uiTokenAmount'->>'$.decimals' as int)   as decimals
-    from {{ ref('stg_helius_tx') }} s,
+    from {{ ref('stg_helius_tx') }} s
+    join new_sigs n using (signature),
         unnest(cast(s.pre_token_balances as json[])) as b(value)
     where s.pre_token_balances is not null
 ),
@@ -38,7 +46,8 @@ post as (
         b.value->>'$.owner'                                  as owner,
         cast(b.value->'$.uiTokenAmount'->>'$.amount' as hugeint) as amount,
         cast(b.value->'$.uiTokenAmount'->>'$.decimals' as int)   as decimals
-    from {{ ref('stg_helius_tx') }} s,
+    from {{ ref('stg_helius_tx') }} s
+    join new_sigs n using (signature),
         unnest(cast(s.post_token_balances as json[])) as b(value)
     where s.post_token_balances is not null
 )
