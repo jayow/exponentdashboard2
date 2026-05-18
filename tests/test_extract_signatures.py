@@ -90,8 +90,8 @@ async def test_incremental_after_fully_backfilled(con):
 @pytest.mark.asyncio
 async def test_idempotent_reinsert(con):
     # Insert same sig twice — second should be ignored, no error
-    es._flush(con, [("dup", "ADDR1", 1, 1, None)])
-    es._flush(con, [("dup", "ADDR1", 1, 1, None)])
+    es._flush(con, [("dup", "ADDR1", "core_program", 1, 1, None)])
+    es._flush(con, [("dup", "ADDR1", "core_program", 1, 1, None)])
     count = con.execute("SELECT COUNT(*) FROM raw_signatures WHERE signature='dup'").fetchone()[0]
     assert count == 1
 
@@ -110,6 +110,30 @@ async def test_state_table_starts_empty_then_persists(con):
     assert s["newest_sig"] == "c"
     assert s["oldest_sig"] == "b"  # unchanged
     assert s["is_fully_backfilled"] is True  # unchanged
+
+
+def test_category_from_label():
+    assert es._category_from_label("core_program") == "core_program"
+    assert es._category_from_label("clmm_program") == "clmm_program"
+    assert es._category_from_label("vault:fragSOL-15DEC26") == "vault"
+    assert es._category_from_label("pool:hyloSOL-12AUG26") == "pool"
+    assert es._category_from_label("pt:USX-01JUN26") == "pt"
+    assert es._category_from_label("yt:USX-01JUN26") == "yt"
+    assert es._category_from_label("nonsense") == "unknown"
+
+
+@pytest.mark.asyncio
+async def test_discovered_via_written_to_db(con):
+    """End-to-end: scan_address(label='vault:KEY') stores discovered_via='vault'."""
+    page = [{"signature": "s1", "slot": 1, "blockTime": 100, "err": None}]
+    with respx.mock() as mock:
+        mock.post(URL).mock(return_value=httpx.Response(
+            200, json={"jsonrpc": "2.0", "id": 1, "result": page}
+        ))
+        async with SolanaRpcClient(endpoints=[URL]) as client:
+            await es.scan_address(client, con, "VAULT_ADDR", label="vault:KEY1")
+    row = con.execute("SELECT signature, address, discovered_via FROM raw_signatures").fetchone()
+    assert row == ("s1", "VAULT_ADDR", "vault")
 
 
 def test_watch_addresses_programs_only_when_no_markets(con):

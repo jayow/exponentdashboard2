@@ -87,12 +87,22 @@ def _flush(con: duckdb.DuckDBPyConnection, rows: list[tuple]) -> None:
         return
     con.executemany(
         """
-        INSERT INTO raw_signatures (signature, address, block_time, slot, err)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO raw_signatures (signature, address, discovered_via, block_time, slot, err)
+        VALUES (?, ?, ?, ?, ?, ?)
         ON CONFLICT (signature) DO NOTHING
         """,
         rows,
     )
+
+
+def _category_from_label(label: str) -> str:
+    """Map watch-address label to discovered_via category."""
+    if label in ("core_program", "clmm_program"):
+        return label
+    prefix = label.split(":", 1)[0]
+    if prefix in ("vault", "pool", "pt", "yt"):
+        return prefix
+    return "unknown"
 
 
 async def scan_address(
@@ -100,11 +110,13 @@ async def scan_address(
     con: duckdb.DuckDBPyConnection,
     address: str,
     *,
+    label: str = "unknown",
     rescan: bool = False,
 ) -> dict[str, Any]:
     state = _state(con, address) or {}
     fully = state.get("is_fully_backfilled", False)
     newest_known = state.get("newest_sig")
+    discovered_via = _category_from_label(label)
 
     # If we've fully backfilled before and not rescanning, stop at newest_known
     # to do an incremental update.
@@ -135,6 +147,7 @@ async def scan_address(
             pending.append((
                 sig_str,
                 address,
+                discovered_via,
                 sig.get("blockTime"),
                 sig.get("slot"),
                 json.dumps(sig.get("err")) if sig.get("err") is not None else None,
@@ -223,7 +236,7 @@ async def run(rescan: bool = False, include_markets: bool = True) -> list[dict]:
         async with SolanaRpcClient(RPC_ENDPOINTS) as client:
             for addr, label in addresses:
                 rprint(f"[dim]{label}[/dim]")
-                r = await scan_address(client, con, addr, rescan=rescan)
+                r = await scan_address(client, con, addr, label=label, rescan=rescan)
                 results.append(r)
                 rprint(
                     f"  → [green]{r['new']:>7,}[/green] new sigs"

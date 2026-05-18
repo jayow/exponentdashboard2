@@ -24,12 +24,13 @@ RAW_DDL = {
     """,
     "raw_signatures": """
         CREATE TABLE IF NOT EXISTS raw_signatures (
-            signature   VARCHAR PRIMARY KEY,
-            address     VARCHAR NOT NULL,
-            block_time  BIGINT,
-            slot        BIGINT,
-            err         JSON,
-            fetched_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            signature       VARCHAR PRIMARY KEY,
+            address         VARCHAR NOT NULL,
+            discovered_via  VARCHAR,   -- 'core_program' | 'clmm_program' | 'vault' | 'pool' | 'pt' | 'yt'
+            block_time      BIGINT,
+            slot            BIGINT,
+            err             JSON,
+            fetched_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """,
     "raw_markets": """
@@ -108,6 +109,21 @@ RAW_DDL = {
 }
 
 
+# Lightweight ALTER migrations for columns that we added after the initial
+# DDL shipped. Each entry is (table, column, type_sql). Skipped if the column
+# already exists. Removes the need to drop and recreate the warehouse.
+COLUMN_MIGRATIONS: list[tuple[str, str, str]] = [
+    ("raw_signatures", "discovered_via", "VARCHAR"),
+]
+
+
+def _apply_column_migrations(con: duckdb.DuckDBPyConnection) -> None:
+    for table, column, type_sql in COLUMN_MIGRATIONS:
+        existing = {r[1] for r in con.execute(f"PRAGMA table_info('{table}')").fetchall()}
+        if column not in existing:
+            con.execute(f"ALTER TABLE {table} ADD COLUMN {column} {type_sql}")
+
+
 @contextmanager
 def warehouse():
     """Yield a DuckDB connection with raw schema ensured."""
@@ -115,6 +131,7 @@ def warehouse():
     try:
         for ddl in RAW_DDL.values():
             con.execute(ddl)
+        _apply_column_migrations(con)
         yield con
     finally:
         con.close()
