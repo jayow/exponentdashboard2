@@ -70,21 +70,52 @@ def _upsert_exponent_token(con: duckdb.DuckDBPyConnection, t: dict) -> None:
 # ---------- Pass 2: DAS getAsset ----------
 
 def _market_related_mints(con: duckdb.DuckDBPyConnection) -> list[str]:
-    """Collect every distinct mint that appears in raw_markets payloads."""
+    """Collect every distinct mint that appears in Exponent-related data.
+
+    Sources:
+      1. raw_markets.payload (sy/pt/yt/lp/underlying — explicit market mints)
+      2. raw_helius_tx pre/postTokenBalances (catches PT/YT/LP mints of
+         expired markets that our on-chain MarketThree decoder doesn't
+         extract — its `pt_mint` etc. fields are NULL).
+      3. raw_exponent_tokens (Exponent's /tokens universe — to fill in
+         metadata for underlying tokens that lack Metaplex names).
+
+    Returns mints NOT already in raw_token_metadata, so re-running is fast.
+    """
     rows = con.execute(
         """
-        SELECT DISTINCT mint FROM (
-            SELECT payload->>'$.syMint'  AS mint FROM raw_markets
-            UNION ALL
-            SELECT payload->>'$.ptMint'  AS mint FROM raw_markets
-            UNION ALL
-            SELECT payload->>'$.ytMint'  AS mint FROM raw_markets
-            UNION ALL
-            SELECT payload->>'$.lpMint'  AS mint FROM raw_markets
-            UNION ALL
-            SELECT payload->>'$.underlying' AS mint FROM raw_markets
+        WITH from_markets AS (
+            SELECT mint FROM (
+                SELECT payload->>'$.syMint'   AS mint FROM raw_markets
+                UNION ALL
+                SELECT payload->>'$.ptMint'   AS mint FROM raw_markets
+                UNION ALL
+                SELECT payload->>'$.ytMint'   AS mint FROM raw_markets
+                UNION ALL
+                SELECT payload->>'$.lpMint'   AS mint FROM raw_markets
+                UNION ALL
+                SELECT payload->>'$.underlying' AS mint FROM raw_markets
+            ) WHERE mint IS NOT NULL
+        ),
+        from_tx_balances AS (
+            -- Every mint that appeared in a token-balance entry across our 568K txs.
+            -- We materialize via stg_token_changes for fast scan.
+            SELECT DISTINCT mint FROM main_staging.stg_token_changes
+        ),
+        from_tokens AS (
+            SELECT mint FROM raw_exponent_tokens
+        ),
+        all_mints AS (
+            SELECT mint FROM from_markets
+            UNION
+            SELECT mint FROM from_tx_balances
+            UNION
+            SELECT mint FROM from_tokens
         )
-        WHERE mint IS NOT NULL
+        SELECT DISTINCT a.mint
+        FROM all_mints a
+        WHERE a.mint IS NOT NULL
+          AND NOT EXISTS (SELECT 1 FROM raw_token_metadata m WHERE m.mint = a.mint)
         """
     ).fetchall()
     return [r[0] for r in rows]

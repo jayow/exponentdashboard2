@@ -72,5 +72,17 @@ select
     r.sy_symbol,
     r.sy_decimals
 from resolved_ticker r
+-- Try direct symbol match first; if that fails, fall back to stripping a
+-- leading 'w' prefix (handles "Exponent Wrapped wfragBTC" -> "fragBTC").
 left join {{ source('raw', 'raw_exponent_tokens') }} et
     on lower(et.symbol) = lower(r.resolved_ticker)
+    or (
+        lower(r.resolved_ticker) like 'w%'
+        and lower(et.symbol) = lower(substr(r.resolved_ticker, 2))
+    )
+    or (
+        -- Handle "MLP (USDC-USDT)" by matching et.name containing the paren content
+        r.resolved_ticker like '% (%)'
+        and lower(et.symbol) = lower(regexp_extract(r.resolved_ticker, '^(\S+)', 1))
+        and et.name ilike '%' || regexp_extract(r.resolved_ticker, '\((.+)\)', 1) || '%'
+    )
