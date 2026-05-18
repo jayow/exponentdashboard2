@@ -2,6 +2,7 @@
 import { useState } from 'react';
 import { TvlOverview } from '@/components/TvlOverview';
 import { HistoricalChart } from '@/components/HistoricalChart';
+import { TradingVolumeChart } from '@/components/TradingVolumeChart';
 import { MarketLifecycle } from '@/components/MarketLifecycle';
 import { HolderAnalytics } from '@/components/HolderAnalytics';
 import { MarketCards } from '@/components/MarketCards';
@@ -29,6 +30,7 @@ export default function HomePage() {
 
       <TvlOverview />
       <HistoricalChart />
+      <TradingVolumeChart />
 
       {/* Tabbed section: Lifecycle / Holders / Markets */}
       <div className="mb-8">
