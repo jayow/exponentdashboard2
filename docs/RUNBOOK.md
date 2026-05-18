@@ -67,3 +67,31 @@ duckdb data/warehouse.duckdb "EXPORT DATABASE 'data/raw_backup/$(date +%F)' (FOR
 ```
 
 Or just copy the `.duckdb` file — it's one file.
+
+---
+
+## Smoke-test baselines (2026-05-18)
+
+First live full-backfill run, recorded so future runs can detect drift.
+
+| Stage | Wall clock | Helius credits | Rows produced |
+|---|---|---|---|
+| `extract_markets` | 2.7 sec | ~3 | 92 in `raw_markets` (10 api + 82 onchain) |
+| `extract_signatures` full backfill | 30 min 15 sec | ~750 | 584,398 in `raw_signatures` |
+
+**Storage**: `data/warehouse.duckdb` after backfill = **236 MB**.
+
+**Sig date range**: 2024-10-24 → 2026-05-18 (18 months of Exponent activity).
+
+**Coverage decomposition** (rows attributed by first-found address):
+- Exponent core program: 568,810 sigs (97.3%)
+- Exponent CLMM program: 512 sigs (0.1%)
+- Per-market address expansion: 15,076 sigs (2.6%) — these were ALT-hidden / inner-ix from the program scans
+
+The per-market scan adds real coverage but the marginal value over a programs-only scan is small (~3%).
+
+### Known gaps (followups, not blocking)
+
+1. **CLMM market decoder.** `extract_markets` decodes MarketThree accounts only on the core program (disc `d404847ea9797914`). The CLMM program uses different discriminators (`69f125c8e002fc5a`, `7a68298dd624de25`, `f2f01a0f94bab9cd`) and a different account layout. Result: 7 of 10 currently-active markets exist only via `source='api'` in `raw_markets`. Active coverage is still 100% (API has them); on-chain coverage of expired CLMM markets is missing.
+2. **UNKNOWN-prefixed market keys.** 50 expired markets have SY mints the active API doesn't know about. Their `market_key` falls back to `UNKNOWN-{date}`. To resolve, port v1's `mint_symbols.json` lookup or fetch token metadata via Helius DAS `getAsset`.
+3. **Per-address sig attribution.** `raw_signatures.signature` is PRIMARY KEY — a sig found by multiple addresses keeps only the first-found `address`. Fine for the current goal (just need the sig set). If per-market attribution becomes important, add a many-to-many `sig_addresses` table.
