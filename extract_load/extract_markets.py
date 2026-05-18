@@ -23,8 +23,8 @@ import duckdb
 import httpx
 from rich import print as rprint
 
-from .config import HELIUS_KEYS, EXPONENT_CORE_PROGRAM
-from .helius_client import HeliusClient
+from .config import RPC_ENDPOINTS, EXPONENT_CORE_PROGRAM
+from .solana_rpc_client import SolanaRpcClient
 from .load import warehouse
 from .market_three_decoder import (
     MARKET_THREE_DISCRIMINATOR,
@@ -87,7 +87,7 @@ def api_market_to_row(m: dict) -> tuple[str, dict] | None:
 
 # ---------- On-chain source ----------
 
-async def fetch_onchain_market_accounts(client: HeliusClient) -> list[dict]:
+async def fetch_onchain_market_accounts(client: SolanaRpcClient) -> list[dict]:
     """getProgramAccounts on Exponent core, filtered to MarketThree discriminator."""
     disc_b58 = base58.b58encode(MARKET_THREE_DISCRIMINATOR).decode()
     filters = [{"memcmp": {"offset": 0, "bytes": disc_b58}}]
@@ -143,8 +143,8 @@ def upsert_market(
 # ---------- Orchestrator ----------
 
 async def run() -> dict:
-    if not HELIUS_KEYS:
-        raise RuntimeError("No HELIUS_KEY_* configured in .env")
+    if not RPC_ENDPOINTS:
+        raise RuntimeError("No SOLANA_RPC_URLS configured in .env")
 
     rprint("[cyan]Fetching Exponent API markets…[/cyan]")
     api_raw = await fetch_api_markets()
@@ -161,7 +161,7 @@ async def run() -> dict:
         ticker_by_sy[payload["syMint"]] = payload["underlyingTicker"]
 
     rprint("[cyan]Fetching MarketThree accounts on-chain…[/cyan]")
-    async with HeliusClient(HELIUS_KEYS) as client:
+    async with SolanaRpcClient(RPC_ENDPOINTS) as client:
         onchain_raw = await fetch_onchain_market_accounts(client)
     rprint(f"  got {len(onchain_raw)} MarketThree accounts on-chain")
 

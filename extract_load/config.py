@@ -10,8 +10,9 @@ ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT / "data"
 WAREHOUSE_PATH = Path(os.getenv("WAREHOUSE_PATH", DATA_DIR / "warehouse.duckdb"))
 
-HELIUS_KEYS = [k for k in (os.getenv("HELIUS_KEY_1"), os.getenv("HELIUS_KEY_2")) if k]
-SOLANA_RPC_URL = os.getenv("SOLANA_RPC_URL", "https://api.mainnet-beta.solana.com")
+# Comma-separated full RPC endpoint URLs — Helius, QuickNode, Chainstack,
+# Alchemy, public RPC. The client round-robins across them.
+RPC_ENDPOINTS = [u.strip() for u in os.getenv("SOLANA_RPC_URLS", "").split(",") if u.strip()]
 
 EXTRACT_BATCH_SIZE = int(os.getenv("EXTRACT_BATCH_SIZE", "100"))
 EXTRACT_CONCURRENCY = int(os.getenv("EXTRACT_CONCURRENCY", "12"))
@@ -23,7 +24,5 @@ EXPONENT_CLMM_PROGRAM = "XPC1MM4dYACDfykNuXYZ5una2DsMDWL24CrYubCvarC"
 # Every Exponent-related tx invokes one of these — scanning both is exhaustive.
 EXPONENT_PROGRAMS = [EXPONENT_CORE_PROGRAM, EXPONENT_CLMM_PROGRAM]
 
-# Backwards-compat alias used by helius_client smoke test.
-EXPONENT_PROGRAM = EXPONENT_CORE_PROGRAM
 
 DATA_DIR.mkdir(parents=True, exist_ok=True)

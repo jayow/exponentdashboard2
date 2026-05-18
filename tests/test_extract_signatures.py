@@ -8,11 +8,11 @@ import duckdb
 from unittest.mock import patch
 
 from extract_load import extract_signatures as es
-from extract_load.helius_client import HeliusClient
+from extract_load.solana_rpc_client import SolanaRpcClient
 from extract_load.load import RAW_DDL
 
 
-URL = "https://mainnet.helius-rpc.com/?api-key=K1"
+URL = "https://rpc.example/"
 
 
 @pytest.fixture
@@ -35,7 +35,7 @@ async def _scan(con, sigs_pages):
     """Helper: mock the network with the given paginated responses, run scan."""
     with respx.mock() as mock:
         mock.post(URL).mock(side_effect=[_resp(p) for p in sigs_pages])
-        async with HeliusClient(keys=["K1"]) as client:
+        async with SolanaRpcClient(endpoints=[URL]) as client:
             return await es.scan_address(client, con, "ADDR1")
 
 

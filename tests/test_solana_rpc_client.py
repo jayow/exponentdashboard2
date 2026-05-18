@@ -1,6 +1,6 @@
-"""Offline unit tests for HeliusClient — mock the network, exercise the wiring.
+"""Offline unit tests for SolanaRpcClient — mock the network, exercise the wiring.
 
-Live network smoke is in `python -m extract_load.helius_client`.
+Live network smoke is in `python -m extract_load.solana_rpc_client`.
 """
 from __future__ import annotations
 import asyncio
@@ -10,10 +10,11 @@ import httpx
 import pytest
 import respx
 
-from extract_load.helius_client import HeliusClient, TransientHTTPError
+from extract_load.solana_rpc_client import SolanaRpcClient, TransientHTTPError
 
 
-URL = "https://mainnet.helius-rpc.com/?api-key=TESTKEY1"
+URL = "https://rpc1.example/"
+URL2 = "https://rpc2.example/"
 
 
 def _ok(body):
@@ -22,7 +23,7 @@ def _ok(body):
 
 @pytest.fixture
 def client():
-    return HeliusClient(keys=["TESTKEY1"], concurrency_per_key=4)
+    return SolanaRpcClient(endpoints=[URL], concurrency_per_endpoint=4)
 
 
 @pytest.mark.asyncio
@@ -158,25 +159,23 @@ async def test_400_does_not_retry(client):
 
 
 @pytest.mark.asyncio
-async def test_dual_key_round_robin():
-    """Two requests on a client with 2 keys should hit both URLs."""
-    client = HeliusClient(keys=["K1", "K2"], concurrency_per_key=4)
-    url1 = "https://mainnet.helius-rpc.com/?api-key=K1"
-    url2 = "https://mainnet.helius-rpc.com/?api-key=K2"
+async def test_endpoint_round_robin():
+    """Two requests on a client with 2 endpoints should hit both URLs."""
+    client = SolanaRpcClient(endpoints=[URL, URL2], concurrency_per_endpoint=4)
     body = {"jsonrpc": "2.0", "id": 1, "result": []}
     with respx.mock() as mock:
-        r1 = mock.post(url1).mock(return_value=_ok(body))
-        r2 = mock.post(url2).mock(return_value=_ok(body))
+        r1 = mock.post(URL).mock(return_value=_ok(body))
+        r2 = mock.post(URL2).mock(return_value=_ok(body))
         try:
             await client.get_signatures_for_address("A")
             await client.get_signatures_for_address("B")
         finally:
             await client.close()
-        # With round-robin and free semaphores, both keys should have been hit.
+        # With round-robin and free semaphores, both endpoints should have been hit.
         assert r1.call_count + r2.call_count == 2
         assert r1.called and r2.called
 
 
-def test_requires_at_least_one_key():
+def test_requires_at_least_one_endpoint():
     with pytest.raises(ValueError):
-        HeliusClient(keys=[])
+        SolanaRpcClient(endpoints=[])

@@ -11,12 +11,12 @@ import pytest
 import respx
 
 from extract_load import extract_markets as em
-from extract_load.helius_client import HeliusClient
+from extract_load.solana_rpc_client import SolanaRpcClient
 from extract_load.load import RAW_DDL
 from extract_load.market_three_decoder import MARKET_THREE_DISCRIMINATOR
 
 
-HELIUS_URL = "https://mainnet.helius-rpc.com/?api-key=K1"
+RPC_URL = "https://rpc.example/"
 
 
 @pytest.fixture
@@ -135,8 +135,8 @@ def test_upsert_market_inserts_then_updates(con):
 
 @pytest.mark.asyncio
 async def test_run_e2e_mocked(con, monkeypatch):
-    # Force HELIUS_KEYS = ['K1'] for the duration of the test
-    monkeypatch.setattr(em, "HELIUS_KEYS", ["K1"])
+    # Force RPC_ENDPOINTS for the duration of the test
+    monkeypatch.setattr(em, "RPC_ENDPOINTS", [RPC_URL])
 
     # Patch warehouse() to yield our in-memory con
     from contextlib import contextmanager
@@ -179,7 +179,7 @@ async def test_run_e2e_mocked(con, monkeypatch):
 
     with respx.mock(assert_all_called=True) as mock:
         mock.get(em.EXPONENT_API_URL).mock(return_value=httpx.Response(200, json=api_payload))
-        mock.post(HELIUS_URL).mock(return_value=httpx.Response(200, json=onchain_payload))
+        mock.post(RPC_URL).mock(return_value=httpx.Response(200, json=onchain_payload))
         result = await em.run()
 
     assert result["api"] == 1

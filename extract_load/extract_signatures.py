@@ -32,8 +32,8 @@ import duckdb
 from rich import print as rprint
 from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 
-from .config import HELIUS_KEYS, EXPONENT_PROGRAMS
-from .helius_client import HeliusClient
+from .config import RPC_ENDPOINTS, EXPONENT_PROGRAMS
+from .solana_rpc_client import SolanaRpcClient
 from .load import warehouse
 
 
@@ -96,7 +96,7 @@ def _flush(con: duckdb.DuckDBPyConnection, rows: list[tuple]) -> None:
 
 
 async def scan_address(
-    client: HeliusClient,
+    client: SolanaRpcClient,
     con: duckdb.DuckDBPyConnection,
     address: str,
     *,
@@ -210,8 +210,8 @@ def watch_addresses(
 
 
 async def run(rescan: bool = False, include_markets: bool = True) -> list[dict]:
-    if not HELIUS_KEYS:
-        raise RuntimeError("No HELIUS_KEY_* configured in .env")
+    if not RPC_ENDPOINTS:
+        raise RuntimeError("No SOLANA_RPC_URLS configured in .env")
 
     results: list[dict] = []
     with warehouse() as con:
@@ -220,7 +220,7 @@ async def run(rescan: bool = False, include_markets: bool = True) -> list[dict]:
             f"[bold]Scanning {len(addresses)} watch address(es)[/bold]"
             f" (include_markets={include_markets})"
         )
-        async with HeliusClient(HELIUS_KEYS) as client:
+        async with SolanaRpcClient(RPC_ENDPOINTS) as client:
             for addr, label in addresses:
                 rprint(f"[dim]{label}[/dim]")
                 r = await scan_address(client, con, addr, rescan=rescan)

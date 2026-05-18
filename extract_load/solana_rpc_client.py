@@ -1,16 +1,17 @@
-"""Async Helius / Solana JSON-RPC client.
+"""Async Solana JSON-RPC client.
+
+Provider-agnostic — accepts a list of pre-formed endpoint URLs (Helius,
+QuickNode, Chainstack, Alchemy, public RPC, etc). All major providers
+speak standard Solana JSON-RPC for the methods we use.
 
 Features:
-  - Dual-key (or N-key) round-robin via per-key semaphores
+  - N-endpoint round-robin via per-endpoint semaphores
   - JSON-RPC batching for getTransaction (one HTTP, N results)
   - Sig pagination helper
   - Tenacity retries on 429/5xx/network errors with exponential backoff
 
-Helius URL: https://mainnet.helius-rpc.com/?api-key={key}
-
-All methods return parsed JSON. Error handling is conservative — transient
-errors retry, malformed bodies raise. The caller decides what to do with
-None results (missing tx, etc.).
+All methods return parsed JSON. Permanent 4xx (e.g. 400) raises immediately;
+transient errors retry with backoff.
 """
 from __future__ import annotations
 import asyncio
@@ -27,7 +28,6 @@ from tenacity import (
 )
 
 
-HELIUS_URL_FMT = "https://mainnet.helius-rpc.com/?api-key={}"
 TRANSIENT_STATUS = {429, 500, 502, 503, 504}
 
 
@@ -35,23 +35,21 @@ class TransientHTTPError(Exception):
     """Raised on retryable HTTP statuses so tenacity sees a specific type."""
 
 
-class HeliusClient:
+class SolanaRpcClient:
     def __init__(
         self,
-        keys: list[str],
-        concurrency_per_key: int = 12,
+        endpoints: list[str],
+        concurrency_per_endpoint: int = 12,
         timeout: float = 30.0,
-        rpc_url_fmt: str = HELIUS_URL_FMT,
     ):
-        if not keys:
-            raise ValueError("at least one Helius key required")
-        self.keys = keys
-        self.semaphores = [asyncio.Semaphore(concurrency_per_key) for _ in keys]
+        if not endpoints:
+            raise ValueError("at least one RPC endpoint URL required")
+        self.endpoints = endpoints
+        self.semaphores = [asyncio.Semaphore(concurrency_per_endpoint) for _ in endpoints]
         self.client = httpx.AsyncClient(timeout=timeout)
         self._counter = itertools.count()
-        self._rpc_url_fmt = rpc_url_fmt
 
-    async def __aenter__(self) -> "HeliusClient":
+    async def __aenter__(self) -> "SolanaRpcClient":
         return self
 
     async def __aexit__(self, *exc) -> None:
@@ -60,28 +58,25 @@ class HeliusClient:
     async def close(self) -> None:
         await self.client.aclose()
 
-    def _url(self, key_idx: int) -> str:
-        return self._rpc_url_fmt.format(self.keys[key_idx])
-
     @asynccontextmanager
     async def _acquire(self) -> AsyncIterator[str]:
-        """Yield the URL of the next-available key, holding its semaphore."""
-        start = next(self._counter) % len(self.keys)
-        for offset in range(len(self.keys)):
-            idx = (start + offset) % len(self.keys)
+        """Yield the URL of the next-available endpoint, holding its semaphore."""
+        start = next(self._counter) % len(self.endpoints)
+        for offset in range(len(self.endpoints)):
+            idx = (start + offset) % len(self.endpoints)
             sem = self.semaphores[idx]
             if not sem.locked():
                 await sem.acquire()
                 try:
-                    yield self._url(idx)
+                    yield self.endpoints[idx]
                 finally:
                     sem.release()
                 return
-        # all semaphores saturated — block on the chosen one
+        # All semaphores saturated — block on the chosen one
         sem = self.semaphores[start]
         await sem.acquire()
         try:
-            yield self._url(start)
+            yield self.endpoints[start]
         finally:
             sem.release()
 
@@ -95,7 +90,7 @@ class HeliusClient:
         async with self._acquire() as url:
             resp = await self.client.post(url, json=body)
             if resp.status_code in TRANSIENT_STATUS:
-                raise TransientHTTPError(f"{resp.status_code} from Helius")
+                raise TransientHTTPError(f"{resp.status_code} from {url}")
             resp.raise_for_status()
             return resp.json()
 
@@ -125,7 +120,7 @@ class HeliusClient:
     async def iter_all_signatures(
         self, address: str, until: str | None = None, page_size: int = 1000
     ) -> AsyncIterator[dict]:
-        """Yield every sig for an address, oldest-to-newest order preserved per page."""
+        """Yield every sig for an address, newest-to-oldest per page."""
         before: str | None = None
         while True:
             page = await self.get_signatures_for_address(
@@ -140,7 +135,7 @@ class HeliusClient:
             before = page[-1]["signature"]
 
     async def get_transactions(self, signatures: list[str]) -> list[dict | None]:
-        """Batched getTransaction. Returns one result per signature, aligned to input order."""
+        """Batched getTransaction. Returns one result per sig, aligned to input order."""
         if not signatures:
             return []
         body = [
@@ -159,7 +154,6 @@ class HeliusClient:
         if isinstance(result, list):
             by_id: dict[int, Any] = {r["id"]: r.get("result") for r in result if "id" in r}
             return [by_id.get(i) for i in range(len(signatures))]
-        # Single-element batch can come back as a dict
         return [result.get("result")]
 
     async def get_account_info(
@@ -205,26 +199,29 @@ class HeliusClient:
 
 
 # ---------- CLI smoke test ----------
-# Run with: python -m extract_load.helius_client
-# Requires HELIUS_KEY_1 (and optionally HELIUS_KEY_2) in .env.
-# Hits real network with 1 small request — no warehouse writes.
+# Run with: python -m extract_load.solana_rpc_client
+# Requires SOLANA_RPC_URLS in .env (comma-separated full URLs).
 
 
 async def _smoke() -> None:
-    from .config import HELIUS_KEYS, EXPONENT_PROGRAM
+    from .config import RPC_ENDPOINTS, EXPONENT_CORE_PROGRAM
     from rich import print as rprint
 
-    if not HELIUS_KEYS:
-        rprint("[red]No HELIUS_KEY_* in .env — cannot run smoke test[/red]")
+    if not RPC_ENDPOINTS:
+        rprint("[red]No SOLANA_RPC_URLS in .env — cannot run smoke test[/red]")
         return
 
-    rprint(f"[bold]HeliusClient smoke test[/bold] — {len(HELIUS_KEYS)} key(s) configured")
-    async with HeliusClient(HELIUS_KEYS) as client:
-        rprint(f"[cyan]getSignaturesForAddress[/cyan] {EXPONENT_PROGRAM} (limit=5)")
-        sigs = await client.get_signatures_for_address(EXPONENT_PROGRAM, limit=5)
+    rprint(
+        f"[bold]SolanaRpcClient smoke test[/bold] — {len(RPC_ENDPOINTS)} endpoint(s) configured"
+    )
+    async with SolanaRpcClient(RPC_ENDPOINTS) as client:
+        rprint(f"[cyan]getSignaturesForAddress[/cyan] {EXPONENT_CORE_PROGRAM} (limit=5)")
+        sigs = await client.get_signatures_for_address(EXPONENT_CORE_PROGRAM, limit=5)
         rprint(f"  got {len(sigs)} sig(s)")
         for s in sigs[:3]:
-            rprint(f"    {s.get('signature', '?')[:32]}...  slot={s.get('slot')}  err={s.get('err')}")
+            rprint(
+                f"    {s.get('signature', '?')[:32]}...  slot={s.get('slot')}  err={s.get('err')}"
+            )
 
         if sigs:
             rprint(f"[cyan]getTransactions (batched, n={min(2, len(sigs))})[/cyan]")
