@@ -57,7 +57,17 @@ async def fetch_api_markets(timeout: float = 30.0) -> list[dict]:
 
 def api_market_to_row(m: dict) -> tuple[str, dict] | None:
     """Normalize one API market into (market_key, payload). Returns None if
-    required fields are missing (defensive)."""
+    required fields are missing (defensive).
+
+    Address fields:
+      - vault: market PDA (always)
+      - ammPool: legacyMarketAddresses[0] — the AMM pool where SY↔PT swaps
+        happen. Required for trading volume on AMM markets.
+      - clmmOrderbook: orderbookAddresses[0] — the CLMM orderbook account.
+        Markets are EITHER AMM or CLMM (sometimes both during migration).
+      - pool: convenience alias = ammPool ?? clmmOrderbook (callers that
+        don't care which kind use this).
+    """
     sy_mint = m.get("syMint")
     ts = m.get("maturityDateUnixTs")
     underlying = m.get("underlyingAsset") or {}
@@ -65,13 +75,23 @@ def api_market_to_row(m: dict) -> tuple[str, dict] | None:
     if not (sy_mint and ts and ticker):
         return None
     market_key = format_market_key(ticker, ts)
+
+    legacy = m.get("legacyMarketAddresses") or []
+    orderbook = m.get("orderbookAddresses") or []
+    amm_pool = legacy[0] if legacy else None
+    clmm_orderbook = orderbook[0] if orderbook else None
+
     payload = {
         "syMint": sy_mint,
         "vault": m.get("vaultAddress"),
         "ptMint": m.get("ptMint"),
         "ytMint": m.get("ytMint"),
         "lpMint": m.get("lpMint"),
-        "pool": m.get("poolAddress") or m.get("pool"),
+        "ammPool": amm_pool,
+        "clmmOrderbook": clmm_orderbook,
+        "pool": amm_pool or clmm_orderbook,
+        "legacyMarketAddresses": legacy,
+        "orderbookAddresses": orderbook,
         "underlying": underlying.get("mint"),
         "underlyingTicker": ticker,
         "underlyingDecimals": m.get("decimals", 6),

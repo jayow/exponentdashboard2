@@ -70,6 +70,8 @@ def test_api_market_to_row_happy_path():
         "decimals": 9,
         "platformName": "Fragmetric",
         "marketStatus": "active",
+        "legacyMarketAddresses": [_pk(10)],  # AMM pool
+        "orderbookAddresses": [],
     }
     row = em.api_market_to_row(m)
     assert row is not None
@@ -78,6 +80,45 @@ def test_api_market_to_row_happy_path():
     assert payload["syMint"] == _pk(1)
     assert payload["platform"] == "Fragmetric"
     assert payload["maturityDate"] == "2026-12-15"
+    assert payload["ammPool"] == _pk(10)
+    assert payload["clmmOrderbook"] is None
+    assert payload["pool"] == _pk(10)
+
+
+def test_api_market_to_row_clmm_only():
+    """CLMM market has no legacyMarketAddresses but has orderbookAddresses."""
+    m = {
+        "syMint": _pk(1),
+        "vaultAddress": _pk(2),
+        "underlyingAsset": {"ticker": "USX", "mint": _pk(3)},
+        "maturityDateUnixTs": 1_797_292_800,
+        "decimals": 6,
+        "platformName": "Solstice",
+        "legacyMarketAddresses": [],
+        "orderbookAddresses": [_pk(20)],
+    }
+    row = em.api_market_to_row(m)
+    assert row is not None
+    _key, payload = row
+    assert payload["ammPool"] is None
+    assert payload["clmmOrderbook"] == _pk(20)
+    assert payload["pool"] == _pk(20)  # falls back to orderbook
+
+
+def test_api_market_to_row_no_pool_addresses():
+    """Market with neither AMM nor CLMM addresses still parses."""
+    m = {
+        "syMint": _pk(1),
+        "vaultAddress": _pk(2),
+        "underlyingAsset": {"ticker": "X", "mint": _pk(3)},
+        "maturityDateUnixTs": 1_797_292_800,
+    }
+    row = em.api_market_to_row(m)
+    assert row is not None
+    _key, payload = row
+    assert payload["ammPool"] is None
+    assert payload["clmmOrderbook"] is None
+    assert payload["pool"] is None
 
 
 def test_api_market_to_row_returns_none_when_missing_fields():

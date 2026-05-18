@@ -189,24 +189,32 @@ def watch_addresses(
     ]
     if include_markets:
         # Pull from API rows first (richer), fall back to onchain. Both shapes
-        # carry vault + pool + ptMint + ytMint where known.
+        # carry vault + ammPool + clmmOrderbook + ptMint + ytMint where known.
+        # Migration markets have both ammPool and clmmOrderbook — scan both.
         try:
             rows = con.execute(
                 """
                 SELECT market_key,
-                       payload->>'$.vault'   as vault,
-                       payload->>'$.pool'    as pool,
-                       payload->>'$.ptMint'  as pt_mint,
-                       payload->>'$.ytMint'  as yt_mint
+                       payload->>'$.vault'         as vault,
+                       payload->>'$.ammPool'        as amm_pool,
+                       payload->>'$.clmmOrderbook'  as clmm_orderbook,
+                       payload->>'$.pool'           as pool,
+                       payload->>'$.ptMint'         as pt_mint,
+                       payload->>'$.ytMint'         as yt_mint
                 FROM raw_markets
                 """
             ).fetchall()
         except duckdb.Error:
             rows = []
-        for market_key, vault, pool, pt_mint, yt_mint in rows:
+        for market_key, vault, amm_pool, clmm_orderbook, pool, pt_mint, yt_mint in rows:
             if vault:
                 out.append((vault, f"vault:{market_key}"))
-            if pool:
+            if amm_pool:
+                out.append((amm_pool, f"pool:{market_key}"))
+            if clmm_orderbook:
+                out.append((clmm_orderbook, f"pool:{market_key}"))
+            # Legacy on-chain rows may only have 'pool' (no ammPool/clmmOrderbook split)
+            if pool and pool != amm_pool and pool != clmm_orderbook:
                 out.append((pool, f"pool:{market_key}"))
             if pt_mint:
                 out.append((pt_mint, f"pt:{market_key}"))
