@@ -146,6 +146,46 @@ First materialization of the staging layer against the full backfill.
 
 Worth investigating before Phase 3b classifies user-intent (we need to know which programs count as "trades" vs "admin").
 
+### Phase 3b/c/d: intermediate + marts (2026-05-18)
+
+Live trading volume against the full data.
+
+| Model | Materialization | Rows | Build time |
+|---|---|---|---|
+| `int_classified_events` | table | 578,007 | 15s |
+| `int_amm_swaps` | table | 232,797 | <1s |
+| `fct_swaps` | table | 232,797 | <1s |
+| `dim_markets` | table | 92 | <1s |
+| `trading_volume_daily` | table | 4,510 | <1s |
+
+**Action classification distribution (578K txs):**
+```
+tradePt    137,271      (direct PT trades — v1 missed these entirely)
+buyYt      102,174
+redeemPt    78,892
+addLiq      66,819
+removeLiq   50,303
+sellYt      46,712
+admin       34,304
+unknown     29,779      (5.1% — mostly non-Exponent CPI'd programs)
+merge       28,942
+strip        2,488
+```
+
+**Trading volume (all-time, underlying-denominated):**
+- Top: USX-01JUN26 ≈ $130.7M / 35K trades
+- eUSX-01JUN26 ≈ $81.8M / 41K trades
+- xSOL-12AUG26: 42,728 SOL / 23K trades
+- ONyc-10SEP26: 30,060 ONyc / 23K trades
+- Cumulative PT-side volume: $281M / 109K trades
+- Cumulative YT-side volume: $12.5M / 124K trades
+
+**Notional methodology:**
+`notional_underlying = max(|signer_outflow|, signer_inflow)` per swap action.
+Matches v1's `usdNet` (user capital-flow perspective, not flash-loan-inflated gross AMM notional). To swap to true gross notional later, add an `int_amm_swaps_gross` model that walks `stg_inner_ix` for pool-token-account transfers.
+
+**Unmatched trades**: 53,430 of 286,157 classified trades (18.7%) didn't produce a notional row — typically expired markets that don't have a `source='api'` entry in `raw_markets` (active API drops them). Logged as a followup.
+
 ### Known gaps (followups, not blocking)
 
 1. **CLMM market decoder.** `extract_markets` decodes MarketThree accounts only on the core program (disc `d404847ea9797914`). The CLMM program uses different discriminators (`69f125c8e002fc5a`, `7a68298dd624de25`, `f2f01a0f94bab9cd`) and a different account layout. Result: 7 of 10 currently-active markets exist only via `source='api'` in `raw_markets`. Active coverage is still 100% (API has them); on-chain coverage of expired CLMM markets is missing.

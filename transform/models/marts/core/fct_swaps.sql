@@ -1,27 +1,27 @@
--- One row per AMM swap. The canonical "trading volume" source.
+-- One row per swap. The canonical "trading volume" source.
 --
--- notional_underlying = abs(AMM pool's underlying flow) — once per tx.
--- side                = 'PT' | 'YT' — user-intent classification.
+-- Built from int_amm_swaps. To change the definition of trading volume,
+-- edit int_amm_swaps (single source of truth) and rebuild.
 --
--- Volume is summed from this table and ONLY this table. If you ever want to
--- change what counts as trading volume, change this model.
+-- `notional_underlying` = signer's net underlying-token capital flow
+--                         (max of |outflow|, inflow). Matches v1's usdNet
+--                         shape — user-economic perspective, not
+--                         flash-loan-inflated AMM gross.
 {{ config(materialized='table') }}
 
 select
-    s.signature,
-    s.block_time,
-    to_timestamp(s.block_time)::date as date,
-    s.market_key,
-    e.signer                          as wallet,
-    case
-        when e.action in ('buyPt', 'sellPt') then 'PT'
-        when e.action in ('buyYt', 'sellYt') then 'YT'
-        else 'UNKNOWN'
-    end                               as side,
-    e.action,
-    s.pool_address,
-    coalesce(s.underlying_in, s.underlying_out) as notional_underlying,
-    s.pt_price
-from {{ ref('int_amm_swaps') }} s
-left join {{ ref('int_classified_events') }} e using (signature)
-where s.underlying_in is not null or s.underlying_out is not null
+    signature,
+    block_time,
+    to_timestamp(block_time) as block_ts,
+    date,
+    market_key,
+    ticker,
+    platform,
+    underlying_mint,
+    action,
+    side,         -- 'PT' / 'YT' (which user-intent class)
+    direction,    -- 'buy' / 'sell'
+    notional_underlying,
+    amm_pool,
+    clmm_orderbook
+from {{ ref('int_amm_swaps') }}

@@ -1,28 +1,19 @@
 -- The single source of truth for "trading volume" on the dashboard.
--- Sum of AMM pool underlying flow, valued in USD at the day's price.
--- Bucketed by user-intent (PT-side vs YT-side) so totals don't double-count.
+-- One row per (date, market_key, side). Direction (buy/sell) is preserved
+-- as count columns so the breakdown is available without re-aggregating.
 {{ config(materialized='table') }}
 
-with priced as (
-    select
-        s.date,
-        s.market_key,
-        m.platform,
-        m.ticker,
-        s.side,
-        s.notional_underlying * coalesce(p.price_usd, 0) as notional_usd
-    from {{ ref('fct_swaps') }} s
-    left join {{ ref('dim_markets') }} m using (market_key)
-    left join {{ ref('stg_prices') }} p
-        on p.price_key = m.underlying_mint and p.date = s.date
-)
 select
     date,
     market_key,
-    platform,
     ticker,
+    platform,
     side,
-    sum(notional_usd) as volume_usd,
-    count(*)          as trade_count
-from priced
+    sum(notional_underlying)                            as volume_underlying,
+    count(*)                                            as trade_count,
+    count(*) filter (where direction = 'buy')           as buy_count,
+    count(*) filter (where direction = 'sell')          as sell_count,
+    sum(notional_underlying) filter (where direction = 'buy')  as volume_buys,
+    sum(notional_underlying) filter (where direction = 'sell') as volume_sells
+from {{ ref('fct_swaps') }}
 group by 1, 2, 3, 4, 5
