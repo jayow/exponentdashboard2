@@ -1,11 +1,11 @@
 {
-  "name": "solstice-airdrop-users-web",
+  "name": "exponent-dashboard-v2-web",
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "next dev -p ${PORT:-5180}",
     "build": "next build",
-    "start": "next start",
+    "start": "next start -p ${PORT:-5180}",
     "lint": "next lint"
   },
   "dependencies": {
