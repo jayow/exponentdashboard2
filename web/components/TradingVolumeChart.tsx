@@ -2,6 +2,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
   ComposedChart, Bar, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, Legend,
+  TooltipProps,
 } from 'recharts';
 
 type Side = 'PT' | 'YT' | 'TOTAL';
@@ -31,21 +32,24 @@ type VolumeData = {
   topMarkets: { marketKey: string; ticker: string; totalUsd: number }[];
 };
 
+// 20 distinct colors — kept high-contrast against #0a0a0a background
 const COLORS = [
   '#38bdf8', '#a78bfa', '#4ade80', '#f87171', '#fbbf24',
   '#fb923c', '#22d3ee', '#e879f9', '#a3e635', '#818cf8',
+  '#facc15', '#34d399', '#f472b6', '#60a5fa', '#fcd34d',
+  '#c084fc', '#fb7185', '#86efac', '#7dd3fc', '#fda4af',
 ];
 
 function fmtUsd(n: number) {
-  if (n >= 1e9) return `$${(n / 1e9).toFixed(2)}B`;
-  if (n >= 1e6) return `$${(n / 1e6).toFixed(2)}M`;
-  if (n >= 1e3) return `$${(n / 1e3).toFixed(1)}K`;
+  if (Math.abs(n) >= 1e9) return `$${(n / 1e9).toFixed(2)}B`;
+  if (Math.abs(n) >= 1e6) return `$${(n / 1e6).toFixed(2)}M`;
+  if (Math.abs(n) >= 1e3) return `$${(n / 1e3).toFixed(1)}K`;
   return `$${n.toFixed(2)}`;
 }
 function fmtNum(n: number) {
-  if (n >= 1e9) return `${(n / 1e9).toFixed(2)}B`;
-  if (n >= 1e6) return `${(n / 1e6).toFixed(2)}M`;
-  if (n >= 1e3) return `${(n / 1e3).toFixed(1)}K`;
+  if (Math.abs(n) >= 1e9) return `${(n / 1e9).toFixed(2)}B`;
+  if (Math.abs(n) >= 1e6) return `${(n / 1e6).toFixed(2)}M`;
+  if (Math.abs(n) >= 1e3) return `${(n / 1e3).toFixed(1)}K`;
   return n.toFixed(2);
 }
 
@@ -58,6 +62,54 @@ function rangeStartIdx(dates: string[], range: Range): number {
   return dates.findIndex(d => d >= cutoffStr);
 }
 
+/** Sort tooltip entries by absolute value descending, drop zero rows. */
+function SortedTooltip(
+  { active, payload, label, fmt }: TooltipProps<number, string> & { fmt: (n: number) => string }
+) {
+  if (!active || !payload?.length) return null;
+  const entries = payload
+    .map(p => ({
+      name: String(p.name ?? p.dataKey ?? ''),
+      value: typeof p.value === 'number' ? p.value : 0,
+      color: p.color || (p as any).fill || '#888',
+    }))
+    .filter(e => e.value && Math.abs(e.value) > 0.01)
+    .sort((a, b) => Math.abs(b.value) - Math.abs(a.value));
+
+  if (!entries.length) return null;
+  const total = entries.reduce((s, e) => s + e.value, 0);
+
+  return (
+    <div className="bg-[#0a0a0a] border border-white/15 rounded-lg p-2 text-xs shadow-xl min-w-[220px]">
+      <div className="text-white/70 mb-1 font-medium">{label}</div>
+      <div className="space-y-0.5">
+        {entries.map(e => (
+          <div key={e.name} className="flex justify-between gap-3 items-center">
+            <span className="flex items-center gap-1.5 text-white/85 truncate">
+              <span className="inline-block w-2 h-2 rounded-sm" style={{ backgroundColor: e.color }} />
+              <span className="truncate">{e.name}</span>
+            </span>
+            <span className="tabular-nums text-white">
+              {fmt(e.value)}
+              {entries.length > 1 && (
+                <span className="text-white/40 ml-1.5">
+                  ({((e.value / total) * 100).toFixed(0)}%)
+                </span>
+              )}
+            </span>
+          </div>
+        ))}
+      </div>
+      {entries.length > 1 && (
+        <div className="flex justify-between mt-1.5 pt-1.5 border-t border-white/10">
+          <span className="text-white/40">Total</span>
+          <span className="tabular-nums text-white/90 font-medium">{fmt(total)}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function TradingVolumeChart() {
   const [data, setData] = useState<VolumeData | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -65,6 +117,8 @@ export function TradingVolumeChart() {
   const [side, setSide] = useState<Side>('TOTAL');
   const [range, setRange] = useState<Range>('90d');
   const [unit, setUnit] = useState<Unit>('usd');
+  // Number of markets to stack in topMarkets view — drops 'Others'.
+  const [topN, setTopN] = useState<number>(15);
 
   useEffect(() => {
     fetch('/volume.json')
@@ -78,6 +132,25 @@ export function TradingVolumeChart() {
     unit === 'usd'
       ? (s === 'pt' ? 'ptUsd' : s === 'yt' ? 'ytUsd' : 'totalUsd')
       : (s === 'pt' ? 'ptUnderlying' : s === 'yt' ? 'ytUnderlying' : 'totalUnderlying');
+
+  // Markets selected for the topMarkets view, ranked by USD total across the
+  // entire history (most representative ordering). Memoized — only depends on
+  // data + topN + side (which determines which series we rank by).
+  const selectedMarkets = useMemo(() => {
+    if (!data) return [] as string[];
+    // Pre-sort by chosen side total over the *visible* range; that way "30d"
+    // surfaces what's hot today, not historical heavyweights.
+    const startIdx = Math.max(0, rangeStartIdx(data.dates, range));
+    const seriesField = fieldKey(side === 'TOTAL' ? 'total' : side === 'PT' ? 'pt' : 'yt');
+    const totals: { key: string; total: number }[] = Object.entries(data.byMarket).map(([mk, m]) => {
+      const arr = (m as any)[seriesField] as number[];
+      let sum = 0;
+      for (let i = startIdx; i < arr.length; i++) sum += arr[i] || 0;
+      return { key: mk, total: sum };
+    });
+    totals.sort((a, b) => b.total - a.total);
+    return totals.slice(0, topN).filter(t => t.total > 0).map(t => t.key);
+  }, [data, range, side, unit, topN]);
 
   const chartData = useMemo(() => {
     if (!data) return [];
@@ -95,33 +168,24 @@ export function TradingVolumeChart() {
       });
     }
 
-    // topMarkets: stack top 5 + Others
-    const top = data.topMarkets.slice(0, 5);
-    const topKeys = new Set(top.map(m => m.marketKey));
+    // topMarkets: stack each market as its own bar
+    const seriesField = fieldKey(side === 'TOTAL' ? 'total' : side === 'PT' ? 'pt' : 'yt');
     return dates.map((d, i) => {
       const idx = startIdx + i;
       const row: Record<string, number | string> = { date: d };
-      let others = 0;
-      for (const [mk, series] of Object.entries(data.byMarket)) {
-        const arr = (series as any)[fieldKey(side === 'TOTAL' ? 'total' : side === 'PT' ? 'pt' : 'yt')] as number[];
-        const val = (arr && arr[idx]) || 0;
-        if (topKeys.has(mk)) {
-          row[mk] = val;
-        } else {
-          others += val;
-        }
+      for (const mk of selectedMarkets) {
+        const arr = (data.byMarket[mk] as any)[seriesField] as number[];
+        row[mk] = (arr && arr[idx]) || 0;
       }
-      row['Others'] = others;
       return row;
     });
-  }, [data, view, side, range, unit]);
+  }, [data, view, side, range, unit, selectedMarkets]);
 
   if (err) return <div className="text-red-400 text-sm p-4">Failed to load volume.json: {err}</div>;
   if (!data) return <div className="text-white/40 text-sm p-4">Loading trading volume…</div>;
 
   const meta = data.meta;
   const totals = unit === 'usd' ? meta.totalsUsd : meta.totalsUnderlying;
-  const topKeys = data.topMarkets.slice(0, 5).map(m => m.marketKey);
 
   return (
     <section className="rounded-2xl border border-white/10 bg-white/5 p-4 mb-6">
@@ -146,7 +210,7 @@ export function TradingVolumeChart() {
           {(['protocol', 'topMarkets'] as View[]).map(v => (
             <button key={v} onClick={() => setView(v)}
               className={`text-xs px-3 py-1 rounded-lg border ${view === v ? 'border-white/30 bg-white/10' : 'border-white/10 text-white/40'}`}>
-              {v === 'protocol' ? 'Protocol' : 'Top markets'}
+              {v === 'protocol' ? 'Protocol' : 'Markets'}
             </button>
           ))}
           <span className="w-2" />
@@ -163,33 +227,50 @@ export function TradingVolumeChart() {
               {r}
             </button>
           ))}
+          {view === 'topMarkets' && (
+            <>
+              <span className="w-2" />
+              <span className="text-[11px] text-white/40">Top</span>
+              {[10, 15, 20].map(n => (
+                <button key={n} onClick={() => setTopN(n)}
+                  className={`text-xs px-2 py-1 rounded-lg border ${topN === n ? 'border-white/30 bg-white/10' : 'border-white/10 text-white/40'}`}>
+                  {n}
+                </button>
+              ))}
+            </>
+          )}
         </div>
       </header>
 
-      <ResponsiveContainer width="100%" height={320}>
+      <ResponsiveContainer width="100%" height={360}>
         <ComposedChart data={chartData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
           <XAxis dataKey="date" tick={{ fill: '#888', fontSize: 11 }} />
           <YAxis yAxisId="left" tick={{ fill: '#888', fontSize: 11 }} tickFormatter={fmt} />
           {view === 'protocol' && (
             <YAxis yAxisId="right" orientation="right" tick={{ fill: '#888', fontSize: 11 }} tickFormatter={fmt} />
           )}
-          <Tooltip
-            contentStyle={{ backgroundColor: '#0a0a0a', border: '1px solid #333', fontSize: 12 }}
-            formatter={(val: number) => fmt(val)}
+          <Tooltip content={<SortedTooltip fmt={fmt} />} />
+          <Legend
+            wrapperStyle={{ fontSize: 11, color: '#aaa' }}
+            iconType="square"
+            iconSize={8}
           />
-          <Legend wrapperStyle={{ fontSize: 11, color: '#aaa' }} />
           {view === 'protocol' ? (
             <>
               <Bar dataKey="Volume" fill="#38bdf8" fillOpacity={0.7} yAxisId="left" />
               <Line type="monotone" dataKey="Cumulative" stroke="#a78bfa" strokeWidth={2} dot={false} yAxisId="right" />
             </>
           ) : (
-            <>
-              {topKeys.map((mk, i) => (
-                <Bar key={mk} dataKey={mk} stackId="m" fill={COLORS[i % COLORS.length]} yAxisId="left" />
-              ))}
-              <Bar dataKey="Others" stackId="m" fill="#444" yAxisId="left" />
-            </>
+            // Stack one Bar per market, biggest at the bottom (last in render order)
+            selectedMarkets.map((mk, i) => (
+              <Bar
+                key={mk}
+                dataKey={mk}
+                stackId="m"
+                fill={COLORS[i % COLORS.length]}
+                yAxisId="left"
+              />
+            ))
           )}
         </ComposedChart>
       </ResponsiveContainer>
