@@ -34,10 +34,11 @@ RAW_DDL = {
     """,
     "raw_markets": """
         CREATE TABLE IF NOT EXISTS raw_markets (
-            market_key   VARCHAR PRIMARY KEY,
+            market_key   VARCHAR NOT NULL,
             source       VARCHAR NOT NULL,   -- 'api' | 'onchain'
             fetched_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            payload      JSON NOT NULL
+            payload      JSON NOT NULL,
+            PRIMARY KEY (market_key, source)
         )
     """,
     "raw_prices": """

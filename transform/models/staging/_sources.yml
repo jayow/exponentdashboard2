@@ -24,10 +24,15 @@ sources:
             tests: [not_null]
 
       - name: raw_markets
-        description: Market metadata, sourced from Exponent API and on-chain.
+        description: Market metadata, sourced from Exponent API and on-chain. Composite PK (market_key, source).
         columns:
           - name: market_key
-            tests: [unique, not_null]
+            tests: [not_null]
+          - name: source
+            tests:
+              - not_null
+              - accepted_values:
+                  values: ['api', 'onchain']
 
       - name: raw_prices
         description: Daily USD prices for tracked underlyings.

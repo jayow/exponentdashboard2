@@ -1,5 +1,6 @@
 """Tests for extract_signatures — mock Helius, write to a temp DuckDB."""
 from __future__ import annotations
+import json
 import pytest
 import respx
 import httpx
@@ -109,6 +110,67 @@ async def test_state_table_starts_empty_then_persists(con):
     assert s["newest_sig"] == "c"
     assert s["oldest_sig"] == "b"  # unchanged
     assert s["is_fully_backfilled"] is True  # unchanged
+
+
+def test_watch_addresses_programs_only_when_no_markets(con):
+    """Empty raw_markets → only the two program addresses, deduped."""
+    addrs = es.watch_addresses(con, include_markets=True)
+    labels = {label for _, label in addrs}
+    assert "core_program" in labels
+    assert "clmm_program" in labels
+    assert len(addrs) == 2  # only the two programs
+
+
+def test_watch_addresses_includes_market_addresses(con):
+    """raw_markets rows expand the watch list to include vault/pool/ptMint/ytMint."""
+    payload = {
+        "vault": "vault_addr",
+        "pool": "pool_addr",
+        "ptMint": "pt_addr",
+        "ytMint": "yt_addr",
+    }
+    con.execute(
+        "INSERT INTO raw_markets (market_key, source, payload) VALUES (?, ?, ?)",
+        ["fragSOL-15DEC26", "api", json.dumps(payload)],
+    )
+    addrs = es.watch_addresses(con, include_markets=True)
+    address_set = {a for a, _ in addrs}
+    assert "vault_addr" in address_set
+    assert "pool_addr" in address_set
+    assert "pt_addr" in address_set
+    assert "yt_addr" in address_set
+
+
+def test_watch_addresses_dedupes_across_sources(con):
+    """Same address from API and on-chain rows should appear once."""
+    p1 = {"vault": "same_vault", "pool": "pool_a"}
+    p2 = {"vault": "same_vault", "pool": "pool_b"}
+    con.execute(
+        "INSERT INTO raw_markets (market_key, source, payload) VALUES (?, ?, ?)",
+        ["KEY", "api", json.dumps(p1)],
+    )
+    con.execute(
+        "INSERT INTO raw_markets (market_key, source, payload) VALUES (?, ?, ?)",
+        ["KEY", "onchain", json.dumps(p2)],
+    )
+    addrs = es.watch_addresses(con, include_markets=True)
+    address_set = [a for a, _ in addrs]
+    # same_vault should appear exactly once
+    assert address_set.count("same_vault") == 1
+    # Both pools should be there
+    assert "pool_a" in address_set
+    assert "pool_b" in address_set
+
+
+def test_watch_addresses_programs_only_flag(con):
+    """include_markets=False ignores raw_markets entirely."""
+    payload = {"vault": "v", "pool": "p", "ptMint": "pt", "ytMint": "yt"}
+    con.execute(
+        "INSERT INTO raw_markets (market_key, source, payload) VALUES (?, ?, ?)",
+        ["KEY", "api", json.dumps(payload)],
+    )
+    addrs = es.watch_addresses(con, include_markets=False)
+    assert len(addrs) == 2  # programs only
 
 
 @pytest.mark.asyncio

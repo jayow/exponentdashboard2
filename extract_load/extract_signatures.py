@@ -1,19 +1,25 @@
 """Extract every Exponent-related tx signature.
 
-Scans `getSignaturesForAddress` on both the Exponent core and CLMM programs.
-Anything that ever touched Exponent was a top-level invoke of one of these
-(or an inner ix from another program — but the outer tx still appears here).
+Watch addresses (deduped):
+  - Exponent core program
+  - Exponent CLMM program
+  - Per-market addresses from raw_markets: vault, pool, ptMint, ytMint
+    (catches anything an ALT might hide from the program-level scan).
 
 Modes:
-  - First run (or fully_backfilled=False): full walk to genesis. Crash-safe
-    via idempotent INSERT ... ON CONFLICT DO NOTHING. Sets the
-    fully_backfilled flag only after the walk reaches the end naturally.
+  - First run (or fully_backfilled=False per address): full walk to genesis.
+    Crash-safe via idempotent INSERT ... ON CONFLICT DO NOTHING; the
+    fully_backfilled flag is set only after a walk completes naturally.
   - Subsequent runs: incremental — pass `until=<newest_known_sig>` so Helius
     stops paginating once it reaches a sig we already have.
+
+A new market discovered by extract_markets automatically gets a full
+backfill on the next signatures run (no scan_state row → mode=full).
 
 Usage:
     python -m extract_load.extract_signatures              # incremental
     python -m extract_load.extract_signatures --rescan     # ignore state, full re-walk
+    python -m extract_load.extract_signatures --programs-only  # skip per-market addresses
 """
 from __future__ import annotations
 import argparse
@@ -156,20 +162,75 @@ async def scan_address(
     return {"address": address, "mode": mode, "new": new_count, "fully": new_fully}
 
 
-async def run(rescan: bool = False) -> list[dict]:
+def watch_addresses(
+    con: duckdb.DuckDBPyConnection, *, include_markets: bool = True
+) -> list[tuple[str, str]]:
+    """Returns deduped list of (address, label) to scan.
+
+    Always includes the two Exponent programs. If include_markets and
+    raw_markets has rows, also includes vault/pool/ptMint/ytMint per market.
+    """
+    out: list[tuple[str, str]] = [
+        (EXPONENT_PROGRAMS[0], "core_program"),
+        (EXPONENT_PROGRAMS[1], "clmm_program"),
+    ]
+    if include_markets:
+        # Pull from API rows first (richer), fall back to onchain. Both shapes
+        # carry vault + pool + ptMint + ytMint where known.
+        try:
+            rows = con.execute(
+                """
+                SELECT market_key,
+                       payload->>'$.vault'   as vault,
+                       payload->>'$.pool'    as pool,
+                       payload->>'$.ptMint'  as pt_mint,
+                       payload->>'$.ytMint'  as yt_mint
+                FROM raw_markets
+                """
+            ).fetchall()
+        except duckdb.Error:
+            rows = []
+        for market_key, vault, pool, pt_mint, yt_mint in rows:
+            if vault:
+                out.append((vault, f"vault:{market_key}"))
+            if pool:
+                out.append((pool, f"pool:{market_key}"))
+            if pt_mint:
+                out.append((pt_mint, f"pt:{market_key}"))
+            if yt_mint:
+                out.append((yt_mint, f"yt:{market_key}"))
+    # Dedup by address (preserve first-seen label)
+    seen: set[str] = set()
+    deduped: list[tuple[str, str]] = []
+    for addr, label in out:
+        if addr and addr not in seen:
+            seen.add(addr)
+            deduped.append((addr, label))
+    return deduped
+
+
+async def run(rescan: bool = False, include_markets: bool = True) -> list[dict]:
     if not HELIUS_KEYS:
         raise RuntimeError("No HELIUS_KEY_* configured in .env")
 
     results: list[dict] = []
     with warehouse() as con:
+        addresses = watch_addresses(con, include_markets=include_markets)
+        rprint(
+            f"[bold]Scanning {len(addresses)} watch address(es)[/bold]"
+            f" (include_markets={include_markets})"
+        )
         async with HeliusClient(HELIUS_KEYS) as client:
-            for addr in EXPONENT_PROGRAMS:
+            for addr, label in addresses:
+                rprint(f"[dim]{label}[/dim]")
                 r = await scan_address(client, con, addr, rescan=rescan)
                 results.append(r)
                 rprint(
                     f"  → [green]{r['new']:>7,}[/green] new sigs"
                     f"  (fully_backfilled={r['fully']})"
                 )
+    total_new = sum(r["new"] for r in results)
+    rprint(f"[bold green]Total new sigs across all addresses: {total_new:,}[/bold green]")
     return results
 
 
@@ -180,10 +241,15 @@ def main() -> None:
         action="store_true",
         help="Ignore scan_state.newest_sig; do a full walk to genesis.",
     )
+    parser.add_argument(
+        "--programs-only",
+        action="store_true",
+        help="Skip per-market addresses; scan only the two Exponent programs.",
+    )
     args = parser.parse_args()
     started = datetime.now(timezone.utc)
     rprint(f"[bold]extract_signatures[/bold]  started {started.isoformat()}")
-    asyncio.run(run(rescan=args.rescan))
+    asyncio.run(run(rescan=args.rescan, include_markets=not args.programs_only))
     rprint(f"[bold]done[/bold]  elapsed {datetime.now(timezone.utc) - started}")
 
 
