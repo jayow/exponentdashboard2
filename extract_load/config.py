@@ -14,7 +14,9 @@ WAREHOUSE_PATH = Path(os.getenv("WAREHOUSE_PATH", DATA_DIR / "warehouse.duckdb")
 # Alchemy, public RPC. The client round-robins across them.
 RPC_ENDPOINTS = [u.strip() for u in os.getenv("SOLANA_RPC_URLS", "").split(",") if u.strip()]
 
-EXTRACT_BATCH_SIZE = int(os.getenv("EXTRACT_BATCH_SIZE", "100"))
+# Helius free tier rejects JSON-RPC batches larger than ~50 with 413 Payload Too Large
+# (despite the spec allowing 100). Override via env if your provider is more permissive.
+EXTRACT_BATCH_SIZE = int(os.getenv("EXTRACT_BATCH_SIZE", "50"))
 EXTRACT_CONCURRENCY = int(os.getenv("EXTRACT_CONCURRENCY", "12"))
 EXTRACT_RETRY_MAX = int(os.getenv("EXTRACT_RETRY_MAX", "5"))
 
