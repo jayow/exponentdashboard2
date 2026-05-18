@@ -90,6 +90,34 @@ First live full-backfill run, recorded so future runs can detect drift.
 
 The per-market scan adds real coverage but the marginal value over a programs-only scan is small (~3%).
 
+### Phase 2d: extract_transactions full firehose (2026-05-18)
+
+First live full backfill of jsonParsed tx payloads.
+
+| Stage | Wall clock | Credits | Outcome |
+|---|---|---|---|
+| Initial run (newest-first, batch=50) | 3h 30m | ~512K | Crashed at 90% on a 400 Bad Request after retries exhausted |
+| Resume (oldest-first, batch=25) | 41 min | ~56K | 99.9% — 3 batches failed with 408 Request Timeout on archive-deep sigs |
+| Cleanup pass (batch=5) | 8 sec | ~75 | 100% — smaller batches isolated the stragglers |
+| **Total** | ~4h 12m | ~568K | **567,978 / 567,978 (100%)** |
+
+**Lessons learned:**
+- Helius free tier rejects JSON-RPC batches > 50 items with 413 Payload Too Large
+- 408 Request Timeout on archive-deep txs — added to TRANSIENT_STATUS for retries
+- Single bad batch must NOT kill the whole run — wrap in try/except, log + skip + continue
+- Smaller batches on retry (25 → 5) isolated transient failures
+
+**Warehouse after backfill**: 30.2 GB
+- ~57 KB average per tx payload (uncompressed JSON in DuckDB row)
+- Phase 3 (dbt models) operates entirely from this data — no more RPC for any historical metric
+
+**Sample payload structure** (confirmed has everything Phase 3 needs):
+```
+blockTime, meta, slot, transaction, version
+  meta: computeUnitsConsumed, fee, err, innerInstructions,
+        logMessages, pre/postBalances, pre/postTokenBalances
+```
+
 ### Known gaps (followups, not blocking)
 
 1. **CLMM market decoder.** `extract_markets` decodes MarketThree accounts only on the core program (disc `d404847ea9797914`). The CLMM program uses different discriminators (`69f125c8e002fc5a`, `7a68298dd624de25`, `f2f01a0f94bab9cd`) and a different account layout. Result: 7 of 10 currently-active markets exist only via `source='api'` in `raw_markets`. Active coverage is still 100% (API has them); on-chain coverage of expired CLMM markets is missing.
