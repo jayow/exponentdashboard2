@@ -20,6 +20,7 @@ import json
 from datetime import datetime, timezone
 
 import duckdb
+import httpx
 from rich import print as rprint
 from rich.progress import (
     BarColumn,
@@ -96,6 +97,7 @@ async def run(*, limit: int | None = None, order: str = "desc") -> dict:
 
         fetched = 0
         missing = 0
+        failed_batches = 0
         async with SolanaRpcClient(RPC_ENDPOINTS) as client:
             with Progress(
                 SpinnerColumn(),
@@ -112,7 +114,22 @@ async def run(*, limit: int | None = None, order: str = "desc") -> dict:
                 for i in range(0, total, EXTRACT_BATCH_SIZE):
                     batch = targets[i : i + EXTRACT_BATCH_SIZE]
                     sigs = [s for s, _ in batch]
-                    txs = await client.get_transactions(sigs)
+                    try:
+                        txs = await client.get_transactions(sigs)
+                    except httpx.HTTPStatusError as e:
+                        # Permanent (non-transient) error after retries exhausted:
+                        # log + skip this batch, keep going. Re-running will retry
+                        # via the same anti-join.
+                        body_preview = (e.response.text or "")[:200].replace("\n", " ")
+                        rprint(
+                            f"[yellow]skip batch[/yellow] sigs[{i}..{i+len(batch)}] "
+                            f"status={e.response.status_code} body={body_preview!r}"
+                        )
+                        failed_batches += 1
+                        elapsed = (datetime.now(timezone.utc) - started).total_seconds() or 0.001
+                        rate = (i + len(batch)) / elapsed
+                        bar.update(task, advance=len(batch), rate=rate)
+                        continue
 
                     rows: list[tuple] = []
                     for (sig, _bt), tx in zip(batch, txs):
@@ -134,9 +151,14 @@ async def run(*, limit: int | None = None, order: str = "desc") -> dict:
 
         rprint(
             f"[green]Done[/green]  fetched={fetched:,}  missing_from_rpc={missing:,}  "
-            f"total_attempted={total:,}"
+            f"failed_batches={failed_batches}  total_attempted={total:,}"
         )
-        return {"total": total, "fetched": fetched, "missing": missing}
+        return {
+            "total": total,
+            "fetched": fetched,
+            "missing": missing,
+            "failed_batches": failed_batches,
+        }
 
 
 def main() -> None:

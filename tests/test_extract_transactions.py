@@ -167,6 +167,46 @@ async def test_run_handles_null_results(con, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_run_skips_failed_batch_without_aborting(con, monkeypatch):
+    """A batch that throws a non-retryable HTTPStatusError is logged + skipped;
+    subsequent batches still run.
+    """
+    monkeypatch.setattr(et, "RPC_ENDPOINTS", [URL])
+    monkeypatch.setattr(et, "EXTRACT_BATCH_SIZE", 2)
+    from contextlib import contextmanager
+
+    @contextmanager
+    def fake_wh():
+        yield con
+
+    monkeypatch.setattr(et, "warehouse", fake_wh)
+
+    # 4 sigs, batch size 2 = 2 batches. First batch fails with permanent 400,
+    # second batch succeeds.
+    for i in range(4):
+        _seed_sig(con, f"s{i}", block_time=1000 + i)
+
+    success_batch = [
+        {"jsonrpc": "2.0", "id": 0, "result": {"blockTime": 1000, "slot": 1}},
+        {"jsonrpc": "2.0", "id": 1, "result": {"blockTime": 1001, "slot": 1}},
+    ]
+    with respx.mock() as mock:
+        # First call returns 400, second call returns valid batch
+        mock.post(URL).mock(side_effect=[
+            httpx.Response(400, text="bad request"),
+            httpx.Response(200, json=success_batch),
+        ])
+        result = await et.run()
+
+    # Run completed despite first batch failing
+    assert result["total"] == 4
+    assert result["fetched"] == 2
+    assert result["failed_batches"] == 1
+    # Two rows landed (from the second batch)
+    assert con.execute("SELECT COUNT(*) FROM raw_helius_tx").fetchone()[0] == 2
+
+
+@pytest.mark.asyncio
 async def test_run_idempotent_when_nothing_missing(con, monkeypatch):
     """Re-running with all sigs already fetched is a no-op."""
     monkeypatch.setattr(et, "RPC_ENDPOINTS", [URL])

@@ -28,7 +28,7 @@ from tenacity import (
 )
 
 
-TRANSIENT_STATUS = {429, 500, 502, 503, 504}
+TRANSIENT_STATUS = {408, 429, 500, 502, 503, 504}
 
 
 class TransientHTTPError(Exception):
