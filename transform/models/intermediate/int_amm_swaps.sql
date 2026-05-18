@@ -94,6 +94,83 @@ signer_underlying_deltas as (
        and c.mint      = m.underlying_mint
     group by tm.signature, tm.block_time, tm.action, tm.market_key, m.underlying_mint,
              m.underlying_decimals, m.ticker, m.platform, m.amm_pool, m.clmm_orderbook
+),
+-- Matched trades (have a market_key + underlying delta).
+matched_trades as (
+    select
+        signature,
+        block_time,
+        action,
+        market_key,
+        ticker,
+        platform,
+        underlying_mint,
+        amm_pool,
+        clmm_orderbook,
+        outflow_ui,
+        inflow_ui
+    from signer_underlying_deltas
+    where greatest(abs(outflow_ui), inflow_ui) > 0
+),
+-- Unclassified trades: action is buyYt/sellYt/tradePt but we couldn't
+-- resolve a market. Fall back to using the user's largest absolute delta
+-- in ANY token Exponent considers an underlying (raw_exponent_tokens).
+-- Mark with market_key='UNCLASSIFIED' so the dashboard can show them as
+-- a separate aggregate without forcing a market attribution.
+unclassified_deltas as (
+    select
+        t.signature,
+        t.block_time,
+        t.action,
+        et.mint                                      as underlying_mint,
+        et.symbol                                    as ticker,
+        sum(c.delta_ui) filter (where c.delta_raw < 0)  as outflow_ui,
+        sum(c.delta_ui) filter (where c.delta_raw > 0)  as inflow_ui,
+        sum(abs(c.delta_ui))                          as total_abs
+    from trade_events t
+    join {{ ref('stg_token_changes') }} c using (signature)
+    join {{ source('raw', 'raw_exponent_tokens') }} et on et.mint = c.mint
+    -- Fire for ANY sig that didn't produce a matched_trades row.
+    -- Covers both "never matched a market" and "matched but zero underlying delta".
+    where t.signature not in (select signature from matched_trades)
+    group by t.signature, t.block_time, t.action, et.mint, et.symbol
+),
+-- For each unclassified sig, pick the SINGLE underlying mint with the
+-- largest |delta| total — that's the user's "real" trade asset.
+unclassified_best as (
+    select distinct
+        signature, block_time, action,
+        first_value(underlying_mint) over (
+            partition by signature order by total_abs desc
+        ) as underlying_mint,
+        first_value(ticker) over (
+            partition by signature order by total_abs desc
+        ) as ticker,
+        first_value(coalesce(outflow_ui, 0)) over (
+            partition by signature order by total_abs desc
+        ) as outflow_ui,
+        first_value(coalesce(inflow_ui, 0)) over (
+            partition by signature order by total_abs desc
+        ) as inflow_ui
+    from unclassified_deltas
+),
+unioned as (
+    select
+        signature, block_time, action, market_key, ticker, platform,
+        underlying_mint, amm_pool, clmm_orderbook, outflow_ui, inflow_ui
+    from matched_trades
+    union all
+    select
+        signature, block_time, action,
+        'UNCLASSIFIED'                  as market_key,
+        ticker,
+        cast(null as varchar)           as platform,
+        underlying_mint,
+        cast(null as varchar)           as amm_pool,
+        cast(null as varchar)           as clmm_orderbook,
+        coalesce(outflow_ui, 0)         as outflow_ui,
+        coalesce(inflow_ui, 0)          as inflow_ui
+    from unclassified_best
 )
 select
     signature,
@@ -118,5 +195,5 @@ select
         when action = 'buyYt'                                    then 'buy'
         when action = 'sellYt'                                   then 'sell'
     end as direction
-from signer_underlying_deltas
+from unioned
 where greatest(abs(outflow_ui), inflow_ui) > 0
