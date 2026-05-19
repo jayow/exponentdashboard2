@@ -27,9 +27,9 @@ function fmtUsd(n: number) {
 // (`up`) or negative/rose (`down`) — e.g. Idle going UP is neutral-to-bad.
 function Delta({ now, then, kind = 'usd', good = 'up' }:
   { now: number; then: number; kind?: 'usd' | 'count'; good?: 'up' | 'down' | 'neutral' }) {
-  if (then == null || then === 0) return <span className="text-white/20 text-[10px]">— 7d</span>;
+  if (then == null || then === 0) return <span className="text-white/20 text-[10px] uppercase tracking-wider">— vs 7d</span>;
   const diff = now - then;
-  if (!isFinite(diff) || diff === 0) return <span className="text-white/20 text-[10px]">flat 7d</span>;
+  if (!isFinite(diff) || diff === 0) return <span className="text-white/20 text-[10px] uppercase tracking-wider">flat vs 7d</span>;
   const pct = (diff / then) * 100;
   const up = diff > 0;
   let cls = 'text-white/40';
@@ -38,7 +38,7 @@ function Delta({ now, then, kind = 'usd', good = 'up' }:
   const arrow = up ? '▲' : '▼';
   const abs = kind === 'usd' ? fmtUsd(Math.abs(diff)) : Math.abs(diff).toLocaleString();
   return (
-    <span className={`text-[10px] tabular-nums ${cls}`}>
+    <span className={`text-[10px] tabular-nums uppercase tracking-wider ${cls}`}>
       {arrow} {abs} ({Math.abs(pct).toFixed(1)}%) vs 7d
     </span>
   );
@@ -48,10 +48,10 @@ function Delta({ now, then, kind = 'usd', good = 'up' }:
 // an optional noun describing what the count represents (e.g. "new").
 function Plus7d({ amount, kind = 'usd', what }:
   { amount: number; kind?: 'usd' | 'count'; what?: string }) {
-  if (amount <= 0) return <span className="text-white/20 text-[10px]">— 7d</span>;
+  if (amount <= 0) return <span className="text-white/20 text-[10px] uppercase tracking-wider">— 7d</span>;
   const label = kind === 'usd' ? fmtUsd(amount) : amount.toLocaleString();
   return (
-    <span className="text-[10px] tabular-nums text-emerald-400">
+    <span className="text-[10px] tabular-nums uppercase tracking-wider text-emerald-400">
       +{label}{what ? ` ${what}` : ''} 7d
     </span>
   );
