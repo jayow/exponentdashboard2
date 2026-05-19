@@ -143,7 +143,7 @@ export function MarketShare() {
     const seen: Record<string, number> = {};
     const out: Record<string, string> = {};
     for (const tk of topTickers) {
-      if (tk === 'Other') { out[tk] = '#666'; continue; }
+      if (tk === 'Other') { out[tk] = '#9ca3af'; continue; }
       const p = platformOfTicker(tk);
       const i = seen[p] || 0;
       out[tk] = colorForMarket(p, i);

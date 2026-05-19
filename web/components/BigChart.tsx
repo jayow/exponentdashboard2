@@ -43,7 +43,7 @@ const BREAKDOWN_COLOR: Record<string, string> = {
   'Idle (SY)':      '#9ca3af',
   'TVL':            '#a78bfa',
   'Volume':         '#38bdf8',
-  'Other':          '#666',
+  'Other':          '#9ca3af',
 };
 
 function fmtUsd(n: number) {

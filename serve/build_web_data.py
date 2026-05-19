@@ -60,7 +60,7 @@ _TICKER_TO_PLATFORM = {
     "stORE": "Ore",
     "USDe": "Ethena", "sUSDe": "Ethena",
     "USDC+": "Perena", "mUSDC": "Perena", "kUSDC": "Perena",
-    "USD*": "USD*",
+    "USD*": "Perena",
     "MLP": "MarginFi", "ALP": "Asgard",
     "syUSDC": "Solend",
 }

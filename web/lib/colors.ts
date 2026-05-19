@@ -26,7 +26,6 @@ export const PLATFORM_BASE: Record<string, string> = {
   Solend:     '#fcd34d',  // amber-300
   MarginFi:   '#c084fc',  // purple-400
   Asgard:     '#86efac',  // green-300
-  'USD*':     '#67e8f9',  // cyan-300
   Other:      '#9ca3af',  // gray-400
 };
 
@@ -52,7 +51,7 @@ const TICKER_TO_PLATFORM: Record<string, string> = {
   stORE: 'Ore',
   USDe: 'Ethena', sUSDe: 'Ethena',
   'USDC+': 'Perena', mUSDC: 'Perena', kUSDC: 'Perena',
-  'USD*': 'USD*',
+  'USD*': 'Perena',
   MLP: 'MarginFi', ALP: 'Asgard',
   syUSDC: 'Solend',
 };
@@ -107,7 +106,9 @@ function hslToHex(h: number, s: number, l: number): string {
 
 function shadeHex(hex: string, lightnessDelta: number): string {
   const [h, s, l] = hexToHsl(hex);
-  const newL = Math.max(0.18, Math.min(0.85, l + lightnessDelta));
+  // Floor at 0.35 so shades never go near-black on a dark theme;
+  // ceil at 0.85 so they don't wash out to white.
+  const newL = Math.max(0.35, Math.min(0.85, l + lightnessDelta));
   return hslToHex(h, s, newL);
 }
 
