@@ -32,8 +32,8 @@ type Metric = 'tvl' | 'volume' | 'positions' | 'breakdown';
 type View = 'protocol' | 'platform' | 'market';
 type Range = '30d' | '90d' | '1y' | 'all';
 
-const TOP_N = 10;
-// Breakdown-only colors (PT / LP / Idle / etc.) — not platform-tied
+const DEFAULT_TOP = 15;
+
 const BREAKDOWN_COLOR: Record<string, string> = {
   'Principal (PT)': '#a78bfa',
   'Liquidity (LP)': '#4ade80',
@@ -43,7 +43,6 @@ const BREAKDOWN_COLOR: Record<string, string> = {
   'Idle (SY)':      '#9ca3af',
   'TVL':            '#a78bfa',
   'Volume':         '#38bdf8',
-  'Other':          '#9ca3af',
 };
 
 function fmtUsd(n: number) {
@@ -68,16 +67,16 @@ function SortedTooltip({ active, payload, label }: TooltipProps<number, string>)
   if (!entries.length) return null;
   const total = entries.reduce((s, e) => s + e.value, 0);
   return (
-    <div className="bg-[#0a0a0a] border border-white/15 rounded-lg p-2 text-xs shadow-xl min-w-[200px]">
+    <div className="bg-[#0a0a0a] border border-white/15 rounded-lg p-2 text-xs shadow-xl min-w-[220px] max-h-[360px] overflow-y-auto">
       <div className="text-white/70 mb-1 font-medium">{label}</div>
       <div className="space-y-0.5">
         {entries.map(e => (
           <div key={e.name} className="flex justify-between gap-3 items-center">
             <span className="flex items-center gap-1.5 text-white/85 truncate">
-              <span className="w-2 h-2 rounded-sm" style={{ backgroundColor: e.color }} />
+              <span className="w-2 h-2 rounded-sm shrink-0" style={{ backgroundColor: e.color }} />
               <span className="truncate">{e.name}</span>
             </span>
-            <span className="tabular-nums text-white">
+            <span className="tabular-nums text-white shrink-0">
               {fmtUsd(e.value)}
               {entries.length > 1 && total !== 0 && <span className="text-white/40 ml-1.5">({((e.value/total)*100).toFixed(0)}%)</span>}
             </span>
@@ -85,7 +84,7 @@ function SortedTooltip({ active, payload, label }: TooltipProps<number, string>)
         ))}
       </div>
       {entries.length > 1 && (
-        <div className="flex justify-between mt-1.5 pt-1.5 border-t border-white/10">
+        <div className="flex justify-between mt-1.5 pt-1.5 border-t border-white/10 sticky bottom-0 bg-[#0a0a0a]">
           <span className="text-white/40">Total</span>
           <span className="tabular-nums text-white/90 font-medium">{fmtUsd(total)}</span>
         </div>
@@ -101,6 +100,7 @@ export function BigChart() {
   const [metric, setMetric] = useState<Metric>('tvl');
   const [view, setView] = useState<View>('protocol');
   const [range, setRange] = useState<Range>('all');
+  const [hidden, setHidden] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     fetch('/tvl.json').then(r => r.json()).then(setTvl).catch(() => null);
@@ -114,12 +114,15 @@ export function BigChart() {
   const dates = metric === 'volume' ? vol?.dates : tvl?.dates;
   const start = dates ? rangeStart(dates, range) : 0;
 
-  // Build chart series keys + data + color-for-key map based on (metric, view).
-  // For platform/market views, top-N + Other tail is collapsed into one bucket
-  // so we never spray 30 series across the chart.
-  const { data, keys, colorMap } = useMemo(() => {
-    type Result = { data: any[]; keys: string[]; colorMap: Record<string, string> };
-    const empty: Result = { data: [], keys: [], colorMap: {} };
+  // Build full series for all keys (no Other collapse) + a color map.
+  // Hide/show is applied at render time.
+  const { allKeys, data, colorMap, isFlat, breakdownLike } = useMemo(() => {
+    type Result = {
+      allKeys: string[]; data: any[]; colorMap: Record<string, string>;
+      isFlat: boolean;          // single-series chart (no stacking, no legend toggling)
+      breakdownLike: boolean;   // breakdown/positions — fixed key list
+    };
+    const empty: Result = { allKeys: [], data: [], colorMap: {}, isFlat: true, breakdownLike: false };
     if (!dates) return empty;
     const sliced = dates.slice(start);
 
@@ -127,7 +130,7 @@ export function BigChart() {
       const d = tvl.decomposition;
       const keys = ['Principal (PT)', 'Liquidity (LP)', 'Idle'];
       return {
-        keys,
+        allKeys: keys, isFlat: false, breakdownLike: true,
         colorMap: Object.fromEntries(keys.map(k => [k, BREAKDOWN_COLOR[k]])),
         data: sliced.map((dt, i) => ({
           date: dt,
@@ -138,84 +141,64 @@ export function BigChart() {
       };
     }
 
-    // Helper: collapse a {key → series} dict into top-N by latest value
-    // (or lifetime sum), with the rest summed into "Other".
-    function topNCollapse(
-      seriesByKey: Record<string, number[]>,
-      sortBy: 'latest' | 'sum',
-    ): { sortedKeys: string[]; rows: any[] } {
+    function emitFromSeries(seriesByKey: Record<string, number[]>, sortBy: 'latest' | 'sum', isMarket: boolean, platformResolver: (k: string) => string) {
       const entries = Object.entries(seriesByKey).map(([k, s]) => ({
         k,
         sortVal: sortBy === 'latest' ? (s[s.length - 1] || 0) : s.reduce((a, b) => a + (b || 0), 0),
         series: s,
-      })).sort((a, b) => b.sortVal - a.sortVal);
-      const top = entries.slice(0, TOP_N).filter(e => e.sortVal > 0);
-      const rest = entries.slice(TOP_N);
-      const sortedKeys = top.map(e => e.k);
-      if (rest.length) sortedKeys.push('Other');
+      })).filter(e => e.sortVal > 0).sort((a, b) => b.sortVal - a.sortVal);
+      const allKeys = entries.map(e => e.k);
       const rows = sliced.map((dt, i) => {
         const row: any = { date: dt };
-        for (const e of top) row[e.k] = e.series[start + i] || 0;
-        if (rest.length) {
-          let other = 0;
-          for (const e of rest) other += e.series[start + i] || 0;
-          row['Other'] = other;
-        }
+        for (const e of entries) row[e.k] = e.series[start + i] || 0;
         return row;
       });
-      return { sortedKeys, rows };
+      const seen: Record<string, number> = {};
+      const colorMap: Record<string, string> = {};
+      for (const k of allKeys) {
+        if (!isMarket) {
+          colorMap[k] = colorForPlatform(k);
+        } else {
+          const p = platformResolver(k) || 'Other';
+          const i = seen[p] || 0;
+          colorMap[k] = colorForMarket(p, i);
+          seen[p] = i + 1;
+        }
+      }
+      return { allKeys, data: rows, colorMap, isFlat: false, breakdownLike: false };
     }
 
     if (metric === 'tvl' && tvl) {
       if (effectiveView === 'protocol') {
         return {
-          keys: ['TVL'],
+          allKeys: ['TVL'], isFlat: true, breakdownLike: false,
           colorMap: { TVL: BREAKDOWN_COLOR['TVL'] },
           data: sliced.map((dt, i) => ({ date: dt, TVL: tvl.protocolUsd[start + i] || 0 })),
         };
       }
       if (effectiveView === 'platform') {
-        const { sortedKeys, rows } = topNCollapse(tvl.byPlatform, 'latest');
-        return {
-          keys: sortedKeys, data: rows,
-          colorMap: Object.fromEntries(sortedKeys.map(k => [k, k === 'Other' ? BREAKDOWN_COLOR['Other'] : colorForPlatform(k)])),
-        };
+        return emitFromSeries(tvl.byPlatform, 'latest', false, () => '');
       }
-      // market view: top-N markets by latest TVL, shade within platform
+      // market
       const seriesByMk: Record<string, number[]> = {};
       const platformForMk: Record<string, string> = {};
       for (const [mk, m] of Object.entries(tvl.byMarket)) {
         seriesByMk[mk] = m.tvlUsd;
         platformForMk[mk] = m.platform || platformOfTicker(m.ticker);
       }
-      const { sortedKeys, rows } = topNCollapse(seriesByMk, 'latest');
-      // Build per-platform index so shades within a platform differ
-      const seen: Record<string, number> = {};
-      const colorMap: Record<string, string> = {};
-      for (const k of sortedKeys) {
-        if (k === 'Other') { colorMap[k] = BREAKDOWN_COLOR['Other']; continue; }
-        const p = platformForMk[k] || 'Other';
-        const i = seen[p] || 0;
-        colorMap[k] = colorForMarket(p, i);
-        seen[p] = i + 1;
-      }
-      return { keys: sortedKeys, data: rows, colorMap };
+      return emitFromSeries(seriesByMk, 'latest', true, (k: string) => platformForMk[k]);
     }
 
     if (metric === 'volume' && vol) {
       if (effectiveView === 'protocol') {
         return {
-          keys: ['Volume'],
+          allKeys: ['Volume'], isFlat: true, breakdownLike: false,
           colorMap: { Volume: BREAKDOWN_COLOR['Volume'] },
           data: sliced.map((dt, i) => ({ date: dt, Volume: vol.protocol.totalUsd[start + i] || 0 })),
         };
       }
       if (effectiveView === 'platform') {
-        const { sortedKeys, rows } = topNCollapse(vol.byPlatform, 'sum');
-        return {
-          keys: sortedKeys, data: rows,
-          colorMap: Object.fromEntries(sortedKeys.map(k => [k, k === 'Other' ? BREAKDOWN_COLOR['Other'] : colorForPlatform(k)])),
-        };
+        return emitFromSeries(vol.byPlatform, 'sum', false, () => '');
       }
       const seriesByMk: Record<string, number[]> = {};
       const platformForMk: Record<string, string> = {};
@@ -223,24 +206,14 @@ export function BigChart() {
         seriesByMk[mk] = m.totalUsd;
         platformForMk[mk] = platformOfTicker(m.ticker);
       }
-      const { sortedKeys, rows } = topNCollapse(seriesByMk, 'sum');
-      const seen: Record<string, number> = {};
-      const colorMap: Record<string, string> = {};
-      for (const k of sortedKeys) {
-        if (k === 'Other') { colorMap[k] = BREAKDOWN_COLOR['Other']; continue; }
-        const p = platformForMk[k] || 'Other';
-        const i = seen[p] || 0;
-        colorMap[k] = colorForMarket(p, i);
-        seen[p] = i + 1;
-      }
-      return { keys: sortedKeys, data: rows, colorMap };
+      return emitFromSeries(seriesByMk, 'sum', true, (k: string) => platformForMk[k]);
     }
 
     if (metric === 'positions' && tvl) {
       const d = tvl.decomposition;
       const keys = ['PT', 'LP', 'Idle (SY)'];
       return {
-        keys,
+        allKeys: keys, isFlat: false, breakdownLike: true,
         colorMap: Object.fromEntries(keys.map(k => [k, BREAKDOWN_COLOR[k]])),
         data: sliced.map((dt, i) => ({
           date: dt,
@@ -254,11 +227,34 @@ export function BigChart() {
     return empty;
   }, [tvl, vol, ap, metric, effectiveView, range, start, dates]);
 
+  // When metric/view changes, reset the hidden set to the *default* — show
+  // top 15 by lifetime contribution, hide the long tail. Stacked-fixed-key
+  // views (breakdown/positions/protocol) always show all.
+  useEffect(() => {
+    if (isFlat || breakdownLike) { setHidden(new Set()); return; }
+    if (allKeys.length <= DEFAULT_TOP) { setHidden(new Set()); return; }
+    setHidden(new Set(allKeys.slice(DEFAULT_TOP)));
+  }, [allKeys, isFlat, breakdownLike]);
+
+  const visibleKeys = useMemo(() => allKeys.filter(k => !hidden.has(k)), [allKeys, hidden]);
+
+  // Toggle / All / None / Top-15 helpers
+  function toggle(k: string) {
+    setHidden(prev => {
+      const next = new Set(prev);
+      if (next.has(k)) next.delete(k); else next.add(k);
+      return next;
+    });
+  }
+  const showAll  = () => setHidden(new Set());
+  const showNone = () => setHidden(new Set(allKeys));
+  const showTop  = (n: number) => setHidden(new Set(allKeys.slice(n)));
+
   if (!tvl || !vol || !ap) return <div className="text-white/40 text-sm p-4">Loading chart…</div>;
 
-  // Chart type: Volume is bar; everything else is area-stacked
   const isBar = metric === 'volume';
-  const isStacked = keys.length > 1;
+  const isStacked = visibleKeys.length > 1;
+  const isToggleable = !isFlat && !breakdownLike;
 
   return (
     <section className="rounded-2xl border border-white/10 bg-white/5 p-4 mb-6">
@@ -297,9 +293,9 @@ export function BigChart() {
           <BarChart data={data} margin={{ top: 10, right: 10, left: 10, bottom: 0 }}>
             <XAxis dataKey="date" tick={{ fill: '#888', fontSize: 11 }} axisLine={false} tickLine={false} />
             <YAxis tick={{ fill: '#888', fontSize: 11 }} tickFormatter={fmtUsd} axisLine={false} tickLine={false} />
-            <Tooltip content={<SortedTooltip />} />
-            {keys.map(k => (
-              <Bar key={k} dataKey={k} fill={colorMap[k] ?? '#666'} fillOpacity={0.9}
+            <Tooltip content={<SortedTooltip />} cursor={{ fill: 'rgba(255,255,255,0.04)' }} />
+            {visibleKeys.map(k => (
+              <Bar key={k} dataKey={k} fill={colorMap[k] ?? '#9ca3af'} fillOpacity={0.9}
                    stackId={isStacked ? 's' : undefined} />
             ))}
           </BarChart>
@@ -308,8 +304,8 @@ export function BigChart() {
             <XAxis dataKey="date" tick={{ fill: '#888', fontSize: 11 }} axisLine={false} tickLine={false} />
             <YAxis tick={{ fill: '#888', fontSize: 11 }} tickFormatter={fmtUsd} axisLine={false} tickLine={false} />
             <Tooltip content={<SortedTooltip />} />
-            {keys.map(k => {
-              const c = colorMap[k] ?? '#666';
+            {visibleKeys.map(k => {
+              const c = colorMap[k] ?? '#9ca3af';
               return (
                 <Area key={k} type="monotone" dataKey={k}
                       stackId={isStacked ? 's' : undefined}
@@ -319,6 +315,59 @@ export function BigChart() {
           </AreaChart>
         )}
       </ResponsiveContainer>
+
+      {/* Interactive legend — only for views where toggling makes sense */}
+      {isToggleable && allKeys.length > 0 && (
+        <div className="mt-3 border-t border-white/10 pt-3">
+          <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
+            <div className="text-[11px] text-white/40">
+              {visibleKeys.length} of {allKeys.length} visible
+              {allKeys.length > DEFAULT_TOP && hidden.size > 0 && (
+                <span className="text-white/30"> · click to toggle</span>
+              )}
+            </div>
+            <div className="flex items-center gap-1">
+              <button onClick={showAll}
+                className={`text-[11px] px-2 py-0.5 rounded border ${hidden.size === 0 ? 'border-white/30 bg-white/10 text-white' : 'border-white/10 text-white/40 hover:text-white'}`}>
+                All
+              </button>
+              <button onClick={showNone}
+                className={`text-[11px] px-2 py-0.5 rounded border ${hidden.size === allKeys.length ? 'border-white/30 bg-white/10 text-white' : 'border-white/10 text-white/40 hover:text-white'}`}>
+                None
+              </button>
+              {allKeys.length > 10 && (
+                <button onClick={() => showTop(10)}
+                  className="text-[11px] px-2 py-0.5 rounded border border-white/10 text-white/40 hover:text-white">
+                  Top 10
+                </button>
+              )}
+              {allKeys.length > 15 && (
+                <button onClick={() => showTop(15)}
+                  className="text-[11px] px-2 py-0.5 rounded border border-white/10 text-white/40 hover:text-white">
+                  Top 15
+                </button>
+              )}
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-1.5 max-h-[110px] overflow-y-auto">
+            {allKeys.map(k => {
+              const isHidden = hidden.has(k);
+              return (
+                <button key={k} onClick={() => toggle(k)}
+                  className={`text-[11px] px-2 py-0.5 rounded border transition ${
+                    isHidden
+                      ? 'border-white/5 bg-transparent text-white/30'
+                      : 'border-white/15 bg-white/5 text-white/85 hover:bg-white/10'
+                  }`}>
+                  <span className="inline-block w-2 h-2 rounded-sm mr-1 align-middle"
+                        style={{ backgroundColor: colorMap[k], opacity: isHidden ? 0.3 : 1 }} />
+                  <span className={isHidden ? 'line-through' : ''}>{k}</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
     </section>
   );
 }
