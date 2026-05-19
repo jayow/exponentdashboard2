@@ -9,6 +9,8 @@ select
     fetched_at,
     payload,
     payload->'$.transaction.message.accountKeys' as account_keys,
+    -- Fee payer / primary signer is always accountKeys[0].
+    payload->>'$.transaction.message.accountKeys[0].pubkey' as signer,
     payload->'$.meta.preTokenBalances'           as pre_token_balances,
     payload->'$.meta.postTokenBalances'          as post_token_balances,
     payload->'$.meta.innerInstructions'          as inner_instructions,

@@ -70,7 +70,9 @@ tx_to_market as (
         ) as market_key
     from tx_market_matches
 ),
--- Step 2: for the identified market, sum signer-side underlying-mint deltas
+-- Step 2: for the identified market, compute two aggregates:
+--   * all_*  — sum across all parties touching the underlying mint (notional)
+--   * signer_* — restrict to deltas where owner = signer (definitive direction)
 signer_underlying_deltas as (
     select
         tm.signature,
@@ -83,9 +85,14 @@ signer_underlying_deltas as (
         m.platform,
         m.amm_pool,
         m.clmm_orderbook,
-        coalesce(sum(c.delta_ui) filter (where c.delta_raw < 0), 0) as outflow_ui,
-        coalesce(sum(c.delta_ui) filter (where c.delta_raw > 0), 0) as inflow_ui
+        -- All-party flows (robust notional — captures even routed/wrapper flows)
+        coalesce(sum(c.delta_ui) filter (where c.delta_raw < 0), 0)                          as all_outflow_ui,
+        coalesce(sum(c.delta_ui) filter (where c.delta_raw > 0), 0)                          as all_inflow_ui,
+        -- Signer-only flows (clear direction when present)
+        coalesce(sum(c.delta_ui) filter (where c.delta_raw < 0 and c.owner = h.signer), 0)   as signer_outflow_ui,
+        coalesce(sum(c.delta_ui) filter (where c.delta_raw > 0 and c.owner = h.signer), 0)   as signer_inflow_ui
     from tx_to_market tm
+    join {{ ref('stg_helius_tx') }} h on h.signature = tm.signature
     join {{ ref('stg_markets') }} m
         on m.market_key = tm.market_key
        and m.underlying_mint is not null
@@ -93,7 +100,8 @@ signer_underlying_deltas as (
         on c.signature = tm.signature
        and c.mint      = m.underlying_mint
     group by tm.signature, tm.block_time, tm.action, tm.market_key, m.underlying_mint,
-             m.underlying_decimals, m.ticker, m.platform, m.amm_pool, m.clmm_orderbook
+             m.underlying_decimals, m.ticker, m.platform, m.amm_pool, m.clmm_orderbook,
+             h.signer
 ),
 -- Matched trades (have a market_key + underlying delta).
 matched_trades as (
@@ -107,10 +115,12 @@ matched_trades as (
         underlying_mint,
         amm_pool,
         clmm_orderbook,
-        outflow_ui,
-        inflow_ui
+        all_outflow_ui     as outflow_ui,
+        all_inflow_ui      as inflow_ui,
+        signer_outflow_ui,
+        signer_inflow_ui
     from signer_underlying_deltas
-    where greatest(abs(outflow_ui), inflow_ui) > 0
+    where greatest(abs(all_outflow_ui), all_inflow_ui) > 0
 ),
 -- Unclassified trades: action is buyYt/sellYt/tradePt but we couldn't
 -- resolve a market. Fall back to using the user's largest absolute delta
@@ -157,7 +167,9 @@ unclassified_best as (
 unioned as (
     select
         signature, block_time, action, market_key, ticker, platform,
-        underlying_mint, amm_pool, clmm_orderbook, outflow_ui, inflow_ui
+        underlying_mint, amm_pool, clmm_orderbook,
+        outflow_ui, inflow_ui,
+        signer_outflow_ui, signer_inflow_ui
     from matched_trades
     union all
     select
@@ -169,7 +181,10 @@ unioned as (
         cast(null as varchar)           as amm_pool,
         cast(null as varchar)           as clmm_orderbook,
         coalesce(outflow_ui, 0)         as outflow_ui,
-        coalesce(inflow_ui, 0)          as inflow_ui
+        coalesce(inflow_ui, 0)          as inflow_ui,
+        -- Unclassified path has no signer split; use the same numbers as fallback
+        coalesce(outflow_ui, 0)         as signer_outflow_ui,
+        coalesce(inflow_ui, 0)          as signer_inflow_ui
     from unclassified_best
 )
 select
@@ -194,10 +209,18 @@ select
         else 'OTHER'
     end as side,
     case
-        when u.action = 'tradePt' and u.inflow_ui > abs(u.outflow_ui) then 'buy'
-        when u.action = 'tradePt'                                      then 'sell'
-        when u.action = 'buyYt'                                        then 'buy'
-        when u.action = 'sellYt'                                       then 'sell'
+        when u.action = 'buyYt'  then 'buy'
+        when u.action = 'sellYt' then 'sell'
+        -- tradePt: direction is determined by which side the SIGNER (user) is on.
+        --   signer pays underlying  (outflow > inflow) → user BOUGHT PT
+        --   signer receives underlying (inflow > outflow) → user SOLD PT
+        -- Use signer-only deltas when available; if signer has zero on either
+        -- side, fall back to all-party heuristic.
+        when u.action = 'tradePt' and abs(u.signer_outflow_ui) > u.signer_inflow_ui then 'buy'
+        when u.action = 'tradePt' and u.signer_inflow_ui > abs(u.signer_outflow_ui) then 'sell'
+        when u.action = 'tradePt' and abs(u.outflow_ui) > u.inflow_ui                then 'buy'
+        when u.action = 'tradePt' and u.inflow_ui > abs(u.outflow_ui)                then 'sell'
+        when u.action = 'tradePt'                                                     then 'unknown'
     end as direction
 from unioned u
 left join {{ ref('stg_prices') }} p
