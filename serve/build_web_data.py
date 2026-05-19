@@ -244,24 +244,36 @@ def build_volume_json(con: duckdb.DuckDBPyConnection) -> dict:
 
 def build_tvl_json(con: duckdb.DuckDBPyConnection) -> dict:
     """Daily TVL series — protocol total + per-market USD + underlying-units."""
-    bounds = con.execute("SELECT MIN(date)::VARCHAR, MAX(date)::VARCHAR FROM main_analytics.tvl_daily").fetchone()
+    # Date range: take the wider of (tvl_daily, int_sy_tvl_daily). The
+    # protocol total comes from int_sy_tvl_daily which carries SY-only
+    # capital from before any market was split into PT/YT.
+    bounds = con.execute("""
+        SELECT
+          LEAST((SELECT MIN(date) FROM main_intermediate.int_sy_tvl_daily),
+                (SELECT MIN(date) FROM main_analytics.tvl_daily))::VARCHAR,
+          GREATEST((SELECT MAX(date) FROM main_intermediate.int_sy_tvl_daily),
+                   (SELECT MAX(date) FROM main_analytics.tvl_daily))::VARCHAR
+    """).fetchone()
     if not bounds or not bounds[0]:
         return {"meta": {"generatedAt": datetime.now(timezone.utc).isoformat(), "empty": True}}
     min_d, max_d = bounds
     dates = [r[0] for r in con.execute(
         f"SELECT generate_series::DATE::VARCHAR FROM generate_series(DATE '{min_d}', DATE '{max_d}', INTERVAL 1 DAY)"
     ).fetchall()]
-    # Protocol total per day — both SY-based (headline) and PT-based (principal/active)
-    proto = con.execute("""
-        SELECT date::VARCHAR,
-               SUM(tvl_usd),
-               SUM(principal_tvl_usd),
-               SUM(tvl_underlying)
-        FROM main_analytics.tvl_daily GROUP BY 1 ORDER BY 1
+    # Protocol total: sum at sy_mint level (covers SY held raw before any
+    # market is split). Principal = PT-only, from tvl_daily.
+    proto_sy = con.execute("""
+        SELECT date::VARCHAR, SUM(tvl_usd)
+        FROM main_intermediate.int_sy_tvl_daily GROUP BY 1
     """).fetchall()
-    proto_map = {r[0]: (float(r[1] or 0), float(r[2] or 0), float(r[3] or 0)) for r in proto}
-    proto_usd      = [proto_map.get(d, (0, 0, 0))[0] for d in dates]
-    proto_principal = [proto_map.get(d, (0, 0, 0))[1] for d in dates]
+    proto_pt = con.execute("""
+        SELECT date::VARCHAR, SUM(principal_tvl_usd)
+        FROM main_analytics.tvl_daily GROUP BY 1
+    """).fetchall()
+    proto_sy_map = {r[0]: float(r[1] or 0) for r in proto_sy}
+    proto_pt_map = {r[0]: float(r[1] or 0) for r in proto_pt}
+    proto_usd       = [proto_sy_map.get(d, 0.0) for d in dates]
+    proto_principal = [proto_pt_map.get(d, 0.0) for d in dates]
     # Per-market series — load raw platform too so we can roll up byPlatform
     rows = con.execute("""
         SELECT t.market_key, t.ticker, t.platform, t.date::VARCHAR,
@@ -336,17 +348,27 @@ def build_tvl_json(con: duckdb.DuckDBPyConnection) -> dict:
         for d in dates
     ]
 
-    # TGE-style markers: first date each platform crosses a meaningful TVL
-    # threshold ($10K) — used to annotate the chart with platform-launch
-    # vertical lines. Returns one marker per platform that ever appeared.
-    THRESHOLD = 10_000.0
+    # TGE markers: curated list of actual token-launch events for platforms
+    # whose assets exist on Exponent. Lives in data/tge_dates.json so dates
+    # can be edited without touching code. Only emit markers within the
+    # chart's date range.
     tge_markers: list[dict] = []
-    for plat, series in by_platform.items():
-        first_idx = next((i for i, v in enumerate(series) if v >= THRESHOLD), None)
-        if first_idx is None:
-            continue
-        tge_markers.append({"platform": plat, "date": dates[first_idx]})
-    tge_markers.sort(key=lambda m: m["date"])
+    tge_file = ROOT / "data" / "tge_dates.json"
+    if tge_file.exists():
+        try:
+            tge_data = json.loads(tge_file.read_text())
+            for t in tge_data.get("tges", []):
+                d = t.get("date")
+                if not d or d < min_d or d > max_d:
+                    continue
+                tge_markers.append({
+                    "platform": t.get("platform", "?"),
+                    "token":    t.get("token"),
+                    "date":     d,
+                })
+            tge_markers.sort(key=lambda m: m["date"])
+        except Exception as e:
+            rprint(f"[yellow]warn[/yellow] failed to load tge_dates.json: {e}")
 
     return {
         "meta": {

@@ -54,18 +54,23 @@ select
     m.ticker,
     m.platform,
     m.underlying_mint,
-    -- Headline TVL: SY-based, attributed to market
+    -- Headline TVL: SY-based, attributed by PT+YT supply weight within
+    -- the sy_mint family. Markets with zero PT+YT supply get ZERO TVL —
+    -- not a divided share. Reason: when the SY hasn't been split yet,
+    -- the deposits are "raw SY" and belong to no specific market.
+    -- The unattributed SY is still captured at the protocol level via
+    -- int_sy_tvl_daily (which the JSON builder uses for protocol total).
     case
-        when f.family_ptyt > 0 then
+        when f.family_ptyt > 0 and m.ptyt_supply > 0 then
             sy.tvl_usd * (m.ptyt_supply / f.family_ptyt)
         else
-            sy.tvl_usd / nullif(f.family_markets, 0)
+            0
     end                                              as tvl_usd,
     case
-        when f.family_ptyt > 0 then
+        when f.family_ptyt > 0 and m.ptyt_supply > 0 then
             sy.sy_supply * (m.ptyt_supply / f.family_ptyt)
         else
-            sy.sy_supply / nullif(f.family_markets, 0)
+            0
     end                                              as tvl_underlying,
     -- Principal/active TVL (old method, for comparison)
     m.pt_supply * sy.underlying_price_usd            as principal_tvl_usd,
