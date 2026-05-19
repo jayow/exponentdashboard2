@@ -1,23 +1,11 @@
 'use client';
-import { useState } from 'react';
-import { TvlOverview } from '@/components/TvlOverview';
-import { HistoricalChart } from '@/components/HistoricalChart';
+import { TopStats } from '@/components/TopStats';
 import { TradingVolumeChart } from '@/components/TradingVolumeChart';
 import { TvlChart } from '@/components/TvlChart';
-import { OpenInterestChart } from '@/components/OpenInterestChart';
+import { ActivePositionsChart } from '@/components/ActivePositionsChart';
 import { MarketShare } from '@/components/MarketShare';
-import { MarketLifecycle } from '@/components/MarketLifecycle';
-import { HolderAnalytics } from '@/components/HolderAnalytics';
-import { MarketCards } from '@/components/MarketCards';
-import { PositionDuration } from '@/components/PositionDuration';
-import { MarketRollover } from '@/components/MarketRollover';
-import { OrganicIncentivized } from '@/components/OrganicIncentivized';
-
-type Tab = 'markets' | 'lifecycle' | 'holders' | 'positions';
 
 export default function HomePage() {
-  const [tab, setTab] = useState<Tab>('markets');
-
   return (
     <main className="mx-auto max-w-[1500px] px-4 sm:px-6 py-10">
       <header className="relative mb-8">
@@ -31,42 +19,11 @@ export default function HomePage() {
         </div>
       </header>
 
-      <TvlOverview />
+      <TopStats />
       <TradingVolumeChart />
       <TvlChart />
-      <OpenInterestChart />
+      <ActivePositionsChart />
       <MarketShare />
-      <HistoricalChart />
-
-      {/* Tabbed section: Lifecycle / Holders / Markets */}
-      <div className="mb-8">
-        <div className="flex items-center gap-1 mb-4">
-          {([
-            { key: 'markets', label: 'Markets' },
-            { key: 'lifecycle', label: 'Lifecycle' },
-            { key: 'holders', label: 'Holders' },
-            { key: 'positions', label: 'Positions' },
-          ] as { key: Tab; label: string }[]).map(t => (
-            <button key={t.key} onClick={() => setTab(t.key)}
-              className={`text-xs px-3 py-1.5 rounded-lg border transition ${
-                tab === t.key ? 'border-white/30 bg-white/10 text-white' : 'border-white/10 text-white/40 hover:text-white'
-              }`}>
-              {t.label}
-            </button>
-          ))}
-        </div>
-
-        {tab === 'markets' && <MarketCards />}
-        {tab === 'lifecycle' && <MarketLifecycle />}
-        {tab === 'holders' && <HolderAnalytics />}
-        {tab === 'positions' && (
-          <div className="space-y-4">
-            <PositionDuration />
-            <OrganicIncentivized />
-            <MarketRollover />
-          </div>
-        )}
-      </div>
     </main>
   );
 }

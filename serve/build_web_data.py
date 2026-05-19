@@ -231,66 +231,6 @@ def build_tvl_json(con: duckdb.DuckDBPyConnection) -> dict:
     }
 
 
-def build_open_interest_json(con: duckdb.DuckDBPyConnection) -> dict:
-    """Daily OI series — PT+YT supplies × underlying USD."""
-    bounds = con.execute("SELECT MIN(date)::VARCHAR, MAX(date)::VARCHAR FROM main_analytics.open_interest_daily").fetchone()
-    if not bounds or not bounds[0]:
-        return {"meta": {"generatedAt": datetime.now(timezone.utc).isoformat(), "empty": True}}
-    min_d, max_d = bounds
-    dates = [r[0] for r in con.execute(
-        f"SELECT generate_series::DATE::VARCHAR FROM generate_series(DATE '{min_d}', DATE '{max_d}', INTERVAL 1 DAY)"
-    ).fetchall()]
-    proto = con.execute("""
-        SELECT date::VARCHAR,
-               SUM(oi_usd) FILTER (WHERE leg = 'PT'),
-               SUM(oi_usd) FILTER (WHERE leg = 'YT'),
-               SUM(oi_usd) FILTER (WHERE leg = 'LP')
-        FROM main_analytics.open_interest_daily GROUP BY 1 ORDER BY 1
-    """).fetchall()
-    by_date = {r[0]: (float(r[1] or 0), float(r[2] or 0), float(r[3] or 0)) for r in proto}
-    pt = [by_date.get(d, (0, 0, 0))[0] for d in dates]
-    yt = [by_date.get(d, (0, 0, 0))[1] for d in dates]
-    lp = [by_date.get(d, (0, 0, 0))[2] for d in dates]
-    rows = con.execute("""
-        SELECT market_key, ticker, date::VARCHAR, leg, SUM(oi_usd)
-        FROM main_analytics.open_interest_daily
-        GROUP BY 1, 2, 3, 4
-    """).fetchall()
-    by_market: dict[str, dict] = {}
-    for mk, ticker, date, leg, oi in rows:
-        e = by_market.setdefault(mk, {"ticker": ticker, "pt_map": {}, "yt_map": {}, "lp_map": {}})
-        if leg == "PT":
-            e["pt_map"][date] = float(oi or 0)
-        elif leg == "YT":
-            e["yt_map"][date] = float(oi or 0)
-        elif leg == "LP":
-            e["lp_map"][date] = float(oi or 0)
-    by_market_out: dict[str, dict] = {}
-    totals = []
-    for mk, e in by_market.items():
-        pt_arr = [e["pt_map"].get(d, 0.0) for d in dates]
-        yt_arr = [e["yt_map"].get(d, 0.0) for d in dates]
-        lp_arr = [e["lp_map"].get(d, 0.0) for d in dates]
-        total_arr = [a + b + c for a, b, c in zip(pt_arr, yt_arr, lp_arr)]
-        by_market_out[mk] = {"ticker": e["ticker"], "pt": pt_arr, "yt": yt_arr, "lp": lp_arr, "total": total_arr}
-        totals.append((mk, e["ticker"] or "", total_arr[-1] if total_arr else 0))
-    totals.sort(key=lambda x: -x[2])
-    return {
-        "meta": {
-            "generatedAt": datetime.now(timezone.utc).isoformat(),
-            "dateRange": [min_d, max_d],
-            "currentPtUsd": pt[-1] if pt else 0,
-            "currentYtUsd": yt[-1] if yt else 0,
-            "currentLpUsd": lp[-1] if lp else 0,
-            "source": "open_interest_daily (PT + YT + LP supply, USD)",
-        },
-        "dates": dates,
-        "protocol": {"pt": pt, "yt": yt, "lp": lp, "total": [a + b + c for a, b, c in zip(pt, yt, lp)]},
-        "byMarket": by_market_out,
-        "topMarkets": [{"marketKey": mk, "ticker": tk, "oiUsdNow": v} for mk, tk, v in totals[:20]],
-    }
-
-
 def build_market_share_json(con: duckdb.DuckDBPyConnection) -> dict:
     """Per-asset (ticker) market share, latest date + 30d avg."""
     rows = con.execute("""
@@ -329,6 +269,79 @@ def build_market_share_json(con: duckdb.DuckDBPyConnection) -> dict:
     }
 
 
+def build_active_positions_json(con: duckdb.DuckDBPyConnection) -> dict:
+    """Active position supplies (PT/YT/LP/SY) in UNDERLYING units, indexed by ticker.
+
+    Shape:
+      meta: {generatedAt, dateRange, tickers: [{ticker, marketCount}]}
+      dates: [...]
+      byTicker:
+        USX:
+          underlyingMint, latest: {pt, yt, lp, sy} (sums for the rollup row)
+          legs:
+            PT: {byMarket: {USX-01JUN26: [supplies...], ...}, totals: [...]}
+            YT: same
+            LP: same
+            SY: {totals: [...]}  // SY is mint-deduped, no per-market breakdown
+    """
+    bounds = con.execute(
+        "SELECT MIN(date)::VARCHAR, MAX(date)::VARCHAR FROM main_analytics.active_positions_daily"
+    ).fetchone()
+    if not bounds or not bounds[0]:
+        return {"meta": {"generatedAt": datetime.now(timezone.utc).isoformat(), "empty": True}}
+    min_d, max_d = bounds
+    dates = [r[0] for r in con.execute(
+        f"SELECT generate_series::DATE::VARCHAR FROM generate_series(DATE '{min_d}', DATE '{max_d}', INTERVAL 1 DAY)"
+    ).fetchall()]
+    rows = con.execute("""
+        SELECT date::VARCHAR, ticker, leg, market_key, underlying_mint, supply
+        FROM main_analytics.active_positions_daily
+        WHERE ticker IS NOT NULL
+    """).fetchall()
+    # Build: byTicker[ticker][leg] -> {byMarket: {mk: {date: supply}}, totals: {date: supply}}
+    by_ticker: dict[str, dict] = {}
+    for date, ticker, leg, mk, und, supply in rows:
+        t = by_ticker.setdefault(ticker, {"underlyingMint": und, "legs": {}})
+        legd = t["legs"].setdefault(leg, {"byMarket": {}, "totalsMap": {}})
+        if mk is not None:
+            legd["byMarket"].setdefault(mk, {})[date] = float(supply or 0)
+        legd["totalsMap"][date] = legd["totalsMap"].get(date, 0.0) + float(supply or 0)
+        if und and not t.get("underlyingMint"):
+            t["underlyingMint"] = und
+    # Densify into arrays aligned to `dates`
+    ticker_list = []
+    for ticker, t in by_ticker.items():
+        out_legs: dict[str, dict] = {}
+        for leg, legd in t["legs"].items():
+            by_market_arr = {
+                mk: [series.get(d, 0.0) for d in dates]
+                for mk, series in legd["byMarket"].items()
+            }
+            totals_arr = [legd["totalsMap"].get(d, 0.0) for d in dates]
+            out_legs[leg] = {"byMarket": by_market_arr, "totals": totals_arr}
+        t["legs"] = out_legs
+        latest = {
+            leg: (legd["totals"][-1] if legd["totals"] else 0.0)
+            for leg, legd in out_legs.items()
+        }
+        t["latest"] = latest
+        ticker_list.append({
+            "ticker": ticker,
+            "marketCount": sum(1 for leg in ("PT",) for _ in out_legs.get(leg, {}).get("byMarket", {})),
+            "latestTotal": sum(latest.values()),
+        })
+    ticker_list.sort(key=lambda x: -x["latestTotal"])
+    return {
+        "meta": {
+            "generatedAt": datetime.now(timezone.utc).isoformat(),
+            "dateRange": [min_d, max_d],
+            "tickers": [{"ticker": t["ticker"], "marketCount": t["marketCount"]} for t in ticker_list],
+        },
+        "dates": dates,
+        "byTicker": by_ticker,
+    }
+
+
 def build() -> None:
     WEB_PUBLIC.mkdir(parents=True, exist_ok=True)
     con = duckdb.connect(str(WAREHOUSE_PATH), read_only=True)
@@ -336,7 +349,7 @@ def build() -> None:
         for name, builder in [
             ("volume.json", build_volume_json),
             ("tvl.json", build_tvl_json),
-            ("open_interest.json", build_open_interest_json),
+            ("active_positions.json", build_active_positions_json),
             ("market_share.json", build_market_share_json),
         ]:
             rprint(f"[cyan]Building {name}…[/cyan]")
