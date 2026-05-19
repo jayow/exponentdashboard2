@@ -73,12 +73,27 @@ daily_observed as (
     from filtered
     group by 1, 2
 ),
--- Continuous date axis per market, forward-fill ratios
-bounds as (select market_key, min(date) first_date from daily_observed group by 1),
+-- Continuous date axis per market, from the market's first PT/YT supply
+-- date (NOT the first trade date) so dates before the first observed trade
+-- can backward-fill their PT/YT prices. Otherwise tvl_daily falls back to
+-- face value (PT=1.0, YT=0.0) for the pre-trade period and YT silently
+-- disappears from the historical Breakdown.
+bounds as (
+    select
+        market_key,
+        least(
+            (select min(date) from main_intermediate.int_mint_supplies_daily s
+              where s.market_key = obs.market_key and s.leg in ('PT','YT') and s.supply_ui > 0),
+            min(obs.date)
+        ) as first_date
+    from daily_observed obs
+    group by market_key
+),
 date_axis as (
     select b.market_key, t.date::date as date
     from bounds b,
         unnest(generate_series(b.first_date, current_date, interval 1 day)) as t(date)
+    where b.first_date is not null
 ),
 filled as (
     select
@@ -88,28 +103,56 @@ filled as (
         dly.n_trades
     from date_axis d
     left join daily_observed dly using (market_key, date)
+),
+-- Forward + backward fill: forward carries last observed price ahead;
+-- backward propagates the FIRST observed price to earlier dates so the
+-- pre-trade period gets a non-NULL (and non-1.0) PT/YT ratio.
+ffilled as (
+    select
+        f.market_key, f.date,
+        coalesce(
+            f.pt_price_ratio,
+            last_value(f.pt_price_ratio ignore nulls) over (
+                partition by f.market_key order by f.date
+                rows between unbounded preceding and current row
+            )
+        ) as ff_pt,
+        coalesce(
+            f.underlying_price_usd,
+            last_value(f.underlying_price_usd ignore nulls) over (
+                partition by f.market_key order by f.date
+                rows between unbounded preceding and current row
+            )
+        ) as ff_und,
+        f.pt_price_ratio, f.underlying_price_usd, f.n_trades
+    from filled f
+),
+bfilled as (
+    select
+        ffl.market_key, ffl.date,
+        coalesce(
+            ffl.ff_pt,
+            first_value(ffl.pt_price_ratio ignore nulls) over (
+                partition by ffl.market_key order by ffl.date
+                rows between current row and unbounded following
+            )
+        ) as pt_price_ratio,
+        coalesce(
+            ffl.ff_und,
+            first_value(ffl.underlying_price_usd ignore nulls) over (
+                partition by ffl.market_key order by ffl.date
+                rows between current row and unbounded following
+            )
+        ) as underlying_price_usd,
+        ffl.n_trades
+    from ffilled ffl
 )
 select
-    f.market_key,
-    f.date,
-    coalesce(
-        f.pt_price_ratio,
-        last_value(f.pt_price_ratio ignore nulls) over (
-            partition by f.market_key order by f.date rows between unbounded preceding and current row
-        )
-    )                                                                                   as pt_price_ratio,
-    1.0 - coalesce(
-        f.pt_price_ratio,
-        last_value(f.pt_price_ratio ignore nulls) over (
-            partition by f.market_key order by f.date rows between unbounded preceding and current row
-        )
-    )                                                                                   as yt_price_ratio,
-    f.n_trades,
-    coalesce(
-        f.underlying_price_usd,
-        last_value(f.underlying_price_usd ignore nulls) over (
-            partition by f.market_key order by f.date rows between unbounded preceding and current row
-        )
-    )                                                                                   as underlying_price_usd
-from filled f
-qualify pt_price_ratio is not null
+    market_key,
+    date,
+    pt_price_ratio,
+    1.0 - pt_price_ratio as yt_price_ratio,
+    n_trades,
+    underlying_price_usd
+from bfilled
+where pt_price_ratio is not null

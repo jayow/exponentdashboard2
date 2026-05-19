@@ -81,7 +81,11 @@ select
     -- For markets without trades yet, fall back to ratio=1.0 (all value in PT,
     -- zero in YT) — that's the conservative interpretation.
     m.pt_supply * coalesce(ip.pt_price_ratio, 1.0) * sy.underlying_price_usd        as principal_pt_usd,
-    m.yt_supply * coalesce(ip.yt_price_ratio, 0.0) * sy.underlying_price_usd        as farm_yt_usd,
+    -- YT_supply ≡ PT_supply by Pendle construction (PT and YT are co-minted
+    -- 1:1 from each split SY). For old/expired markets we may have
+    -- pt_supply but no yt_supply indexed (no YT-* Metaplex name decoded),
+    -- so use pt_supply here too rather than letting yt go silently to 0.
+    m.pt_supply * coalesce(ip.yt_price_ratio, 0.0) * sy.underlying_price_usd        as farm_yt_usd,
     coalesce(ip.pt_price_ratio, 1.0)                 as pt_price_ratio,
     sy.underlying_price_usd                          as underlying_price_usd,
     sy.price_source                                  as price_source
