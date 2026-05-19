@@ -306,15 +306,37 @@ def build_tvl_json(con: duckdb.DuckDBPyConnection) -> dict:
     totals.sort(key=lambda x: -x[2])
     top = [{"marketKey": mk, "ticker": tk, "tvlUsdNow": v} for mk, tk, v in totals[:20]]
 
-    # Per-platform daily timeseries — sum each market's series into its platform
+    # Per-platform daily timeseries — sum int_sy_tvl_daily (mint level) by
+    # platform. We CANNOT sum per-market tvl values here: per-market TVL
+    # only exists once a market has PT/YT (post-split), so summing them
+    # would zero out the SY-only history and create a fake step-up the day
+    # the first market in a platform splits its SY. Going to the sy_mint
+    # level captures all SY ever deposited, including the raw/LP-held
+    # portion that has no per-market identity.
+    sy_plat_rows = con.execute("""
+        WITH mint_to_platform AS (
+          SELECT sy_mint,
+                 ANY_VALUE(ticker)   AS ticker,
+                 ANY_VALUE(platform) AS platform
+          FROM main_core.dim_markets
+          WHERE sy_mint IS NOT NULL
+          GROUP BY sy_mint
+        )
+        SELECT s.date::VARCHAR, mtp.platform, mtp.ticker, SUM(s.tvl_usd) AS tvl
+        FROM main_intermediate.int_sy_tvl_daily s
+        LEFT JOIN mint_to_platform mtp USING (sy_mint)
+        GROUP BY 1, 2, 3
+    """).fetchall()
     by_platform: dict[str, list[float]] = {}
-    for mk, m in by_market_out.items():
-        plat = m["platform"]
+    for date, raw_plat, ticker, tvl in sy_plat_rows:
+        plat = normalize_platform(raw_plat, ticker)
         if plat not in by_platform:
             by_platform[plat] = [0.0] * len(dates)
-        for i, v in enumerate(m["tvlUsd"]):
-            by_platform[plat][i] += v
-    # Sort platforms by latest value, place "Other" last
+        try:
+            idx = dates.index(date)
+            by_platform[plat][idx] += float(tvl or 0)
+        except ValueError:
+            pass
     platforms_sorted = sorted(
         by_platform.items(),
         key=lambda kv: (-kv[1][-1] if kv[1] else 0, kv[0])
