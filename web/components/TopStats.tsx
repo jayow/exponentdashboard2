@@ -6,8 +6,8 @@ type Stats = {
   markets: { active: number; expired: number; total: number; platforms: number; tickers: number; latestMaturity: string | null };
   tvl: {
     currentUsd: number; currentPrincipalUsd: number; peakUsd: number; peakDate: string | null;
-    ptUsd: number; lpUsd: number; idleUsd: number;
-    weekAgo: { totalUsd: number; ptUsd: number; lpUsd: number; idleUsd: number };
+    ptUsd: number; ytUsd: number; lpUsd: number; idleUsd: number;
+    weekAgo: { totalUsd: number; ptUsd: number; ytUsd: number; lpUsd: number; idleUsd: number };
   };
   volume: { lifetimeUsd: number; thirty30Usd: number; sevenDayUsd: number };
   holders: { totalUniqueOwners: number; weekAgo: number };
@@ -54,6 +54,11 @@ export function TopStats() {
       label: 'Income (PT)',
       value: fmtUsd(s.tvl.ptUsd),
       delta: <Delta now={s.tvl.ptUsd} then={s.tvl.weekAgo.ptUsd} kind="usd" />,
+    },
+    {
+      label: 'Farm (YT)',
+      value: fmtUsd(s.tvl.ytUsd),
+      delta: <Delta now={s.tvl.ytUsd} then={s.tvl.weekAgo.ytUsd} kind="usd" />,
     },
     {
       label: 'Liquidity (LP)',
@@ -106,7 +111,7 @@ export function TopStats() {
           <span className="text-xs text-white/30">vs 7d ago • peak {fmtUsd(s.tvl.peakUsd)} on {fmtDate(s.tvl.peakDate)}</span>
         </div>
       </div>
-      <div className="grid grid-cols-3 md:grid-cols-5 lg:grid-cols-9 gap-x-6 gap-y-3 flex-1">
+      <div className="grid grid-cols-3 md:grid-cols-5 lg:grid-cols-10 gap-x-6 gap-y-3 flex-1">
         {small.map(c => (
           <div key={c.label}>
             <div className="text-[10px] uppercase tracking-wider text-white/40 whitespace-nowrap">{c.label}</div>

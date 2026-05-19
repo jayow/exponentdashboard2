@@ -342,9 +342,9 @@ def build_tvl_json(con: duckdb.DuckDBPyConnection) -> dict:
         key=lambda kv: (-kv[1][-1] if kv[1] else 0, kv[0])
     )
 
-    # Decomposition: PT (principal) + LP + Idle = SY total per day
-    # Pull LP USD value (from active_positions_daily) and SY USD value
-    # (from int_sy_tvl_daily, summed across distinct sy mints per date).
+    # Decomposition: PT + YT + LP + Idle = SY total per day.
+    # PT/YT now valued at AMM-implied market prices (not face value), so YT
+    # gets its own visible bucket. v1's "Income / Farm / Liquidity / Idle".
     decomp = con.execute("""
         WITH lp AS (
           SELECT date, SUM(usd_value) AS lp_usd
@@ -355,20 +355,25 @@ def build_tvl_json(con: duckdb.DuckDBPyConnection) -> dict:
         sy AS (
           SELECT date, SUM(tvl_usd) AS sy_usd FROM main_intermediate.int_sy_tvl_daily GROUP BY date
         ),
-        pt AS (
-          SELECT date, SUM(principal_tvl_usd) AS pt_usd FROM main_analytics.tvl_daily GROUP BY date
+        pt_yt AS (
+          SELECT date, SUM(principal_pt_usd) AS pt_usd, SUM(farm_yt_usd) AS yt_usd
+          FROM main_analytics.tvl_daily GROUP BY date
         )
-        SELECT sy.date::VARCHAR, sy.sy_usd, COALESCE(pt.pt_usd,0), COALESCE(lp.lp_usd,0)
-        FROM sy LEFT JOIN pt USING (date) LEFT JOIN lp USING (date)
+        SELECT sy.date::VARCHAR, sy.sy_usd,
+               COALESCE(pt_yt.pt_usd, 0), COALESCE(pt_yt.yt_usd, 0),
+               COALESCE(lp.lp_usd, 0)
+        FROM sy LEFT JOIN pt_yt USING (date) LEFT JOIN lp USING (date)
     """).fetchall()
-    decomp_map = {r[0]: (float(r[1] or 0), float(r[2] or 0), float(r[3] or 0)) for r in decomp}
-    pt_arr = [decomp_map.get(d, (0,0,0))[1] for d in dates]
-    lp_arr = [decomp_map.get(d, (0,0,0))[2] for d in dates]
-    # Idle = SY_total - PT - LP, floored at 0 to absorb attribution noise
-    idle_arr = [
-        max(0.0, decomp_map.get(d, (0,0,0))[0] - decomp_map.get(d, (0,0,0))[1] - decomp_map.get(d, (0,0,0))[2])
-        for d in dates
-    ]
+    # LP face-value over-counts pool's PT-side (which is already in PT_supply).
+    # Cap LP at TVL - PT - YT so the four buckets add to TVL. Idle = residual.
+    decomp_map = {r[0]: (float(r[1] or 0), float(r[2] or 0), float(r[3] or 0), float(r[4] or 0)) for r in decomp}
+    pt_arr, yt_arr, lp_arr, idle_arr = [], [], [], []
+    for d in dates:
+        sy_total, pt_v, yt_v, lp_face = decomp_map.get(d, (0,0,0,0))
+        remaining = max(0.0, sy_total - pt_v - yt_v)
+        lp_capped = min(lp_face, remaining)
+        idle_v = max(0.0, remaining - lp_capped)
+        pt_arr.append(pt_v); yt_arr.append(yt_v); lp_arr.append(lp_capped); idle_arr.append(idle_v)
 
     # Per-market view CAN'T be summed from tvl_daily alone — that excludes
     # unsplit SY (held raw, or LP'd) which has no per-market identity. For
@@ -433,6 +438,7 @@ def build_tvl_json(con: duckdb.DuckDBPyConnection) -> dict:
         "protocolPrincipalUsd": proto_principal,
         "decomposition": {
             "principalPt": pt_arr,
+            "farmYt":      yt_arr,
             "liquidityLp": lp_arr,
             "idle":        idle_arr,
         },
@@ -646,18 +652,26 @@ def build_stats_json(con: duckdb.DuckDBPyConnection) -> dict:
         SELECT COUNT(DISTINCT owner) FROM main.raw_holders
         WHERE snapshot_date = (SELECT MAX(snapshot_date) FROM main.raw_holders)
     """).fetchone()
-    # PT / LP / Idle decomposition (latest)
+    # PT / YT / LP / Idle decomposition (latest) — market-priced
     decomp = con.execute("""
         SELECT
           (SELECT SUM(tvl_usd)           FROM main_intermediate.int_sy_tvl_daily
             WHERE date = (SELECT MAX(date) FROM main_intermediate.int_sy_tvl_daily)) AS sy_usd,
-          (SELECT SUM(principal_tvl_usd) FROM main_analytics.tvl_daily
+          (SELECT SUM(principal_pt_usd)  FROM main_analytics.tvl_daily
             WHERE date = (SELECT MAX(date) FROM main_analytics.tvl_daily)) AS pt_usd,
+          (SELECT SUM(farm_yt_usd)       FROM main_analytics.tvl_daily
+            WHERE date = (SELECT MAX(date) FROM main_analytics.tvl_daily)) AS yt_usd,
           (SELECT SUM(usd_value)         FROM main_analytics.active_positions_daily
             WHERE leg = 'LP' AND date = (SELECT MAX(date) FROM main_analytics.active_positions_daily)) AS lp_usd
     """).fetchone()
-    sy_usd = float(decomp[0] or 0); pt_usd = float(decomp[1] or 0); lp_usd = float(decomp[2] or 0)
-    idle_usd = max(0.0, sy_usd - pt_usd - lp_usd)
+    sy_usd = float(decomp[0] or 0)
+    pt_usd = float(decomp[1] or 0)
+    yt_usd = float(decomp[2] or 0)
+    lp_face = float(decomp[3] or 0)
+    # Cap LP at the SY remaining after PT+YT (LP face over-counts PT-in-pool)
+    remaining = max(0.0, sy_usd - pt_usd - yt_usd)
+    lp_usd = min(lp_face, remaining)
+    idle_usd = max(0.0, remaining - lp_usd)
     # Week-ago snapshot for the same fields. Use the latest date minus 7
     # days, falling back to whatever's closest if 7d ago has no row.
     week_ago = con.execute("""
@@ -669,7 +683,11 @@ def build_stats_json(con: duckdb.DuckDBPyConnection) -> dict:
           WHERE date = (SELECT d::DATE FROM target)
         ),
         pt_w AS (
-          SELECT SUM(principal_tvl_usd) v FROM main_analytics.tvl_daily
+          SELECT SUM(principal_pt_usd) v FROM main_analytics.tvl_daily
+          WHERE date = (SELECT d::DATE FROM target)
+        ),
+        yt_w AS (
+          SELECT SUM(farm_yt_usd) v FROM main_analytics.tvl_daily
           WHERE date = (SELECT d::DATE FROM target)
         ),
         lp_w AS (
@@ -680,12 +698,15 @@ def build_stats_json(con: duckdb.DuckDBPyConnection) -> dict:
           SELECT COUNT(*) FILTER (WHERE maturity_date >= (SELECT d::DATE FROM target)) AS active
           FROM main_core.dim_markets WHERE maturity_date IS NOT NULL
         )
-        SELECT (SELECT v FROM sy_w), (SELECT v FROM pt_w), (SELECT v FROM lp_w),
-               (SELECT active FROM mkt_w)
+        SELECT (SELECT v FROM sy_w), (SELECT v FROM pt_w), (SELECT v FROM yt_w),
+               (SELECT v FROM lp_w), (SELECT active FROM mkt_w)
     """).fetchone()
-    sy_w   = float(week_ago[0] or 0); pt_w = float(week_ago[1] or 0); lp_w = float(week_ago[2] or 0)
-    idle_w = max(0.0, sy_w - pt_w - lp_w)
-    active_w = int(week_ago[3] or 0)
+    sy_w    = float(week_ago[0] or 0); pt_w  = float(week_ago[1] or 0)
+    yt_w    = float(week_ago[2] or 0); lp_wf = float(week_ago[3] or 0)
+    rem_w   = max(0.0, sy_w - pt_w - yt_w)
+    lp_w    = min(lp_wf, rem_w)
+    idle_w  = max(0.0, rem_w - lp_w)
+    active_w = int(week_ago[4] or 0)
     # Volume in last 7 days (the "weekly delta" for All-Time Volume = additions this week)
     vol7 = con.execute("""
         SELECT COALESCE(SUM(volume_usd), 0)
@@ -717,10 +738,11 @@ def build_stats_json(con: duckdb.DuckDBPyConnection) -> dict:
             "peakUsd":            float(peak[1] or 0) if peak else 0.0,
             "peakDate":           peak[0] if peak else None,
             "ptUsd":              pt_usd,
+            "ytUsd":              yt_usd,
             "lpUsd":              lp_usd,
             "idleUsd":            idle_usd,
             "weekAgo": {
-                "totalUsd": sy_w, "ptUsd": pt_w, "lpUsd": lp_w, "idleUsd": idle_w,
+                "totalUsd": sy_w, "ptUsd": pt_w, "ytUsd": yt_w, "lpUsd": lp_w, "idleUsd": idle_w,
             },
         },
         "volume": {

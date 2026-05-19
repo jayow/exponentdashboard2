@@ -75,9 +75,19 @@ select
     -- Principal/active TVL (old method, for comparison)
     m.pt_supply * sy.underlying_price_usd            as principal_tvl_usd,
     m.pt_supply                                      as pt_supply,
+    -- v1-style decomposition using market-implied PT/YT prices:
+    --   Principal (PT) = PT_supply × PT_price × underlying_USD
+    --   Farm (YT)      = YT_supply × YT_price × underlying_USD  (YT_price = 1 - PT_price)
+    -- For markets without trades yet, fall back to ratio=1.0 (all value in PT,
+    -- zero in YT) — that's the conservative interpretation.
+    m.pt_supply * coalesce(ip.pt_price_ratio, 1.0) * sy.underlying_price_usd        as principal_pt_usd,
+    m.yt_supply * coalesce(ip.yt_price_ratio, 0.0) * sy.underlying_price_usd        as farm_yt_usd,
+    coalesce(ip.pt_price_ratio, 1.0)                 as pt_price_ratio,
     sy.underlying_price_usd                          as underlying_price_usd,
     sy.price_source                                  as price_source
 from mkt_supply_sy m
 join family_totals f using (sy_mint, date)
 join sy_tvl       sy using (sy_mint, date)
+left join {{ ref('int_implied_prices_daily') }} ip
+    on ip.market_key = m.market_key and ip.date = m.date
 where sy.tvl_usd > 0

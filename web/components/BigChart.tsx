@@ -10,7 +10,7 @@ type TvlData = {
   dates: string[];
   protocolUsd: number[];
   protocolPrincipalUsd: number[];
-  decomposition: { principalPt: number[]; liquidityLp: number[]; idle: number[] };
+  decomposition: { principalPt: number[]; farmYt: number[]; liquidityLp: number[]; idle: number[] };
   byPlatform: Record<string, number[]>;
   byMarket: Record<string, { ticker: string; platform: string; tvlUsd: number[] }>;
   tgeMarkers?: TgeMarker[];
@@ -28,6 +28,7 @@ type Range = '30d' | '90d' | '1y' | 'all';
 
 const BREAKDOWN_COLOR: Record<string, string> = {
   'Principal (PT)': '#a78bfa',
+  'Farm (YT)':      '#fb923c',
   'Liquidity (LP)': '#4ade80',
   'Idle':           '#9ca3af',
   'TVL':            '#a78bfa',
@@ -149,15 +150,17 @@ export function BigChart() {
     if (metric === 'breakdown' && tvl) {
       const d = tvl.decomposition;
       const pt = sampleSeries(d.principalPt);
+      const yt = sampleSeries(d.farmYt);
       const lp = sampleSeries(d.liquidityLp);
       const idle = sampleSeries(d.idle);
-      const keys = ['Principal (PT)', 'Liquidity (LP)', 'Idle'];
+      const keys = ['Principal (PT)', 'Farm (YT)', 'Liquidity (LP)', 'Idle'];
       return {
         allKeys: keys, isFlat: false, breakdownLike: true,
         colorMap: Object.fromEntries(keys.map(k => [k, BREAKDOWN_COLOR[k]])),
         data: sliced.map((dt, i) => ({
           date: dt,
           'Principal (PT)': pt[i] || 0,
+          'Farm (YT)':      yt[i] || 0,
           'Liquidity (LP)': lp[i] || 0,
           'Idle':           idle[i] || 0,
         })),
