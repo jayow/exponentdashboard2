@@ -6,28 +6,26 @@ import {
 
 type Range = '30d' | '90d' | '1y' | 'all';
 type View = 'protocol' | 'markets';
-type Basis = 'sy' | 'principal';
+type Leg = 'TOTAL' | 'PT' | 'YT' | 'LP';
 
-type TvlData = {
+type OiData = {
   meta: {
     dateRange: [string, string];
-    currentTvlUsd: number;
-    currentPrincipalUsd?: number;
+    currentPtUsd: number;
+    currentYtUsd: number;
+    currentLpUsd?: number;
     source: string;
-    note?: string;
   };
   dates: string[];
-  protocolUsd: number[];
-  protocolPrincipalUsd?: number[];
-  byMarket: Record<string, { ticker: string; tvlUsd: number[]; tvlUnderlying: number[]; principalUsd?: number[] }>;
-  topMarkets: { marketKey: string; ticker: string; tvlUsdNow: number }[];
+  protocol: { pt: number[]; yt: number[]; lp?: number[]; total: number[] };
+  byMarket: Record<string, { ticker: string; pt: number[]; yt: number[]; lp?: number[]; total: number[] }>;
+  topMarkets: { marketKey: string; ticker: string; oiUsdNow: number }[];
 };
 
 const COLORS = [
-  '#38bdf8', '#a78bfa', '#4ade80', '#f87171', '#fbbf24',
+  '#a78bfa', '#38bdf8', '#4ade80', '#f87171', '#fbbf24',
   '#fb923c', '#22d3ee', '#e879f9', '#a3e635', '#818cf8',
   '#facc15', '#34d399', '#f472b6', '#60a5fa', '#fcd34d',
-  '#c084fc', '#fb7185', '#86efac', '#7dd3fc', '#fda4af',
 ];
 
 function fmtUsd(n: number) {
@@ -40,8 +38,7 @@ function fmtUsd(n: number) {
 function rangeStartIdx(dates: string[], range: Range) {
   if (range === 'all') return 0;
   const days = range === '30d' ? 30 : range === '90d' ? 90 : 365;
-  const cutoff = new Date(new Date(dates[dates.length - 1]).getTime() - days * 86400_000)
-    .toISOString().slice(0, 10);
+  const cutoff = new Date(new Date(dates[dates.length - 1]).getTime() - days * 86400_000).toISOString().slice(0, 10);
   return Math.max(0, dates.findIndex(d => d >= cutoff));
 }
 
@@ -49,8 +46,7 @@ function SortedTooltip({ active, payload, label }: TooltipProps<number, string>)
   if (!active || !payload?.length) return null;
   const entries = payload
     .map(p => ({ name: String(p.name ?? p.dataKey ?? ''), value: typeof p.value === 'number' ? p.value : 0, color: p.color || (p as any).fill || '#888' }))
-    .filter(e => e.value > 0.01)
-    .sort((a, b) => b.value - a.value);
+    .filter(e => e.value > 0.01).sort((a, b) => b.value - a.value);
   if (!entries.length) return null;
   const total = entries.reduce((s, e) => s + e.value, 0);
   return (
@@ -80,82 +76,84 @@ function SortedTooltip({ active, payload, label }: TooltipProps<number, string>)
   );
 }
 
-export function TvlChart() {
-  const [data, setData] = useState<TvlData | null>(null);
+export function OpenInterestChart() {
+  const [data, setData] = useState<OiData | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [view, setView] = useState<View>('protocol');
+  const [leg, setLeg] = useState<Leg>('TOTAL');
   const [range, setRange] = useState<Range>('90d');
   const [topN, setTopN] = useState<number>(15);
-  const [basis, setBasis] = useState<Basis>('sy');
 
   useEffect(() => {
-    fetch('/tvl.json')
+    fetch('/open_interest.json')
       .then(r => r.ok ? r.json() : Promise.reject(`HTTP ${r.status}`))
       .then(setData).catch(e => setErr(String(e)));
   }, []);
 
-  const series = (m: TvlData['byMarket'][string]) =>
-    basis === 'principal' ? (m.principalUsd ?? m.tvlUsd) : m.tvlUsd;
-
-  const protoSeries = useMemo(() => {
-    if (!data) return [] as number[];
-    return basis === 'principal' ? (data.protocolPrincipalUsd ?? data.protocolUsd) : data.protocolUsd;
-  }, [data, basis]);
+  const seriesKey: 'pt' | 'yt' | 'lp' | 'total' =
+    leg === 'PT' ? 'pt' : leg === 'YT' ? 'yt' : leg === 'LP' ? 'lp' : 'total';
 
   const selectedMarkets = useMemo(() => {
     if (!data) return [] as string[];
     const totals = Object.entries(data.byMarket).map(([mk, m]) => {
-      const arr = series(m);
-      return { key: mk, total: arr[arr.length - 1] || 0 };
+      const arr = (m as any)[seriesKey] as number[] | undefined;
+      const v = arr?.[arr.length - 1] || 0;
+      return { key: mk, total: v };
     });
     totals.sort((a, b) => b.total - a.total);
     return totals.slice(0, topN).filter(t => t.total > 0).map(t => t.key);
-  }, [data, topN, basis]);
+  }, [data, topN, leg]);
 
   const chartData = useMemo(() => {
     if (!data) return [];
     const startIdx = rangeStartIdx(data.dates, range);
     const dates = data.dates.slice(startIdx);
     if (view === 'protocol') {
-      return dates.map((d, i) => ({ date: d, TVL: protoSeries[startIdx + i] || 0 }));
+      const pt = data.protocol.pt.slice(startIdx);
+      const yt = data.protocol.yt.slice(startIdx);
+      const lp = (data.protocol.lp ?? Array(data.dates.length).fill(0)).slice(startIdx);
+      return dates.map((d, i) => ({ date: d, PT: pt[i] || 0, YT: yt[i] || 0, LP: lp[i] || 0, Total: (pt[i] || 0) + (yt[i] || 0) + (lp[i] || 0) }));
     }
     return dates.map((d, i) => {
       const idx = startIdx + i;
       const row: Record<string, number | string> = { date: d };
       for (const mk of selectedMarkets) {
-        const arr = data.byMarket[mk] ? series(data.byMarket[mk]) : [];
-        row[mk] = arr[idx] || 0;
+        const arr = (data.byMarket[mk] as any)[seriesKey] as number[] | undefined;
+        row[mk] = arr?.[idx] || 0;
       }
       return row;
     });
-  }, [data, view, range, selectedMarkets, basis, protoSeries]);
+  }, [data, view, leg, range, selectedMarkets]);
 
-  if (err) return <div className="text-red-400 text-sm p-4">Failed to load tvl.json: {err}</div>;
-  if (!data) return <div className="text-white/40 text-sm p-4">Loading TVL…</div>;
+  if (err) return <div className="text-red-400 text-sm p-4">Failed to load open_interest.json: {err}</div>;
+  if (!data) return <div className="text-white/40 text-sm p-4">Loading open interest…</div>;
 
   return (
     <section className="rounded-2xl border border-white/10 bg-white/5 p-4 mb-6">
       <header className="flex items-baseline justify-between flex-wrap gap-2 mb-3">
         <div>
-          <h2 className="text-sm uppercase tracking-wider text-white/60">TVL</h2>
+          <h2 className="text-sm uppercase tracking-wider text-white/60">Open Interest</h2>
           <p className="text-xs text-white/40">
-            {data.meta.dateRange[0]} → {data.meta.dateRange[1]} • current{' '}
-            {fmtUsd(basis === 'sy' ? data.meta.currentTvlUsd : (data.meta.currentPrincipalUsd ?? data.meta.currentTvlUsd))}
-            <span className="text-white/30"> • {basis === 'sy' ? 'SY-based (vault total)' : 'Principal (PT-backed)'}</span>
+            current: PT {fmtUsd(data.meta.currentPtUsd)} + YT {fmtUsd(data.meta.currentYtUsd)}
+            {(data.meta.currentLpUsd ?? 0) > 0 ? <> + LP {fmtUsd(data.meta.currentLpUsd!)}</> : null}
+            {' '}= {fmtUsd(data.meta.currentPtUsd + data.meta.currentYtUsd + (data.meta.currentLpUsd ?? 0))}
+            <span className="text-white/30"> • {data.meta.source}</span>
           </p>
         </div>
         <div className="flex items-center gap-1 flex-wrap">
-          {(['sy', 'principal'] as Basis[]).map(b => (
-            <button key={b} onClick={() => setBasis(b)}
-              className={`text-xs px-3 py-1 rounded-lg border ${basis === b ? 'border-white/30 bg-white/10' : 'border-white/10 text-white/40'}`}>
-              {b === 'sy' ? 'SY (DefiLlama)' : 'Principal'}
-            </button>
-          ))}
-          <span className="w-2" />
           {(['protocol', 'markets'] as View[]).map(v => (
             <button key={v} onClick={() => setView(v)}
               className={`text-xs px-3 py-1 rounded-lg border ${view === v ? 'border-white/30 bg-white/10' : 'border-white/10 text-white/40'}`}>
               {v === 'protocol' ? 'Protocol' : 'Markets'}
+            </button>
+          ))}
+          <span className="w-2" />
+          {((['TOTAL', 'PT', 'YT', 'LP'] as Leg[]).filter(
+            l => l !== 'LP' || (data.meta.currentLpUsd ?? 0) > 0
+          )).map(l => (
+            <button key={l} onClick={() => setLeg(l)}
+              className={`text-xs px-3 py-1 rounded-lg border ${leg === l ? 'border-white/30 bg-white/10' : 'border-white/10 text-white/40'}`}>
+              {l}
             </button>
           ))}
           <span className="w-2" />
@@ -186,7 +184,19 @@ export function TvlChart() {
           <Tooltip content={<SortedTooltip />} />
           <Legend wrapperStyle={{ fontSize: 11, color: '#aaa' }} iconType="square" iconSize={8} />
           {view === 'protocol' ? (
-            <Area type="monotone" dataKey="TVL" stroke="#4ade80" fill="#4ade8033" strokeWidth={2} />
+            leg === 'TOTAL' ? (
+              <>
+                <Area type="monotone" dataKey="PT" stackId="1" stroke="#a78bfa" fill="#a78bfa66" />
+                <Area type="monotone" dataKey="YT" stackId="1" stroke="#38bdf8" fill="#38bdf866" />
+                <Area type="monotone" dataKey="LP" stackId="1" stroke="#4ade80" fill="#4ade8066" />
+              </>
+            ) : leg === 'PT' ? (
+              <Area type="monotone" dataKey="PT" stroke="#a78bfa" fill="#a78bfa66" />
+            ) : leg === 'YT' ? (
+              <Area type="monotone" dataKey="YT" stroke="#38bdf8" fill="#38bdf866" />
+            ) : (
+              <Area type="monotone" dataKey="LP" stroke="#4ade80" fill="#4ade8066" />
+            )
           ) : (
             selectedMarkets.map((mk, i) => (
               <Area key={mk} type="monotone" dataKey={mk} stackId="m" stroke={COLORS[i % COLORS.length]} fill={COLORS[i % COLORS.length] + '66'} />

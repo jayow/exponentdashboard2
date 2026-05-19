@@ -36,7 +36,7 @@ pt_yt_derived as (
         cast(null as varchar)                                  as vault,
         pt_mint,
         yt_mint,
-        cast(null as varchar)                                  as lp_mint,
+        lp_mint,
         cast(null as varchar)                                  as amm_pool,
         cast(null as varchar)                                  as clmm_orderbook,
         cast(null as varchar)                                  as pool,

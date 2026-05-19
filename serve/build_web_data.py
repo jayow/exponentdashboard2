@@ -169,19 +169,181 @@ def build_volume_json(con: duckdb.DuckDBPyConnection) -> dict:
     return payload
 
 
+def build_tvl_json(con: duckdb.DuckDBPyConnection) -> dict:
+    """Daily TVL series — protocol total + per-market USD + underlying-units."""
+    bounds = con.execute("SELECT MIN(date)::VARCHAR, MAX(date)::VARCHAR FROM main_analytics.tvl_daily").fetchone()
+    if not bounds or not bounds[0]:
+        return {"meta": {"generatedAt": datetime.now(timezone.utc).isoformat(), "empty": True}}
+    min_d, max_d = bounds
+    dates = [r[0] for r in con.execute(
+        f"SELECT generate_series::DATE::VARCHAR FROM generate_series(DATE '{min_d}', DATE '{max_d}', INTERVAL 1 DAY)"
+    ).fetchall()]
+    # Protocol total per day — both SY-based (headline) and PT-based (principal/active)
+    proto = con.execute("""
+        SELECT date::VARCHAR,
+               SUM(tvl_usd),
+               SUM(principal_tvl_usd),
+               SUM(tvl_underlying)
+        FROM main_analytics.tvl_daily GROUP BY 1 ORDER BY 1
+    """).fetchall()
+    proto_map = {r[0]: (float(r[1] or 0), float(r[2] or 0), float(r[3] or 0)) for r in proto}
+    proto_usd      = [proto_map.get(d, (0, 0, 0))[0] for d in dates]
+    proto_principal = [proto_map.get(d, (0, 0, 0))[1] for d in dates]
+    # Per-market series
+    rows = con.execute("""
+        SELECT market_key, ticker, date::VARCHAR, tvl_usd, tvl_underlying, principal_tvl_usd
+        FROM main_analytics.tvl_daily
+    """).fetchall()
+    by_market: dict[str, dict] = {}
+    for mk, ticker, date, tvl_usd, tvl_und, principal in rows:
+        e = by_market.setdefault(mk, {"ticker": ticker, "usd_map": {}, "und_map": {}, "principal_map": {}})
+        e["usd_map"][date] = float(tvl_usd or 0)
+        e["und_map"][date] = float(tvl_und or 0)
+        e["principal_map"][date] = float(principal or 0)
+    by_market_out: dict[str, dict] = {}
+    totals = []
+    for mk, e in by_market.items():
+        usd = [e["usd_map"].get(d, 0.0) for d in dates]
+        und = [e["und_map"].get(d, 0.0) for d in dates]
+        principal = [e["principal_map"].get(d, 0.0) for d in dates]
+        by_market_out[mk] = {
+            "ticker": e["ticker"],
+            "tvlUsd": usd,
+            "tvlUnderlying": und,
+            "principalUsd": principal,
+        }
+        totals.append((mk, e["ticker"] or "", usd[-1] if usd else 0))
+    totals.sort(key=lambda x: -x[2])
+    top = [{"marketKey": mk, "ticker": tk, "tvlUsdNow": v} for mk, tk, v in totals[:20]]
+    return {
+        "meta": {
+            "generatedAt": datetime.now(timezone.utc).isoformat(),
+            "dateRange": [min_d, max_d],
+            "currentTvlUsd": proto_usd[-1] if proto_usd else 0,
+            "currentPrincipalUsd": proto_principal[-1] if proto_principal else 0,
+            "source": "tvl_daily — SY_supply × SY_rate × underlying_USD (DefiLlama-compatible). Principal series = PT_supply × underlying_USD.",
+        },
+        "dates": dates,
+        "protocolUsd": proto_usd,
+        "protocolPrincipalUsd": proto_principal,
+        "byMarket": by_market_out,
+        "topMarkets": top,
+    }
+
+
+def build_open_interest_json(con: duckdb.DuckDBPyConnection) -> dict:
+    """Daily OI series — PT+YT supplies × underlying USD."""
+    bounds = con.execute("SELECT MIN(date)::VARCHAR, MAX(date)::VARCHAR FROM main_analytics.open_interest_daily").fetchone()
+    if not bounds or not bounds[0]:
+        return {"meta": {"generatedAt": datetime.now(timezone.utc).isoformat(), "empty": True}}
+    min_d, max_d = bounds
+    dates = [r[0] for r in con.execute(
+        f"SELECT generate_series::DATE::VARCHAR FROM generate_series(DATE '{min_d}', DATE '{max_d}', INTERVAL 1 DAY)"
+    ).fetchall()]
+    proto = con.execute("""
+        SELECT date::VARCHAR,
+               SUM(oi_usd) FILTER (WHERE leg = 'PT'),
+               SUM(oi_usd) FILTER (WHERE leg = 'YT'),
+               SUM(oi_usd) FILTER (WHERE leg = 'LP')
+        FROM main_analytics.open_interest_daily GROUP BY 1 ORDER BY 1
+    """).fetchall()
+    by_date = {r[0]: (float(r[1] or 0), float(r[2] or 0), float(r[3] or 0)) for r in proto}
+    pt = [by_date.get(d, (0, 0, 0))[0] for d in dates]
+    yt = [by_date.get(d, (0, 0, 0))[1] for d in dates]
+    lp = [by_date.get(d, (0, 0, 0))[2] for d in dates]
+    rows = con.execute("""
+        SELECT market_key, ticker, date::VARCHAR, leg, SUM(oi_usd)
+        FROM main_analytics.open_interest_daily
+        GROUP BY 1, 2, 3, 4
+    """).fetchall()
+    by_market: dict[str, dict] = {}
+    for mk, ticker, date, leg, oi in rows:
+        e = by_market.setdefault(mk, {"ticker": ticker, "pt_map": {}, "yt_map": {}, "lp_map": {}})
+        if leg == "PT":
+            e["pt_map"][date] = float(oi or 0)
+        elif leg == "YT":
+            e["yt_map"][date] = float(oi or 0)
+        elif leg == "LP":
+            e["lp_map"][date] = float(oi or 0)
+    by_market_out: dict[str, dict] = {}
+    totals = []
+    for mk, e in by_market.items():
+        pt_arr = [e["pt_map"].get(d, 0.0) for d in dates]
+        yt_arr = [e["yt_map"].get(d, 0.0) for d in dates]
+        lp_arr = [e["lp_map"].get(d, 0.0) for d in dates]
+        total_arr = [a + b + c for a, b, c in zip(pt_arr, yt_arr, lp_arr)]
+        by_market_out[mk] = {"ticker": e["ticker"], "pt": pt_arr, "yt": yt_arr, "lp": lp_arr, "total": total_arr}
+        totals.append((mk, e["ticker"] or "", total_arr[-1] if total_arr else 0))
+    totals.sort(key=lambda x: -x[2])
+    return {
+        "meta": {
+            "generatedAt": datetime.now(timezone.utc).isoformat(),
+            "dateRange": [min_d, max_d],
+            "currentPtUsd": pt[-1] if pt else 0,
+            "currentYtUsd": yt[-1] if yt else 0,
+            "currentLpUsd": lp[-1] if lp else 0,
+            "source": "open_interest_daily (PT + YT + LP supply, USD)",
+        },
+        "dates": dates,
+        "protocol": {"pt": pt, "yt": yt, "lp": lp, "total": [a + b + c for a, b, c in zip(pt, yt, lp)]},
+        "byMarket": by_market_out,
+        "topMarkets": [{"marketKey": mk, "ticker": tk, "oiUsdNow": v} for mk, tk, v in totals[:20]],
+    }
+
+
+def build_market_share_json(con: duckdb.DuckDBPyConnection) -> dict:
+    """Per-asset (ticker) market share, latest date + 30d avg."""
+    rows = con.execute("""
+        WITH latest AS (SELECT MAX(date) AS d FROM main_analytics.market_share_daily)
+        SELECT ms.ticker, ms.volume_usd, ms.volume_share_pct, ms.tvl_usd, ms.tvl_share_pct
+        FROM main_analytics.market_share_daily ms JOIN latest l ON ms.date = l.d
+        WHERE ms.ticker IS NOT NULL
+        ORDER BY COALESCE(ms.tvl_usd, 0) DESC NULLS LAST
+    """).fetchall()
+    snapshot = [
+        {"ticker": r[0], "volumeUsd": float(r[1] or 0), "volumeSharePct": float(r[2] or 0),
+         "tvlUsd": float(r[3] or 0), "tvlSharePct": float(r[4] or 0)}
+        for r in rows
+    ]
+    # 30-day rollup
+    rows30 = con.execute("""
+        SELECT ticker, SUM(volume_usd) AS vol30, AVG(tvl_usd) AS tvl_avg30
+        FROM main_analytics.market_share_daily
+        WHERE date >= CURRENT_DATE - INTERVAL 30 DAY AND ticker IS NOT NULL
+        GROUP BY 1
+    """).fetchall()
+    total_vol30 = sum(r[1] or 0 for r in rows30) or 1
+    total_tvl30 = sum(r[2] or 0 for r in rows30) or 1
+    rollup30 = [
+        {"ticker": r[0], "volumeUsd30d": float(r[1] or 0),
+         "volumeShare30dPct": 100.0 * (r[1] or 0) / total_vol30,
+         "tvlUsdAvg30d": float(r[2] or 0),
+         "tvlShare30dPct": 100.0 * (r[2] or 0) / total_tvl30}
+        for r in rows30
+    ]
+    rollup30.sort(key=lambda x: -x["tvlUsdAvg30d"])
+    return {
+        "meta": {"generatedAt": datetime.now(timezone.utc).isoformat()},
+        "snapshot": snapshot,
+        "rolling30d": rollup30,
+    }
+
+
 def build() -> None:
     WEB_PUBLIC.mkdir(parents=True, exist_ok=True)
     con = duckdb.connect(str(WAREHOUSE_PATH), read_only=True)
     try:
-        rprint("[cyan]Building volume.json…[/cyan]")
-        payload = build_volume_json(con)
-        _write_atomic(WEB_PUBLIC / "volume.json", payload)
-        meta = payload.get("meta") or {}
-        usd = meta.get("totalsUsd") or {}
-        rprint(
-            f"  wrote volume.json  range={meta.get('dateRange')}  "
-            f"PT_USD={usd.get('pt', 0):,.0f}  YT_USD={usd.get('yt', 0):,.0f}"
-        )
+        for name, builder in [
+            ("volume.json", build_volume_json),
+            ("tvl.json", build_tvl_json),
+            ("open_interest.json", build_open_interest_json),
+            ("market_share.json", build_market_share_json),
+        ]:
+            rprint(f"[cyan]Building {name}…[/cyan]")
+            payload = builder(con)
+            _write_atomic(WEB_PUBLIC / name, payload)
+            size = (WEB_PUBLIC / name).stat().st_size / 1024
+            rprint(f"  wrote {name}  ({size:.1f} KB)")
     finally:
         con.close()
     rprint("[green]serve done[/green]")
