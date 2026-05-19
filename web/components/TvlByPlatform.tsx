@@ -12,7 +12,11 @@ function fmtUsd(n: number) {
   return `$${n.toFixed(0)}`;
 }
 
-const MIN_USD = 100;  // hide platforms with <$100 latest TVL (dust + expired)
+// Hide dust platforms — must clear BOTH thresholds:
+//   * ≥ $10K absolute  (visible by itself)
+//   * ≥ 0.1% of total  (visible relative to leaders)
+const MIN_USD_ABS = 10_000;
+const MIN_PCT_OF_TOTAL = 0.001;
 
 export function TvlByPlatform() {
   const [data, setData] = useState<TvlData | null>(null);
@@ -20,10 +24,11 @@ export function TvlByPlatform() {
 
   const rows = useMemo(() => {
     if (!data) return [];
-    return Object.entries(data.byPlatform)
+    const all = Object.entries(data.byPlatform)
       .map(([platform, series]) => ({ platform, value: series[series.length - 1] || 0 }))
-      .filter(r => r.value >= MIN_USD)
       .sort((a, b) => b.value - a.value);
+    const total = all.reduce((s, r) => s + r.value, 0) || 1;
+    return all.filter(r => r.value >= MIN_USD_ABS && r.value / total >= MIN_PCT_OF_TOTAL);
   }, [data]);
 
   const total = rows.reduce((s, r) => s + r.value, 0);
