@@ -134,13 +134,26 @@ export function BigChart() {
 
     function emitFromSeries(
       seriesByKey: Record<string, number[]>,
-      sortBy: 'latest' | 'sum',
+      sortBy: 'latest' | 'sum' | 'maxInRange',
       isMarket: boolean,
       platformResolver: (k: string) => string,
     ) {
+      // sortBy controls how the default top-N is picked:
+      //   'latest'     — last-day value (what's biggest now)
+      //   'sum'        — lifetime cumulative (good for volume)
+      //   'maxInRange' — max value within the visible window (catches
+      //                  historical giants that have since matured/shrunk)
+      const sortValOf = (s: number[]) => {
+        const inRange = s.slice(start);
+        if (sortBy === 'latest')     return inRange[inRange.length - 1] || 0;
+        if (sortBy === 'sum')        return inRange.reduce((a, b) => a + (b || 0), 0);
+        // maxInRange
+        let mx = 0; for (const v of inRange) if (v > mx) mx = v;
+        return mx;
+      };
       const entries = Object.entries(seriesByKey).map(([k, s]) => ({
         k,
-        sortVal: sortBy === 'latest' ? (s[s.length - 1] || 0) : s.reduce((a, b) => a + (b || 0), 0),
+        sortVal: sortValOf(s),
         series: s,
       })).filter(e => e.sortVal > 0).sort((a, b) => b.sortVal - a.sortVal);
       const allKeys = entries.map(e => e.k);
@@ -173,7 +186,7 @@ export function BigChart() {
         };
       }
       if (effectiveView === 'platform') {
-        return emitFromSeries(tvl.byPlatform, 'latest', false, () => '');
+        return emitFromSeries(tvl.byPlatform, 'maxInRange', false, () => '');
       }
       const seriesByMk: Record<string, number[]> = {};
       const platformForMk: Record<string, string> = {};
@@ -181,7 +194,7 @@ export function BigChart() {
         seriesByMk[mk] = m.tvlUsd;
         platformForMk[mk] = m.platform || platformOfTicker(m.ticker);
       }
-      return emitFromSeries(seriesByMk, 'latest', true, (k: string) => platformForMk[k]);
+      return emitFromSeries(seriesByMk, 'maxInRange', true, (k: string) => platformForMk[k]);
     }
 
     if (metric === 'volume' && vol) {
