@@ -110,7 +110,7 @@ export function TopStats() {
     },
     {
       label: 'Age',
-      value: s.protocol.ageDays != null ? `${s.protocol.ageDays}d` : '—',
+      value: s.protocol.ageDays != null ? `${s.protocol.ageDays}D` : '—',
     },
   ];
 
