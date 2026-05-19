@@ -722,6 +722,18 @@ def build_stats_json(con: duckdb.DuckDBPyConnection) -> dict:
         )
     """).fetchone()
     holders_w_n = int(holders_w[0] or 0) if holders_w else 0
+    # New holders in the last 7d (proxy: wallets whose first_seen is in
+    # the last 7 days, from user_growth_daily). Falls back to 0 if mart
+    # not built yet.
+    try:
+        new_holders_7d_row = con.execute("""
+            SELECT COALESCE(SUM(new_wallets), 0)
+            FROM main_analytics.user_growth_daily
+            WHERE date > (SELECT MAX(date) FROM main_analytics.user_growth_daily) - INTERVAL 7 DAY
+        """).fetchone()
+        new_holders_7d = int(new_holders_7d_row[0] or 0) if new_holders_7d_row else 0
+    except Exception:
+        new_holders_7d = 0
     return {
         "meta": {"generatedAt": datetime.now(timezone.utc).isoformat()},
         "markets": {
@@ -753,6 +765,7 @@ def build_stats_json(con: duckdb.DuckDBPyConnection) -> dict:
         "holders": {
             "totalUniqueOwners": int(holders[0] or 0) if holders else 0,
             "weekAgo": holders_w_n,
+            "newSevenDay": new_holders_7d,
         },
         "marketsActiveWeekAgo": active_w,
         "protocol": {

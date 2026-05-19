@@ -10,7 +10,7 @@ type Stats = {
     weekAgo: { totalUsd: number; ptUsd: number; ytUsd: number; lpUsd: number; idleUsd: number };
   };
   volume: { lifetimeUsd: number; thirty30Usd: number; sevenDayUsd: number };
-  holders: { totalUniqueOwners: number; weekAgo: number };
+  holders: { totalUniqueOwners: number; weekAgo: number; newSevenDay: number };
   marketsActiveWeekAgo: number;
   protocol: { firstActivityDate: string | null; ageDays: number | null };
 };
@@ -21,26 +21,34 @@ function fmtUsd(n: number) {
   if (Math.abs(n) >= 1e3) return `$${(n / 1e3).toFixed(1)}K`;
   return `$${n.toFixed(0)}`;
 }
-function fmtDate(s: string | null) {
-  if (!s) return '—';
-  const d = new Date(s);
-  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: '2-digit' });
-}
 
-function Delta({ now, then, kind }: { now: number; then: number; kind: 'usd' | 'count' }) {
-  if (!then) return <span className="text-white/20 text-[10px]">—</span>;
+// Color delta by direction; always include "7d" suffix so the timeframe
+// is explicit. `good` controls whether ▲ is treated as positive/green
+// (`up`) or negative/rose (`down`) — e.g. Idle going UP is neutral-to-bad.
+function Delta({ now, then, kind = 'usd', good = 'up' }:
+  { now: number; then: number; kind?: 'usd' | 'count'; good?: 'up' | 'down' | 'neutral' }) {
+  if (then == null || then === 0) return <span className="text-white/20 text-[10px]">— 7d</span>;
   const diff = now - then;
-  if (!isFinite(diff) || diff === 0) return <span className="text-white/20 text-[10px]">flat</span>;
+  if (!isFinite(diff) || diff === 0) return <span className="text-white/20 text-[10px]">flat 7d</span>;
   const pct = (diff / then) * 100;
   const up = diff > 0;
-  const cls = up ? 'text-emerald-400' : 'text-rose-400';
+  let cls = 'text-white/40';
+  if (good === 'up')      cls = up ? 'text-emerald-400' : 'text-rose-400';
+  else if (good === 'down') cls = up ? 'text-rose-400' : 'text-emerald-400';
   const arrow = up ? '▲' : '▼';
   const abs = kind === 'usd' ? fmtUsd(Math.abs(diff)) : Math.abs(diff).toLocaleString();
   return (
     <span className={`text-[10px] tabular-nums ${cls}`}>
-      {arrow} {abs} ({Math.abs(pct).toFixed(1)}%)
+      {arrow} {abs} ({Math.abs(pct).toFixed(1)}%) <span className="text-white/40">7d</span>
     </span>
   );
+}
+
+// Plain "+N 7d" addition — green if positive, neutral if zero.
+function Plus7d({ amount, kind = 'usd' }: { amount: number; kind?: 'usd' | 'count' }) {
+  if (amount <= 0) return <span className="text-white/20 text-[10px]">— 7d</span>;
+  const label = kind === 'usd' ? fmtUsd(amount) : amount.toLocaleString();
+  return <span className="text-[10px] tabular-nums text-emerald-400">+{label} <span className="text-white/40">7d</span></span>;
 }
 
 export function TopStats() {
@@ -53,27 +61,28 @@ export function TopStats() {
     {
       label: 'Income (PT)',
       value: fmtUsd(s.tvl.ptUsd),
-      delta: <Delta now={s.tvl.ptUsd} then={s.tvl.weekAgo.ptUsd} kind="usd" />,
+      delta: <Delta now={s.tvl.ptUsd} then={s.tvl.weekAgo.ptUsd} kind="usd" good="up" />,
     },
     {
       label: 'Farm (YT)',
       value: fmtUsd(s.tvl.ytUsd),
-      delta: <Delta now={s.tvl.ytUsd} then={s.tvl.weekAgo.ytUsd} kind="usd" />,
+      delta: <Delta now={s.tvl.ytUsd} then={s.tvl.weekAgo.ytUsd} kind="usd" good="up" />,
     },
     {
       label: 'Liquidity (LP)',
       value: fmtUsd(s.tvl.lpUsd),
-      delta: <Delta now={s.tvl.lpUsd} then={s.tvl.weekAgo.lpUsd} kind="usd" />,
+      delta: <Delta now={s.tvl.lpUsd} then={s.tvl.weekAgo.lpUsd} kind="usd" good="up" />,
     },
     {
       label: 'Idle',
       value: fmtUsd(s.tvl.idleUsd),
-      delta: <Delta now={s.tvl.idleUsd} then={s.tvl.weekAgo.idleUsd} kind="usd" />,
+      // Idle going UP = capital sitting unused → mildly bad; down = good
+      delta: <Delta now={s.tvl.idleUsd} then={s.tvl.weekAgo.idleUsd} kind="usd" good="down" />,
     },
     {
       label: 'All-Time Volume',
       value: fmtUsd(s.volume.lifetimeUsd),
-      delta: <span className="text-[10px] text-white/40">+{fmtUsd(s.volume.sevenDayUsd)} 7d</span>,
+      delta: <Plus7d amount={s.volume.sevenDayUsd} kind="usd" />,
     },
     {
       label: 'Peak TVL',
@@ -82,14 +91,12 @@ export function TopStats() {
     {
       label: 'Holders',
       value: s.holders.totalUniqueOwners.toLocaleString(),
-      delta: s.holders.weekAgo > 0
-        ? <Delta now={s.holders.totalUniqueOwners} then={s.holders.weekAgo} kind="count" />
-        : <span className="text-white/20 text-[10px]">first snapshot</span>,
+      // "+N new 7d" — wallets that became active for the first time
+      delta: <Plus7d amount={s.holders.newSevenDay} kind="count" />,
     },
     {
       label: 'Markets',
       value: `${s.markets.active} / ${s.markets.total}`,
-      delta: <Delta now={s.markets.active} then={s.marketsActiveWeekAgo} kind="count" />,
     },
     {
       label: 'Platforms',
@@ -106,9 +113,8 @@ export function TopStats() {
       <div>
         <div className="text-[11px] uppercase tracking-wider text-white/40">Protocol TVL</div>
         <div className="text-4xl font-semibold tabular-nums text-white mt-1">{fmtUsd(s.tvl.currentUsd)}</div>
-        <div className="mt-1 flex items-center gap-2">
-          <Delta now={s.tvl.currentUsd} then={s.tvl.weekAgo.totalUsd} kind="usd" />
-          <span className="text-xs text-white/30">vs 7d ago • peak {fmtUsd(s.tvl.peakUsd)} on {fmtDate(s.tvl.peakDate)}</span>
+        <div className="mt-1">
+          <Delta now={s.tvl.currentUsd} then={s.tvl.weekAgo.totalUsd} kind="usd" good="up" />
         </div>
       </div>
       <div className="grid grid-cols-3 md:grid-cols-5 lg:grid-cols-10 gap-x-6 gap-y-3 flex-1">
