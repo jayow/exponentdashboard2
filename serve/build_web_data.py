@@ -575,6 +575,49 @@ def build_stats_json(con: duckdb.DuckDBPyConnection) -> dict:
     """).fetchone()
     sy_usd = float(decomp[0] or 0); pt_usd = float(decomp[1] or 0); lp_usd = float(decomp[2] or 0)
     idle_usd = max(0.0, sy_usd - pt_usd - lp_usd)
+    # Week-ago snapshot for the same fields. Use the latest date minus 7
+    # days, falling back to whatever's closest if 7d ago has no row.
+    week_ago = con.execute("""
+        WITH target AS (
+          SELECT (SELECT MAX(date) FROM main_intermediate.int_sy_tvl_daily) - INTERVAL 7 DAY AS d
+        ),
+        sy_w AS (
+          SELECT SUM(tvl_usd) v FROM main_intermediate.int_sy_tvl_daily
+          WHERE date = (SELECT d::DATE FROM target)
+        ),
+        pt_w AS (
+          SELECT SUM(principal_tvl_usd) v FROM main_analytics.tvl_daily
+          WHERE date = (SELECT d::DATE FROM target)
+        ),
+        lp_w AS (
+          SELECT SUM(usd_value) v FROM main_analytics.active_positions_daily
+          WHERE leg = 'LP' AND date = (SELECT d::DATE FROM target)
+        ),
+        mkt_w AS (
+          SELECT COUNT(*) FILTER (WHERE maturity_date >= (SELECT d::DATE FROM target)) AS active
+          FROM main_core.dim_markets WHERE maturity_date IS NOT NULL
+        )
+        SELECT (SELECT v FROM sy_w), (SELECT v FROM pt_w), (SELECT v FROM lp_w),
+               (SELECT active FROM mkt_w)
+    """).fetchone()
+    sy_w   = float(week_ago[0] or 0); pt_w = float(week_ago[1] or 0); lp_w = float(week_ago[2] or 0)
+    idle_w = max(0.0, sy_w - pt_w - lp_w)
+    active_w = int(week_ago[3] or 0)
+    # Volume in last 7 days (the "weekly delta" for All-Time Volume = additions this week)
+    vol7 = con.execute("""
+        SELECT COALESCE(SUM(volume_usd), 0)
+        FROM main_analytics.trading_volume_daily
+        WHERE date > (SELECT MAX(date) FROM main_analytics.trading_volume_daily) - INTERVAL 7 DAY
+    """).fetchone()[0] or 0
+    # Holders one week ago (closest snapshot ≤ today-7d)
+    holders_w = con.execute("""
+        SELECT COUNT(DISTINCT owner) FROM main.raw_holders
+        WHERE snapshot_date = (
+          SELECT MAX(snapshot_date) FROM main.raw_holders
+          WHERE snapshot_date <= (SELECT MAX(snapshot_date) FROM main.raw_holders) - INTERVAL 7 DAY
+        )
+    """).fetchone()
+    holders_w_n = int(holders_w[0] or 0) if holders_w else 0
     return {
         "meta": {"generatedAt": datetime.now(timezone.utc).isoformat()},
         "markets": {
@@ -593,14 +636,20 @@ def build_stats_json(con: duckdb.DuckDBPyConnection) -> dict:
             "ptUsd":              pt_usd,
             "lpUsd":              lp_usd,
             "idleUsd":            idle_usd,
+            "weekAgo": {
+                "totalUsd": sy_w, "ptUsd": pt_w, "lpUsd": lp_w, "idleUsd": idle_w,
+            },
         },
         "volume": {
             "lifetimeUsd": float(vol[0] or 0) if vol else 0.0,
             "thirty30Usd": float(vol[1] or 0) if vol else 0.0,
+            "sevenDayUsd": float(vol7),
         },
         "holders": {
             "totalUniqueOwners": int(holders[0] or 0) if holders else 0,
+            "weekAgo": holders_w_n,
         },
+        "marketsActiveWeekAgo": active_w,
         "protocol": {
             "firstActivityDate": first_date,
             "ageDays": (today - datetime.strptime(first_date, "%Y-%m-%d").date()).days if first_date else None,

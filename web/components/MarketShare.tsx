@@ -1,6 +1,7 @@
 'use client';
 import { useEffect, useMemo, useState } from 'react';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, TooltipProps } from 'recharts';
+import { colorForTicker, platformOfTicker, colorForMarket } from '@/lib/colors';
 
 type SnapshotRow = {
   ticker: string;
@@ -29,11 +30,7 @@ type Metric = 'volume' | 'tvl';
 type Mode = 'abs' | 'pct';
 type Range = '30d' | '90d' | '1y' | 'all';
 
-const COLORS = [
-  '#a78bfa', '#38bdf8', '#4ade80', '#f87171', '#fbbf24',
-  '#fb923c', '#22d3ee', '#e879f9', '#a3e635', '#818cf8',
-  '#facc15', '#34d399', '#f472b6', '#60a5fa', '#fcd34d',
-];
+const TOP_N = 10;
 
 function fmtUsd(n: number) {
   if (Math.abs(n) >= 1e9) return `$${(n / 1e9).toFixed(2)}B`;
@@ -91,7 +88,6 @@ export function MarketShare() {
   const [metric, setMetric] = useState<Metric>('volume');
   const [mode, setMode] = useState<Mode>('pct');
   const [range, setRange] = useState<Range>('90d');
-  const [topN, setTopN] = useState<number>(8);
 
   useEffect(() => {
     fetch('/market_share.json')
@@ -113,8 +109,8 @@ export function MarketShare() {
       total: series[key].slice(start).reduce((s, v) => s + (v || 0), 0),
     }));
     totals.sort((a, b) => b.total - a.total);
-    const top = totals.slice(0, topN).filter(t => t.total > 0).map(t => t.ticker);
-    const otherTickers = totals.slice(topN).map(t => t.ticker);
+    const top = totals.slice(0, TOP_N).filter(t => t.total > 0).map(t => t.ticker);
+    const otherTickers = totals.slice(TOP_N).map(t => t.ticker);
 
     // Build rows: one per date with each top ticker + Other
     const rows = sliced.map((d, i) => {
@@ -139,7 +135,22 @@ export function MarketShare() {
     });
 
     return { topTickers: [...top, 'Other'], chartData: rows };
-  }, [data, metric, mode, range, topN]);
+  }, [data, metric, mode, range]);
+
+  // Color per ticker: same hue family for tickers on the same platform,
+  // shaded by index within that family so siblings differ visibly.
+  const tickerColor = useMemo(() => {
+    const seen: Record<string, number> = {};
+    const out: Record<string, string> = {};
+    for (const tk of topTickers) {
+      if (tk === 'Other') { out[tk] = '#666'; continue; }
+      const p = platformOfTicker(tk);
+      const i = seen[p] || 0;
+      out[tk] = colorForMarket(p, i);
+      seen[p] = i + 1;
+    }
+    return out;
+  }, [topTickers]);
 
   // Dominance: which ticker leads the most recent day
   const leader = useMemo(() => {
@@ -162,7 +173,7 @@ export function MarketShare() {
         <div>
           <h2 className="text-sm uppercase tracking-wider text-white/60">Market Share</h2>
           <p className="text-xs text-white/40">
-            Top {topN} tickers {metric === 'volume' ? 'by volume' : 'by TVL'} • {mode === 'pct' ? 'share %' : 'absolute USD'}
+            Top {TOP_N} tickers {metric === 'volume' ? 'by volume' : 'by TVL'} • {mode === 'pct' ? 'share %' : 'absolute USD'}
             {leader && leader.ticker && (
               <span className="text-white/30"> • latest leader: {leader.ticker} {mode === 'pct' ? `(${leader.value.toFixed(0)}%)` : `(${fmtUsd(leader.value)})`}</span>
             )}
@@ -180,14 +191,6 @@ export function MarketShare() {
             <button key={m} onClick={() => setMode(m)}
               className={`text-xs px-3 py-1 rounded-lg border ${mode === m ? 'border-white/30 bg-white/10' : 'border-white/10 text-white/40'}`}>
               {m === 'pct' ? 'Share %' : 'Absolute'}
-            </button>
-          ))}
-          <span className="w-2" />
-          <span className="text-[11px] text-white/30">Top</span>
-          {[5, 8, 12].map(n => (
-            <button key={n} onClick={() => setTopN(n)}
-              className={`text-xs px-2 py-1 rounded-lg border ${topN === n ? 'border-white/30 bg-white/10' : 'border-white/10 text-white/40'}`}>
-              {n}
             </button>
           ))}
           <span className="w-2" />
@@ -209,19 +212,18 @@ export function MarketShare() {
             domain={mode === 'pct' ? [0, 100] : ['auto', 'auto']}
           />
           <Tooltip content={<StackedTooltip mode={mode} />} />
-          {topTickers.map((tk, i) => (
+          {topTickers.map(tk => (
             <Bar key={tk} dataKey={tk} stackId="s"
-                 fill={tk === 'Other' ? '#666' : COLORS[i % COLORS.length]}
-                 fillOpacity={0.9} />
+                 fill={tickerColor[tk]} fillOpacity={0.9} />
           ))}
         </BarChart>
       </ResponsiveContainer>
 
       {/* Legend */}
       <div className="flex flex-wrap gap-3 mt-3 text-[11px] text-white/70 justify-center">
-        {topTickers.map((tk, i) => (
+        {topTickers.map(tk => (
           <span key={tk} className="flex items-center gap-1.5">
-            <span className="w-2 h-2 rounded-sm" style={{ backgroundColor: tk === 'Other' ? '#666' : COLORS[i % COLORS.length] }} />
+            <span className="w-2 h-2 rounded-sm" style={{ backgroundColor: tickerColor[tk] }} />
             {tk}
           </span>
         ))}
