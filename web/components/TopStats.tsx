@@ -115,18 +115,20 @@ export function TopStats() {
   ];
 
   return (
-    <section className="mb-6">
-      {/* Hero */}
-      <div className="mb-5">
-        <div className="text-[11px] uppercase tracking-wider text-white/40">Protocol TVL</div>
-        <div className="text-4xl font-semibold tabular-nums text-white mt-1">{fmtUsd(s.tvl.currentUsd)}</div>
-        <div className="mt-1">
+    <section className="mb-6 flex flex-col lg:flex-row lg:items-start gap-6 lg:gap-10">
+      {/* Hero — large, beside the grid on lg+ */}
+      <div className="lg:shrink-0">
+        <div className="text-xs uppercase tracking-wider text-white/40">Protocol TVL</div>
+        <div className="text-5xl lg:text-6xl font-semibold tabular-nums text-white mt-2 leading-none">
+          {fmtUsd(s.tvl.currentUsd)}
+        </div>
+        <div className="mt-3">
           <Delta now={s.tvl.currentUsd} then={s.tvl.weekAgo.totalUsd} kind="usd" good="up" />
         </div>
       </div>
 
-      {/* Stat grid — 2/3/5 cols depending on viewport, generous spacing */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-x-8 gap-y-5">
+      {/* Stat grid — 5 × 2 on lg, beside hero. xs/sm: 2/3 cols stacked below */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-x-8 gap-y-5 flex-1 lg:pl-2 lg:border-l lg:border-white/10">
         {small.map(c => (
           <div key={c.label} className="min-w-0">
             <div className="text-[10px] uppercase tracking-wider text-white/40 truncate">{c.label}</div>
