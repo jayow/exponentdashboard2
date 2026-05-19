@@ -336,6 +336,18 @@ def build_tvl_json(con: duckdb.DuckDBPyConnection) -> dict:
         for d in dates
     ]
 
+    # TGE-style markers: first date each platform crosses a meaningful TVL
+    # threshold ($10K) — used to annotate the chart with platform-launch
+    # vertical lines. Returns one marker per platform that ever appeared.
+    THRESHOLD = 10_000.0
+    tge_markers: list[dict] = []
+    for plat, series in by_platform.items():
+        first_idx = next((i for i, v in enumerate(series) if v >= THRESHOLD), None)
+        if first_idx is None:
+            continue
+        tge_markers.append({"platform": plat, "date": dates[first_idx]})
+    tge_markers.sort(key=lambda m: m["date"])
+
     return {
         "meta": {
             "generatedAt": datetime.now(timezone.utc).isoformat(),
@@ -357,6 +369,7 @@ def build_tvl_json(con: duckdb.DuckDBPyConnection) -> dict:
         "byPlatform": {plat: series for plat, series in platforms_sorted},
         "byMarket": by_market_out,
         "topMarkets": top,
+        "tgeMarkers": tge_markers,
     }
 
 
