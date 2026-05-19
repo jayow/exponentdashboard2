@@ -39,16 +39,22 @@ function Delta({ now, then, kind = 'usd', good = 'up' }:
   const abs = kind === 'usd' ? fmtUsd(Math.abs(diff)) : Math.abs(diff).toLocaleString();
   return (
     <span className={`text-[10px] tabular-nums ${cls}`}>
-      {arrow} {abs} ({Math.abs(pct).toFixed(1)}%) 7d
+      {arrow} {abs} ({Math.abs(pct).toFixed(1)}%) vs 7d
     </span>
   );
 }
 
-// Plain "+N 7d" addition — green if positive, neutral if zero.
-function Plus7d({ amount, kind = 'usd' }: { amount: number; kind?: 'usd' | 'count' }) {
+// "+N {what} 7d" addition — green if positive, neutral if zero. `what` is
+// an optional noun describing what the count represents (e.g. "new").
+function Plus7d({ amount, kind = 'usd', what }:
+  { amount: number; kind?: 'usd' | 'count'; what?: string }) {
   if (amount <= 0) return <span className="text-white/20 text-[10px]">— 7d</span>;
   const label = kind === 'usd' ? fmtUsd(amount) : amount.toLocaleString();
-  return <span className="text-[10px] tabular-nums text-emerald-400">+{label} 7d</span>;
+  return (
+    <span className="text-[10px] tabular-nums text-emerald-400">
+      +{label}{what ? ` ${what}` : ''} 7d
+    </span>
+  );
 }
 
 export function TopStats() {
@@ -92,7 +98,7 @@ export function TopStats() {
       label: 'Holders',
       value: s.holders.totalUniqueOwners.toLocaleString(),
       // "+N new 7d" — wallets that became active for the first time
-      delta: <Plus7d amount={s.holders.newSevenDay} kind="count" />,
+      delta: <Plus7d amount={s.holders.newSevenDay} kind="count" what="new" />,
     },
     {
       label: 'Markets',
