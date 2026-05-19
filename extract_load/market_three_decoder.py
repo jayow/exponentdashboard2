@@ -8,9 +8,10 @@ the single place to update — keeps the decode logic isolated.
 Offset map (verified against active markets in v1):
   [0..8)    Anchor discriminator (must match MARKET_THREE_DISCRIMINATOR)
   [8..40)   <other pubkey — purpose TBD>
-  [40..72)  <other pubkey>
+  [40..72)  PT mint                                ← key field
   [72..104) SY mint                                ← key field
   [104..136) Vault PDA (holds the underlying)      ← key field
+  [136..168) LP mint                               ← key field
 
   Maturity timestamp (i64 LE) lives at one of these offsets, in order of
   observed frequency: 416 / 364 / 312 / 260 / 208. We probe each and
@@ -41,6 +42,8 @@ MATURITY_TS_CANDIDATE_OFFSETS = (416, 364, 312, 260, 208)
 class MarketThree:
     sy_mint: str
     vault: str
+    pt_mint: str
+    lp_mint: str
     maturity_ts: int | None
     raw_size: int
 
@@ -79,11 +82,13 @@ def decode(data: bytes) -> MarketThree | None:
     """
     if not is_market_three(data):
         return None
-    if len(data) < 136:
+    if len(data) < 168:
         return None
     return MarketThree(
+        pt_mint=_decode_pubkey(data, 40),
         sy_mint=_decode_pubkey(data, 72),
         vault=_decode_pubkey(data, 104),
+        lp_mint=_decode_pubkey(data, 136),
         maturity_ts=find_maturity_ts(data),
         raw_size=len(data),
     )
