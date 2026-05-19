@@ -370,6 +370,32 @@ def build_tvl_json(con: duckdb.DuckDBPyConnection) -> dict:
         for d in dates
     ]
 
+    # Per-market view CAN'T be summed from tvl_daily alone — that excludes
+    # unsplit SY (held raw, or LP'd) which has no per-market identity. For
+    # 2025 the missing share is 50–86% of protocol total. To make the stack
+    # add up to the protocol total, emit one synthetic "unsplit" market per
+    # platform with the residual SY value.
+    attributed_per_plat_day: dict[tuple[str, int], float] = {}
+    for mk, m in by_market_out.items():
+        plat = m["platform"]
+        for i, v in enumerate(m["tvlUsd"]):
+            attributed_per_plat_day[(plat, i)] = attributed_per_plat_day.get((plat, i), 0.0) + v
+    for plat, plat_series in by_platform.items():
+        unsplit = [
+            max(0.0, plat_series[i] - attributed_per_plat_day.get((plat, i), 0.0))
+            for i in range(len(dates))
+        ]
+        if sum(unsplit) > 0:
+            synth_key = f"{plat} (unsplit)"
+            by_market_out[synth_key] = {
+                "ticker": plat,
+                "platform": plat,
+                "synthetic": True,
+                "tvlUsd": unsplit,
+                "tvlUnderlying": [0.0] * len(dates),
+                "principalUsd": [0.0] * len(dates),
+            }
+
     # TGE markers: curated list of actual token-launch events for platforms
     # whose assets exist on Exponent. Lives in data/tge_dates.json so dates
     # can be edited without touching code. Only emit markers within the

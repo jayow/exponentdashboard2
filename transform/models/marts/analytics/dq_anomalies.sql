@@ -94,9 +94,36 @@ vol_outliers as (
         group by date
     )
     where daily_vol > 50 * median_30d and median_30d > 1000
+),
+-- Per-market sum vs protocol total: when sum across markets is way off,
+-- the per-market view is incomplete. Catches the "unsplit SY has no
+-- per-market identity" class of bug.
+sum_mismatch as (
+    select
+        'sum_mismatch' as category,
+        case when ratio < 0.5 then 'high' when ratio < 0.8 then 'medium' else 'low' end as severity,
+        date as anomaly_date,
+        cast(null as varchar) as entity,
+        'sum(byMarket)=$' || round(market_sum/1e6, 2) || 'M only ' ||
+        round(ratio*100, 0) || '% of protocol total $' || round(proto/1e6, 2) || 'M' as detail
+    from (
+        select
+            p.date,
+            p.protocol_tvl as proto,
+            coalesce(m.market_sum, 0) as market_sum,
+            coalesce(m.market_sum, 0) / nullif(p.protocol_tvl, 0) as ratio
+        from proto p
+        left join (
+            select date, sum(tvl_usd) as market_sum
+            from {{ ref('tvl_daily') }} group by date
+        ) m using (date)
+        where p.protocol_tvl > 100000
+    )
+    where ratio < 0.9
 )
 select * from proto_jumps
 union all select * from neg_tvl
 union all select * from orphan_tvl
 union all select * from price_gaps
 union all select * from vol_outliers
+union all select * from sum_mismatch
