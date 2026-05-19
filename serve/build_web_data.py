@@ -454,6 +454,95 @@ def build_holders_json(con: duckdb.DuckDBPyConnection) -> dict:
     }
 
 
+def build_users_json(con: duckdb.DuckDBPyConnection) -> dict:
+    """User / wallet stats: growth timeseries + headline aggregates + top wallets."""
+    headline = con.execute("""
+        SELECT
+          COUNT(*),
+          COUNT(*) FILTER (WHERE n_swaps = 1),
+          COUNT(*) FILTER (WHERE n_swaps BETWEEN 2 AND 9),
+          COUNT(*) FILTER (WHERE n_swaps BETWEEN 10 AND 99),
+          COUNT(*) FILTER (WHERE n_swaps >= 100),
+          SUM(total_volume_usd),
+          AVG(active_span_days),
+          MAX(n_swaps)
+        FROM main_analytics.user_lifetime_stats
+    """).fetchone()
+    growth = con.execute("""
+        SELECT date::VARCHAR, active_wallets, new_wallets, cumulative_wallets, swaps, volume_usd
+        FROM main_analytics.user_growth_daily ORDER BY date
+    """).fetchall()
+    top = con.execute("""
+        SELECT signer, n_swaps, total_volume_usd, n_markets, n_tickers,
+               first_seen::VARCHAR, last_seen::VARCHAR, active_span_days,
+               n_buy_yt, n_sell_yt, n_buy_pt, n_sell_pt
+        FROM main_analytics.user_lifetime_stats
+        ORDER BY total_volume_usd DESC NULLS LAST
+        LIMIT 50
+    """).fetchall()
+    # 30d concentration: what % of recent volume from top N wallets
+    recent = con.execute("""
+        WITH recent_per_wallet AS (
+          SELECT signer, SUM(notional_usd) v
+          FROM main_intermediate.int_amm_swaps
+          WHERE signer IS NOT NULL AND date >= CURRENT_DATE - INTERVAL 30 DAY
+          GROUP BY signer
+        ),
+        ranked AS (
+          SELECT v, ROW_NUMBER() OVER (ORDER BY v DESC) rk, SUM(v) OVER () total FROM recent_per_wallet
+        )
+        SELECT
+          MAX(total)                                                       AS total_volume,
+          SUM(v) FILTER (WHERE rk <= 10) / NULLIF(MAX(total), 0) * 100     AS top10_pct,
+          SUM(v) FILTER (WHERE rk <= 100) / NULLIF(MAX(total), 0) * 100    AS top100_pct,
+          COUNT(*)                                                         AS recent_wallets
+        FROM ranked
+    """).fetchone()
+    return {
+        "meta": {"generatedAt": datetime.now(timezone.utc).isoformat()},
+        "headline": {
+            "totalWallets":    int(headline[0] or 0),
+            "oneSwap":         int(headline[1] or 0),
+            "casualWallets":   int(headline[2] or 0),  # 2-9 swaps
+            "activeWallets":   int(headline[3] or 0),  # 10-99
+            "powerWallets":    int(headline[4] or 0),  # 100+
+            "lifetimeVolumeUsd": float(headline[5] or 0),
+            "avgActiveSpanDays": float(headline[6] or 0),
+            "maxSwapsByOneWallet": int(headline[7] or 0),
+        },
+        "concentration30d": {
+            "recentWallets":   int(recent[3] or 0),
+            "totalVolumeUsd":  float(recent[0] or 0),
+            "top10SharePct":   float(recent[1] or 0),
+            "top100SharePct":  float(recent[2] or 0),
+        },
+        "growth": {
+            "dates":             [r[0] for r in growth],
+            "activeWallets":     [int(r[1] or 0) for r in growth],
+            "newWallets":        [int(r[2] or 0) for r in growth],
+            "cumulativeWallets": [int(r[3] or 0) for r in growth],
+            "swaps":             [int(r[4] or 0) for r in growth],
+            "volumeUsd":         [float(r[5] or 0) for r in growth],
+        },
+        "topWallets": [
+            {
+                "signer": r[0],
+                "nSwaps": int(r[1] or 0),
+                "totalVolumeUsd": float(r[2] or 0),
+                "nMarkets": int(r[3] or 0),
+                "nTickers": int(r[4] or 0),
+                "firstSeen": r[5], "lastSeen": r[6],
+                "activeSpanDays": int(r[7] or 0),
+                "actions": {
+                    "buyYt": int(r[8] or 0), "sellYt": int(r[9] or 0),
+                    "buyPt": int(r[10] or 0), "sellPt": int(r[11] or 0),
+                },
+            }
+            for r in top
+        ],
+    }
+
+
 def build() -> None:
     WEB_PUBLIC.mkdir(parents=True, exist_ok=True)
     con = duckdb.connect(str(WAREHOUSE_PATH), read_only=True)
@@ -465,6 +554,7 @@ def build() -> None:
             ("active_positions.json", build_active_positions_json),
             ("holders.json", build_holders_json),
             ("market_share.json", build_market_share_json),
+            ("users.json", build_users_json),
         ]:
             rprint(f"[cyan]Building {name}…[/cyan]")
             payload = builder(con)

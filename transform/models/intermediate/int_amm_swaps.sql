@@ -189,6 +189,7 @@ unioned as (
 )
 select
     u.signature,
+    h.signer,
     u.block_time,
     to_timestamp(u.block_time)::date as date,
     u.market_key,
@@ -226,4 +227,6 @@ from unioned u
 left join {{ ref('stg_prices') }} p
     on  p.mint = u.underlying_mint
     and p.date = to_timestamp(u.block_time)::date
+left join {{ ref('stg_helius_tx') }} h
+    on h.signature = u.signature
 where greatest(abs(u.outflow_ui), u.inflow_ui) > 0
