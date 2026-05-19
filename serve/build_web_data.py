@@ -1001,6 +1001,14 @@ def build() -> None:
     finally:
         con.close()
     rprint("[green]serve done[/green]")
+    # Run data-quality validation last — flag any anomalies that slipped
+    # through. Non-blocking unless severity ≥ high (then exits non-zero).
+    try:
+        from serve.validate import main as validate_main
+        rprint("\n[cyan]Running data-quality checks…[/cyan]")
+        validate_main()
+    except Exception as e:
+        rprint(f"[yellow]warn[/yellow] validate step failed: {e}")
 
 
 if __name__ == "__main__":
