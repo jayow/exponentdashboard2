@@ -1,0 +1,262 @@
+'use client';
+import { Suspense, useEffect, useMemo, useState } from 'react';
+import Link from 'next/link';
+import { useSearchParams } from 'next/navigation';
+import {
+  AreaChart, Area, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
+} from 'recharts';
+
+type Holder = { owner: string; balance: number; usd: number; sharePct: number };
+type Snapshot = {
+  market: string; leg: string; holders: number;
+  totalBalance: number; totalUsd: number; top: Holder[];
+};
+type MarketHoldersData = { meta: any; byMarketLeg: Record<string, Snapshot> };
+
+type TvlByMarket = Record<string, { ticker: string; tvlUsd: number[]; tvlUnderlying: number[]; principalUsd?: number[] }>;
+type ApLeg = { byMarket: Record<string, number[]>; totals: number[] };
+type ApTicker = { underlyingMint: string; latest: Record<string, number>; legs: Record<string, ApLeg> };
+
+type Volume = { dates: string[]; byMarket?: Record<string, { ticker: string; pt?: number[]; yt?: number[]; total?: number[] }> };
+
+type Range = '30d' | '90d' | '1y' | 'all';
+type Metric = 'tvl' | 'positions' | 'volume';
+type Leg = 'PT' | 'YT' | 'LP';
+
+function fmtUsd(n: number) {
+  if (!n) return '$0';
+  if (n >= 1e9) return `$${(n / 1e9).toFixed(2)}B`;
+  if (n >= 1e6) return `$${(n / 1e6).toFixed(2)}M`;
+  if (n >= 1e3) return `$${(n / 1e3).toFixed(1)}K`;
+  return `$${n.toFixed(2)}`;
+}
+function fmtCount(n: number, ticker: string) {
+  if (Math.abs(n) >= 1e9) return `${(n / 1e9).toFixed(2)}B ${ticker}`;
+  if (Math.abs(n) >= 1e6) return `${(n / 1e6).toFixed(2)}M ${ticker}`;
+  if (Math.abs(n) >= 1e3) return `${(n / 1e3).toFixed(1)}K ${ticker}`;
+  return `${n.toFixed(2)} ${ticker}`;
+}
+function rangeStart(dates: string[], range: Range) {
+  if (range === 'all') return 0;
+  const days = range === '30d' ? 30 : range === '90d' ? 90 : 365;
+  const cutoff = new Date(new Date(dates[dates.length - 1]).getTime() - days * 86400_000).toISOString().slice(0, 10);
+  return Math.max(0, dates.findIndex(d => d >= cutoff));
+}
+
+function MarketDetailView() {
+  const sp = useSearchParams();
+  const marketKey = sp.get('key') || '';
+  const [ticker, maturityStr] = marketKey.split('-');
+
+  const [holders, setHolders] = useState<MarketHoldersData | null>(null);
+  const [tvl, setTvl] = useState<{ dates: string[]; byMarket: TvlByMarket } | null>(null);
+  const [positions, setPositions] = useState<{ dates: string[]; byTicker: Record<string, ApTicker> } | null>(null);
+  const [volume, setVolume] = useState<Volume | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  const [tab, setTab] = useState<Leg>('PT');
+  const [metric, setMetric] = useState<Metric>('tvl');
+  const [range, setRange] = useState<Range>('all');
+  const [search, setSearch] = useState('');
+
+  useEffect(() => {
+    Promise.all([
+      fetch('/market_holders.json').then(r => r.json()),
+      fetch('/tvl.json').then(r => r.json()),
+      fetch('/active_positions.json').then(r => r.json()),
+      fetch('/volume.json').then(r => r.json()),
+    ])
+      .then(([h, t, p, v]) => {
+        setHolders(h); setTvl(t); setPositions(p); setVolume(v);
+      })
+      .catch(e => setErr(String(e)));
+  }, []);
+
+  const tvlSeries = tvl?.byMarket?.[marketKey]?.tvlUsd ?? [];
+  const tickerData = positions?.byTicker?.[ticker];
+  const chartData = useMemo(() => {
+    if (!tvl) return [];
+    const start = rangeStart(tvl.dates, range);
+    const dates = tvl.dates.slice(start);
+    if (metric === 'tvl') {
+      return dates.map((d, i) => ({ date: d, TVL: tvlSeries[start + i] || 0 }));
+    }
+    if (metric === 'positions' && tickerData) {
+      return dates.map((d, i) => ({
+        date: d,
+        PT: tickerData.legs.PT?.byMarket?.[marketKey]?.[start + i] || 0,
+        YT: tickerData.legs.YT?.byMarket?.[marketKey]?.[start + i] || 0,
+        LP: tickerData.legs.LP?.byMarket?.[marketKey]?.[start + i] || 0,
+      }));
+    }
+    if (metric === 'volume' && volume) {
+      const vstart = rangeStart(volume.dates, range);
+      const vdates = volume.dates.slice(vstart);
+      const total = volume.byMarket?.[marketKey]?.total ?? [];
+      return vdates.map((d, i) => ({ date: d, Volume: total[vstart + i] || 0 }));
+    }
+    return [];
+  }, [tvl, positions, volume, metric, range, marketKey, ticker, tvlSeries, tickerData]);
+
+  if (err) return <div className="mx-auto max-w-[1400px] px-4 py-10 text-red-400">Error: {err}</div>;
+  if (!holders || !tvl || !positions) return <div className="mx-auto max-w-[1400px] px-4 py-10 text-white/50">Loading…</div>;
+
+  const ptSnap = holders.byMarketLeg[`${marketKey}:PT`];
+  const ytSnap = holders.byMarketLeg[`${marketKey}:YT`];
+  const lpSnap = holders.byMarketLeg[`${marketKey}:LP`];
+  const cur = tab === 'PT' ? ptSnap : tab === 'YT' ? ytSnap : lpSnap;
+
+  const latestSupply = tickerData?.legs[tab]?.byMarket?.[marketKey] ?? [];
+  const supply = latestSupply.length ? latestSupply[latestSupply.length - 1] : 0;
+  const currentTvl = tvlSeries.length ? tvlSeries[tvlSeries.length - 1] : 0;
+
+  return (
+    <main className="mx-auto max-w-[1400px] px-4 sm:px-6 py-10">
+      <Link href="/" className="text-white/40 hover:text-white text-sm">← back</Link>
+      <div className="mt-4 flex items-baseline gap-4 flex-wrap">
+        <h1 className="text-2xl font-semibold text-white">{marketKey}</h1>
+        <span className="text-sm text-white/40">{ticker} · matures {maturityStr}</span>
+      </div>
+
+      {/* Stats row */}
+      <div className="mt-6 grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3 text-sm">
+        <Stat label="TVL" value={fmtUsd(currentTvl)} />
+        <Stat label="PT supply" value={fmtCount(tickerData?.legs.PT?.byMarket?.[marketKey]?.slice(-1)[0] || 0, ticker)} />
+        <Stat label="YT supply" value={fmtCount(tickerData?.legs.YT?.byMarket?.[marketKey]?.slice(-1)[0] || 0, ticker)} />
+        <Stat label="LP supply" value={fmtCount(tickerData?.legs.LP?.byMarket?.[marketKey]?.slice(-1)[0] || 0, ticker)} />
+        <Stat label="PT holders" value={ptSnap ? ptSnap.holders.toLocaleString() : '–'} />
+        <Stat label="YT holders" value={ytSnap ? ytSnap.holders.toLocaleString() : '–'} />
+      </div>
+
+      {/* Chart */}
+      <div className="mt-8">
+        <div className="flex items-center justify-between mb-3 flex-wrap gap-3">
+          <div className="flex items-center gap-1">
+            {(['tvl', 'positions', 'volume'] as Metric[]).map(m => (
+              <button key={m} onClick={() => setMetric(m)}
+                className={`text-xs px-3 py-1 rounded-lg border ${metric === m ? 'border-white/30 bg-white/10 text-white' : 'border-white/10 text-white/40'}`}>
+                {m === 'tvl' ? 'TVL' : m === 'positions' ? 'Positions' : 'Volume'}
+              </button>
+            ))}
+          </div>
+          <div className="flex items-center gap-1">
+            {(['30d', '90d', '1y', 'all'] as Range[]).map(r => (
+              <button key={r} onClick={() => setRange(r)}
+                className={`text-xs px-2.5 py-1 rounded-md ${range === r ? 'bg-white/10 text-white' : 'text-white/30 hover:text-white/60'}`}>
+                {r}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+          <ResponsiveContainer width="100%" height={300}>
+            {metric === 'positions' ? (
+              <AreaChart data={chartData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+                <XAxis dataKey="date" tick={{ fill: '#888', fontSize: 11 }} />
+                <YAxis tick={{ fill: '#888', fontSize: 11 }} tickFormatter={n => fmtCount(n, '').trim()} />
+                <Tooltip contentStyle={{ background: '#0a0a0a', border: '1px solid rgba(255,255,255,0.15)', fontSize: 11 }} formatter={(v: any) => fmtCount(Number(v), ticker)} />
+                <Area type="monotone" dataKey="PT" stroke="#a78bfa" fill="#a78bfa66" />
+                <Area type="monotone" dataKey="YT" stroke="#38bdf8" fill="#38bdf866" />
+                <Area type="monotone" dataKey="LP" stroke="#4ade80" fill="#4ade8066" />
+              </AreaChart>
+            ) : (
+              <BarChart data={chartData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+                <XAxis dataKey="date" tick={{ fill: '#888', fontSize: 11 }} />
+                <YAxis tick={{ fill: '#888', fontSize: 11 }} tickFormatter={fmtUsd} />
+                <Tooltip contentStyle={{ background: '#0a0a0a', border: '1px solid rgba(255,255,255,0.15)', fontSize: 11 }} formatter={(v: any) => fmtUsd(Number(v))} />
+                <Bar dataKey={metric === 'tvl' ? 'TVL' : 'Volume'} fill={metric === 'tvl' ? '#a78bfa' : '#38bdf8'} fillOpacity={0.85} />
+              </BarChart>
+            )}
+          </ResponsiveContainer>
+        </div>
+      </div>
+
+      {/* Holders tabs */}
+      <div className="mt-8 flex items-center gap-2 mb-3 flex-wrap">
+        {(['PT', 'YT', 'LP'] as Leg[]).map(l => {
+          const s = l === 'PT' ? ptSnap : l === 'YT' ? ytSnap : lpSnap;
+          return (
+            <button key={l} onClick={() => setTab(l)}
+              className={`text-sm px-4 py-2 rounded-lg border ${tab === l ? 'border-white/30 bg-white/10 text-white' : 'border-white/10 text-white/40 hover:text-white'}`}>
+              {l} Holders
+              {s && <span className="text-white/30 ml-2">{s.holders} · {fmtUsd(s.totalUsd)}</span>}
+            </button>
+          );
+        })}
+      </div>
+
+      <div className="mb-3">
+        <input value={search} onChange={e => setSearch(e.target.value)}
+          placeholder="Search wallet address…"
+          className="w-full max-w-md bg-[#0a0a0a]/80 border border-white/10 focus:border-white/30 focus:outline-none rounded-md px-3 py-2 text-sm placeholder-white/20 font-mono" />
+      </div>
+
+      {/* Holders table */}
+      <div className="rounded-2xl border border-white/10 bg-white/5 overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead className="text-xs uppercase tracking-wider text-white/40">
+            <tr>
+              <th className="px-4 py-2 text-left">#</th>
+              <th className="px-4 py-2 text-left">Wallet</th>
+              <th className="px-4 py-2 text-right">Balance</th>
+              <th className="px-4 py-2 text-right">Value</th>
+              <th className="px-4 py-2 text-right">Share</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-white/5 text-[13px]">
+            {!cur?.top?.length && (
+              <tr><td className="px-4 py-3 text-white/30" colSpan={5}>No holders for {tab}.</td></tr>
+            )}
+            {cur?.top?.filter(h => !search || h.owner.toLowerCase().includes(search.toLowerCase())).map((h, i) => (
+              <tr key={h.owner} className="hover:bg-white/5 cursor-pointer"
+                  onClick={() => window.location.href = `/wallet/?addr=${h.owner}`}>
+                <td className="px-4 py-1.5 text-white/30 tabular-nums">{i + 1}</td>
+                <td className="px-4 py-1.5">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-white/70 font-mono">{h.owner}</span>
+                    <a onClick={e => e.stopPropagation()} className="text-white/20 hover:text-white/60 text-xs"
+                       href={`https://solscan.io/account/${h.owner}`} target="_blank" rel="noopener noreferrer">↗</a>
+                  </div>
+                </td>
+                <td className="px-4 py-1.5 text-right tabular-nums text-white">
+                  {h.balance > 1e6 ? `${(h.balance/1e6).toFixed(2)}M` : h.balance > 1e3 ? `${(h.balance/1e3).toFixed(1)}K` : h.balance.toFixed(2)}
+                </td>
+                <td className="px-4 py-1.5 text-right tabular-nums text-emerald-400/80">
+                  {h.usd > 0 ? fmtUsd(h.usd) : '–'}
+                </td>
+                <td className="px-4 py-1.5 text-right tabular-nums text-white/50">
+                  <div className="flex items-center justify-end gap-2">
+                    <div className="w-16 h-1.5 bg-white/10 rounded-full overflow-hidden">
+                      <div className="h-full bg-emerald-400 rounded-full" style={{ width: `${Math.min(h.sharePct, 100)}%` }} />
+                    </div>
+                    <span>{h.sharePct.toFixed(1)}%</span>
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {cur && cur.holders > 500 && (
+        <div className="text-xs text-white/30 mt-2 text-center">Showing top 500 of {cur.holders} holders</div>
+      )}
+    </main>
+  );
+}
+
+function Stat({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-xl border border-white/10 bg-white/5 px-3 py-2">
+      <div className="text-[10px] uppercase tracking-wider text-white/40">{label}</div>
+      <div className="mt-0.5 text-base font-semibold text-white tabular-nums">{value}</div>
+    </div>
+  );
+}
+
+export default function MarketPage() {
+  return (
+    <Suspense fallback={<div className="mx-auto max-w-[1400px] px-4 py-10 text-white/50">Loading…</div>}>
+      <MarketDetailView />
+    </Suspense>
+  );
+}

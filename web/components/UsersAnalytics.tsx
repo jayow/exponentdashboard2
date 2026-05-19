@@ -161,9 +161,10 @@ export function UsersAnalytics() {
                   <tr key={w.signer} className="border-b border-white/5">
                     <td className="py-1 text-white/40">{i + 1}</td>
                     <td className="py-1 font-mono text-white/80">
-                      <a href={`https://solscan.io/account/${w.signer}`} target="_blank" rel="noopener noreferrer" className="hover:text-white">
+                      <a href={`/wallet/?addr=${w.signer}`} className="hover:text-white">
                         {w.signer.slice(0, 4)}…{w.signer.slice(-4)}
                       </a>
+                      <a href={`https://solscan.io/account/${w.signer}`} target="_blank" rel="noopener noreferrer" className="ml-1 text-white/20 hover:text-white/60 text-[10px]">↗</a>
                     </td>
                     <td className="py-1 text-right tabular-nums text-white/85">{fmtUsd(w.totalVolumeUsd)}</td>
                     <td className="py-1 text-right tabular-nums text-white/60">{w.nSwaps.toLocaleString()}</td>

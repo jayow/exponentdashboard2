@@ -105,7 +105,7 @@ export function HoldersAnalytics() {
             {rows.map(r => (
               <tr key={`${r.marketKey}-${r.leg}`} className="border-b border-white/5">
                 <td className="py-1.5 text-white/85">
-                  <span className="truncate">{r.marketKey}</span>
+                  <a href={`/market/?key=${r.marketKey}`} className="hover:text-white">{r.marketKey}</a>
                   {r.status !== 'active' && <span className="ml-1 text-white/30">·exp</span>}
                 </td>
                 <td className="py-1.5 text-white/60">{r.leg}</td>

@@ -6,6 +6,7 @@ import { ActivePositionsChart } from '@/components/ActivePositionsChart';
 import { MarketShare } from '@/components/MarketShare';
 import { HoldersAnalytics } from '@/components/HoldersAnalytics';
 import { UsersAnalytics } from '@/components/UsersAnalytics';
+import { MarketsList } from '@/components/MarketsList';
 
 export default function HomePage() {
   return (
@@ -26,6 +27,7 @@ export default function HomePage() {
       <TvlChart />
       <ActivePositionsChart />
       <MarketShare />
+      <MarketsList />
       <UsersAnalytics />
       <HoldersAnalytics />
     </main>

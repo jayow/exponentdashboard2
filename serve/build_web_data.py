@@ -543,6 +543,142 @@ def build_users_json(con: duckdb.DuckDBPyConnection) -> dict:
     }
 
 
+def build_market_holders_json(con: duckdb.DuckDBPyConnection) -> dict:
+    """Top holders per (market_key, leg). v1-equivalent of holders.json.
+
+    Shape: {"USX-01JUN26:PT": {holders, totalBalance, totalUsd, top: [...]}}
+    """
+    rows = con.execute("""
+        SELECT market_key, leg, owner, amount, share_pct, usd_value, total_balance, rk,
+               underlying_price_usd
+        FROM main_analytics.market_holders_top
+        WHERE rk <= 500
+        ORDER BY market_key, leg, rk
+    """).fetchall()
+    out: dict[str, dict] = {}
+    for mk, leg, owner, amount, share_pct, usd, total_bal, rk, price in rows:
+        key = f"{mk}:{leg}"
+        e = out.setdefault(key, {
+            "market": mk, "leg": leg, "holders": 0,
+            "totalBalance": float(total_bal or 0),
+            "totalUsd": float((total_bal or 0) * (price or 0)),
+            "top": [],
+        })
+        e["holders"] += 1
+        e["top"].append({
+            "owner": owner,
+            "balance": float(amount or 0),
+            "usd": float(usd or 0),
+            "sharePct": float(share_pct or 0),
+        })
+    # nHolders from holders_snapshot (full count, not just top 500)
+    counts = dict(con.execute("""
+        SELECT market_key || ':' || leg, n_holders FROM main_analytics.holders_snapshot
+    """).fetchall())
+    for k, v in out.items():
+        v["holders"] = int(counts.get(k, v["holders"]))
+    return {
+        "meta": {"generatedAt": datetime.now(timezone.utc).isoformat(), "markets": len(out)},
+        "byMarketLeg": out,
+    }
+
+
+def build_unclaimed_yield_json(con: duckdb.DuckDBPyConnection) -> dict:
+    """Wallets with unclaimed YT (holds YT but never claimYield'd that market)."""
+    rows = con.execute("""
+        SELECT wallet, market_key, yt_balance FROM main_analytics.unclaimed_yield
+    """).fetchall()
+    by_wallet: dict[str, list[dict]] = {}
+    for wallet, mk, bal in rows:
+        by_wallet.setdefault(wallet, []).append(
+            {"marketKey": mk, "ytBalance": float(bal or 0)}
+        )
+    return {
+        "meta": {"generatedAt": datetime.now(timezone.utc).isoformat(),
+                 "totalPositions": len(rows), "totalWallets": len(by_wallet)},
+        "byWallet": by_wallet,
+    }
+
+
+def build_wallet_shards(con: duckdb.DuckDBPyConnection) -> None:
+    """Emit one JSON per wallet under web/public/wallet/{addr}.json.
+
+    Filters to wallets with >= 3 events to keep file count reasonable
+    (~20K files for ~50K total wallets indexed). Each shard includes the
+    full event log with per-tx signer-side token deltas, symbol-resolved.
+    """
+    shard_dir = WEB_PUBLIC / "wallet"
+    if shard_dir.exists():
+        for f in shard_dir.glob("*.json"):
+            f.unlink()
+    shard_dir.mkdir(parents=True, exist_ok=True)
+
+    rprint("  fetching per-event token changes…")
+    # Build a giant cursor: for each (wallet, sig) emit its events + the wallet's own
+    # token deltas, joined to token metadata for symbol.
+    rows = con.execute("""
+        WITH eligible_wallets AS (
+            SELECT signer FROM main_analytics.wallet_events
+            WHERE signer IS NOT NULL
+            GROUP BY signer
+            HAVING COUNT(*) >= 3
+        ),
+        ev AS (
+            SELECT e.signer, e.signature, e.block_time, e.action,
+                   e.market_key, e.ticker, e.usd_value
+            FROM main_analytics.wallet_events e
+            JOIN eligible_wallets ew USING (signer)
+        ),
+        changes AS (
+            SELECT c.signature, c.owner,
+                   c.mint, c.delta_ui,
+                   COALESCE(tm.symbol, et.symbol, SUBSTR(c.mint, 1, 4) || '…') AS symbol,
+                   c.delta_ui * p.price_usd AS usd_delta
+            FROM main_staging.stg_token_changes c
+            LEFT JOIN main.raw_token_metadata tm ON tm.mint = c.mint
+            LEFT JOIN main.raw_exponent_tokens et ON et.mint = c.mint
+            LEFT JOIN main_staging.stg_prices p
+                ON p.mint = c.mint AND p.date = TO_TIMESTAMP(c.block_time)::DATE
+        )
+        SELECT
+            ev.signer, ev.signature, ev.block_time, ev.action,
+            ev.market_key, ev.ticker, ev.usd_value,
+            LIST({
+              'symbol': ch.symbol,
+              'delta':  ch.delta_ui,
+              'usd':    ch.usd_delta
+            } ORDER BY ABS(ch.delta_ui) DESC) FILTER (WHERE ch.symbol IS NOT NULL) AS changes
+        FROM ev
+        LEFT JOIN changes ch
+          ON ch.signature = ev.signature AND ch.owner = ev.signer
+        GROUP BY 1, 2, 3, 4, 5, 6, 7
+        ORDER BY ev.signer, ev.block_time DESC
+    """).fetchall()
+
+    rprint(f"  grouping {len(rows):,} events by wallet…")
+    by_wallet: dict[str, list[dict]] = {}
+    for signer, sig, bt, action, mk, ticker, usd, changes in rows:
+        by_wallet.setdefault(signer, []).append({
+            "sig": sig,
+            "blockTime": int(bt or 0),
+            "action": action,
+            "market": mk,
+            "ticker": ticker,
+            "usd": float(usd or 0) if usd is not None else None,
+            "changes": [
+                {"symbol": c["symbol"], "delta": float(c["delta"] or 0),
+                 "usd": float(c["usd"] or 0) if c["usd"] is not None else None}
+                for c in (changes or [])
+            ],
+        })
+
+    rprint(f"  writing {len(by_wallet):,} wallet shards…")
+    for wallet, events in by_wallet.items():
+        with open(shard_dir / f"{wallet}.json", "w") as f:
+            json.dump({"wallet": wallet, "events": events}, f, separators=(",", ":"))
+    rprint(f"[green]wrote {len(by_wallet):,} wallet shards[/green] ({sum(len(e) for e in by_wallet.values()):,} events total)")
+
+
 def build() -> None:
     WEB_PUBLIC.mkdir(parents=True, exist_ok=True)
     con = duckdb.connect(str(WAREHOUSE_PATH), read_only=True)
@@ -553,14 +689,18 @@ def build() -> None:
             ("tvl.json", build_tvl_json),
             ("active_positions.json", build_active_positions_json),
             ("holders.json", build_holders_json),
+            ("market_holders.json", build_market_holders_json),
             ("market_share.json", build_market_share_json),
             ("users.json", build_users_json),
+            ("unclaimed_yield.json", build_unclaimed_yield_json),
         ]:
             rprint(f"[cyan]Building {name}…[/cyan]")
             payload = builder(con)
             _write_atomic(WEB_PUBLIC / name, payload)
             size = (WEB_PUBLIC / name).stat().st_size / 1024
             rprint(f"  wrote {name}  ({size:.1f} KB)")
+        rprint("[cyan]Building wallet shards…[/cyan]")
+        build_wallet_shards(con)
     finally:
         con.close()
     rprint("[green]serve done[/green]")
