@@ -115,20 +115,23 @@ export function TopStats() {
   ];
 
   return (
-    <section className="mb-6 flex flex-wrap items-end gap-x-10 gap-y-4">
-      <div>
+    <section className="mb-6">
+      {/* Hero */}
+      <div className="mb-5">
         <div className="text-[11px] uppercase tracking-wider text-white/40">Protocol TVL</div>
         <div className="text-4xl font-semibold tabular-nums text-white mt-1">{fmtUsd(s.tvl.currentUsd)}</div>
         <div className="mt-1">
           <Delta now={s.tvl.currentUsd} then={s.tvl.weekAgo.totalUsd} kind="usd" good="up" />
         </div>
       </div>
-      <div className="grid grid-cols-3 md:grid-cols-5 lg:grid-cols-10 gap-x-6 gap-y-3 flex-1">
+
+      {/* Stat grid — 2/3/5 cols depending on viewport, generous spacing */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-x-8 gap-y-5">
         {small.map(c => (
-          <div key={c.label}>
-            <div className="text-[10px] uppercase tracking-wider text-white/40 whitespace-nowrap">{c.label}</div>
-            <div className="text-base font-semibold tabular-nums text-white mt-0.5 whitespace-nowrap">{c.value}</div>
-            {c.delta && <div className="mt-0.5 whitespace-nowrap">{c.delta}</div>}
+          <div key={c.label} className="min-w-0">
+            <div className="text-[10px] uppercase tracking-wider text-white/40 truncate">{c.label}</div>
+            <div className="text-base font-semibold tabular-nums text-white mt-1 truncate">{c.value}</div>
+            {c.delta && <div className="mt-1 truncate">{c.delta}</div>}
           </div>
         ))}
       </div>
