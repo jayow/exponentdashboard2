@@ -1,4 +1,5 @@
 'use client';
+import { useState } from 'react';
 import { TopStats } from '@/components/TopStats';
 import { TvlByPlatform } from '@/components/TvlByPlatform';
 import { BigChart } from '@/components/BigChart';
@@ -7,7 +8,17 @@ import { MarketsList } from '@/components/MarketsList';
 import { UsersAnalytics } from '@/components/UsersAnalytics';
 import { HoldersAnalytics } from '@/components/HoldersAnalytics';
 
+type Tab = 'markets' | 'holders' | 'users';
+
+const TABS: { key: Tab; label: string }[] = [
+  { key: 'markets', label: 'Markets' },
+  { key: 'holders', label: 'Holders' },
+  { key: 'users',   label: 'Users' },
+];
+
 export default function HomePage() {
+  const [tab, setTab] = useState<Tab>('markets');
+
   return (
     <main className="mx-auto max-w-[1500px] px-4 sm:px-6 py-10">
       <header className="relative mb-8">
@@ -21,13 +32,29 @@ export default function HomePage() {
         </div>
       </header>
 
+      {/* Always-visible overview */}
       <TopStats />
       <TvlByPlatform />
       <BigChart />
       <MarketShare />
-      <MarketsList />
-      <UsersAnalytics />
-      <HoldersAnalytics />
+
+      {/* Tabbed analytics */}
+      <div className="mb-8">
+        <div className="flex items-center gap-1 mb-4">
+          {TABS.map(t => (
+            <button key={t.key} onClick={() => setTab(t.key)}
+              className={`text-xs px-3 py-1.5 rounded-lg border transition ${
+                tab === t.key ? 'border-white/30 bg-white/10 text-white' : 'border-white/10 text-white/40 hover:text-white'
+              }`}>
+              {t.label}
+            </button>
+          ))}
+        </div>
+
+        {tab === 'markets' && <MarketsList />}
+        {tab === 'holders' && <HoldersAnalytics />}
+        {tab === 'users'   && <UsersAnalytics />}
+      </div>
     </main>
   );
 }
