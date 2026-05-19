@@ -342,14 +342,128 @@ def build_active_positions_json(con: duckdb.DuckDBPyConnection) -> dict:
     }
 
 
+def build_stats_json(con: duckdb.DuckDBPyConnection) -> dict:
+    """Headline protocol stats — single shot, all on-chain derived.
+
+    Fields:
+      activeMarkets, expiredMarkets, totalMarkets, platforms, tickers
+      peakTvlUsd / peakTvlDate
+      currentTvlUsd / currentPrincipalUsd
+      lifetimeVolumeUsd / volume30dUsd
+      protocolAgeDays (since first observed market activity)
+      firstActivityDate, latestMaturityDate
+    """
+    today = con.execute("SELECT CURRENT_DATE").fetchone()[0]
+    mk = con.execute("""
+        SELECT
+          COUNT(*) FILTER (WHERE maturity_date >= CURRENT_DATE)         AS active,
+          COUNT(*) FILTER (WHERE maturity_date <  CURRENT_DATE)         AS expired,
+          COUNT(*)                                                      AS total,
+          COUNT(DISTINCT platform)                                      AS platforms,
+          COUNT(DISTINCT ticker)                                        AS tickers,
+          MAX(maturity_date)                                            AS latest_maturity
+        FROM main_core.dim_markets
+        WHERE maturity_date IS NOT NULL
+    """).fetchone()
+    # Peak TVL across history (SY-based, summed protocol)
+    peak = con.execute("""
+        WITH daily AS (
+          SELECT date, SUM(tvl_usd) AS tvl FROM main_analytics.tvl_daily GROUP BY 1
+        )
+        SELECT date::VARCHAR, tvl FROM daily ORDER BY tvl DESC LIMIT 1
+    """).fetchone()
+    # Current TVL (latest date)
+    cur = con.execute("""
+        WITH daily AS (
+          SELECT date, SUM(tvl_usd) tvl, SUM(principal_tvl_usd) p FROM main_analytics.tvl_daily GROUP BY 1
+        )
+        SELECT tvl, p FROM daily ORDER BY date DESC LIMIT 1
+    """).fetchone()
+    # Volume aggregates
+    vol = con.execute("""
+        SELECT
+          SUM(volume_usd)                                                            AS lifetime,
+          SUM(volume_usd) FILTER (WHERE date >= CURRENT_DATE - INTERVAL 30 DAY)      AS d30
+        FROM main_analytics.trading_volume_daily
+    """).fetchone()
+    # First activity date (earliest swap)
+    first_date = con.execute(
+        "SELECT MIN(date)::VARCHAR FROM main_analytics.trading_volume_daily WHERE volume_usd > 0"
+    ).fetchone()[0]
+    return {
+        "meta": {"generatedAt": datetime.now(timezone.utc).isoformat()},
+        "markets": {
+            "active":          int(mk[0] or 0),
+            "expired":         int(mk[1] or 0),
+            "total":           int(mk[2] or 0),
+            "platforms":       int(mk[3] or 0),
+            "tickers":         int(mk[4] or 0),
+            "latestMaturity":  str(mk[5]) if mk[5] else None,
+        },
+        "tvl": {
+            "currentUsd":         float(cur[0] or 0) if cur else 0.0,
+            "currentPrincipalUsd": float(cur[1] or 0) if cur else 0.0,
+            "peakUsd":            float(peak[1] or 0) if peak else 0.0,
+            "peakDate":           peak[0] if peak else None,
+        },
+        "volume": {
+            "lifetimeUsd": float(vol[0] or 0) if vol else 0.0,
+            "thirty30Usd": float(vol[1] or 0) if vol else 0.0,
+        },
+        "protocol": {
+            "firstActivityDate": first_date,
+            "ageDays": (today - datetime.strptime(first_date, "%Y-%m-%d").date()).days if first_date else None,
+        },
+    }
+
+
+def build_holders_json(con: duckdb.DuckDBPyConnection) -> dict:
+    """Holder concentration per (market_key, leg). Snapshot, not timeseries.
+
+    Shape:
+      meta: {generatedAt, snapshotDate, totalHolders, mintsCovered}
+      rows: [{marketKey, ticker, leg, nHolders, top1Pct, top5Pct, top10Pct, totalSupply, status, maturityDate}]
+    """
+    meta = con.execute("""
+        SELECT MAX(snapshot_date)::VARCHAR, SUM(n_holders), COUNT(*)
+        FROM main_analytics.holders_snapshot
+    """).fetchone()
+    rows = con.execute("""
+        SELECT market_key, ticker, leg, n_holders, top1_pct, top5_pct, top10_pct,
+               total_supply, status, maturity_date::VARCHAR
+        FROM main_analytics.holders_snapshot
+        ORDER BY n_holders DESC NULLS LAST
+    """).fetchall()
+    return {
+        "meta": {
+            "generatedAt": datetime.now(timezone.utc).isoformat(),
+            "snapshotDate": meta[0],
+            "totalHolders": int(meta[1] or 0),
+            "mintsCovered": int(meta[2] or 0),
+        },
+        "rows": [
+            {
+                "marketKey": r[0], "ticker": r[1], "leg": r[2],
+                "nHolders": int(r[3] or 0),
+                "top1Pct": float(r[4] or 0), "top5Pct": float(r[5] or 0), "top10Pct": float(r[6] or 0),
+                "totalSupply": float(r[7] or 0),
+                "status": r[8], "maturityDate": r[9],
+            }
+            for r in rows
+        ],
+    }
+
+
 def build() -> None:
     WEB_PUBLIC.mkdir(parents=True, exist_ok=True)
     con = duckdb.connect(str(WAREHOUSE_PATH), read_only=True)
     try:
         for name, builder in [
+            ("stats.json", build_stats_json),
             ("volume.json", build_volume_json),
             ("tvl.json", build_tvl_json),
             ("active_positions.json", build_active_positions_json),
+            ("holders.json", build_holders_json),
             ("market_share.json", build_market_share_json),
         ]:
             rprint(f"[cyan]Building {name}…[/cyan]")
