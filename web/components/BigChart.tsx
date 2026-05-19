@@ -26,7 +26,6 @@ type Metric = 'tvl' | 'volume' | 'positions' | 'breakdown';
 type View = 'protocol' | 'platform' | 'market';
 type Range = '30d' | '90d' | '1y' | 'all';
 
-const DEFAULT_TOP = 15;
 const BREAKDOWN_COLOR: Record<string, string> = {
   'Principal (PT)': '#a78bfa',
   'Liquidity (LP)': '#4ade80',
@@ -235,15 +234,9 @@ export function BigChart() {
     return empty;
   }, [tvl, vol, metric, effectiveView, range, start, dates]);
 
-  // Reset hidden set when keys change. Show top-DEFAULT_TOP visible; for
-  // platform view (typically <15 entries) show all by default.
-  useEffect(() => {
-    if (isFlat || breakdownLike) { setHidden(new Set()); return; }
-    if (effectiveView === 'platform' || allKeys.length <= DEFAULT_TOP) {
-      setHidden(new Set()); return;
-    }
-    setHidden(new Set(allKeys.slice(DEFAULT_TOP)));
-  }, [allKeys, isFlat, breakdownLike, effectiveView]);
+  // Default: show everything. User can toggle off individual series in
+  // the legend (Hide All / per-chip click).
+  useEffect(() => { setHidden(new Set()); }, [allKeys, isFlat, breakdownLike, effectiveView]);
 
   const visibleKeys = useMemo(() => allKeys.filter(k => !hidden.has(k)), [allKeys, hidden]);
 

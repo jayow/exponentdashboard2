@@ -14,8 +14,6 @@ type Metric = 'volume' | 'tvl';
 type Mode = 'abs' | 'pct';
 type Range = '30d' | '90d' | '1y' | 'all';
 
-const DEFAULT_TOP = 10;
-
 function fmtUsd(n: number) {
   if (Math.abs(n) >= 1e9) return `$${(n / 1e9).toFixed(2)}B`;
   if (Math.abs(n) >= 1e6) return `$${(n / 1e6).toFixed(2)}M`;
@@ -100,11 +98,8 @@ export function MarketShare() {
     };
   }, [data, metric, range]);
 
-  // When metric/range changes, reset hidden to top-N default
-  useEffect(() => {
-    if (allTickers.length <= DEFAULT_TOP) { setHidden(new Set()); return; }
-    setHidden(new Set(allTickers.slice(DEFAULT_TOP)));
-  }, [allTickers]);
+  // Default: show everything. User can toggle via legend.
+  useEffect(() => { setHidden(new Set()); }, [allTickers]);
 
   const visibleTickers = useMemo(() => allTickers.filter(tk => !hidden.has(tk)), [allTickers, hidden]);
 
@@ -162,7 +157,6 @@ export function MarketShare() {
   }
   const showAll  = () => setHidden(new Set());
   const showNone = () => setHidden(new Set(allTickers));
-  const showTop  = (n: number) => setHidden(new Set(allTickers.slice(n)));
 
   if (err) return <div className="text-red-400 text-sm p-4">Failed to load market_share.json: {err}</div>;
   if (!data) return <div className="text-white/40 text-sm p-4">Loading market share…</div>;
@@ -224,29 +218,13 @@ export function MarketShare() {
         <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
           <div className="text-[11px] text-white/40">
             {visibleTickers.length} of {allTickers.length} visible
-            {allTickers.length > DEFAULT_TOP && <span className="text-white/30"> · click to toggle</span>}
+            <span className="text-white/30"> · click to toggle</span>
           </div>
           <div className="flex items-center gap-1">
-            <button onClick={showAll}
-              className={`text-[11px] px-2 py-0.5 rounded border ${hidden.size === 0 ? 'border-white/30 bg-white/10 text-white' : 'border-white/10 text-white/40 hover:text-white'}`}>
-              All
+            <button onClick={hidden.size === allTickers.length ? showAll : showNone}
+              className="text-[11px] px-2 py-0.5 rounded border border-white/15 text-white/60 hover:text-white hover:bg-white/5">
+              {hidden.size === allTickers.length ? 'Show All' : 'Hide All'}
             </button>
-            <button onClick={showNone}
-              className={`text-[11px] px-2 py-0.5 rounded border ${hidden.size === allTickers.length ? 'border-white/30 bg-white/10 text-white' : 'border-white/10 text-white/40 hover:text-white'}`}>
-              None
-            </button>
-            {allTickers.length > 10 && (
-              <button onClick={() => showTop(10)}
-                className="text-[11px] px-2 py-0.5 rounded border border-white/10 text-white/40 hover:text-white">
-                Top 10
-              </button>
-            )}
-            {allTickers.length > 15 && (
-              <button onClick={() => showTop(15)}
-                className="text-[11px] px-2 py-0.5 rounded border border-white/10 text-white/40 hover:text-white">
-                Top 15
-              </button>
-            )}
           </div>
         </div>
         <div className="flex flex-wrap gap-1.5 max-h-[110px] overflow-y-auto">
