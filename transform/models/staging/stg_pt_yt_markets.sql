@@ -54,6 +54,24 @@ markets as (
     from parsed
     group by ticker_raw, maturity_str
 )
+-- Look up the sy_mint by joining to raw_markets onchain payload via PT mint.
+-- Markets discovered via Metaplex name pattern don't carry sy_mint, but the
+-- on-chain MarketThree account for that same PT does. This makes those
+-- Metaplex-derived markets show up in int_sy_tvl_daily (which is keyed by
+-- sy_mint) and therefore in the per-platform TVL chart.
+, onchain_decoded as (
+    select
+        json_extract_string(payload, '$.ptMint') as pt_mint,
+        json_extract_string(payload, '$.syMint') as sy_mint
+    from {{ source('raw', 'raw_markets') }}
+    where source = 'onchain'
+),
+sy_from_onchain as (
+    select pt_mint, any_value(sy_mint) as sy_mint
+    from onchain_decoded
+    where pt_mint is not null and sy_mint is not null
+    group by pt_mint
+)
 select
     -- Use the canonical symbol casing from /tokens when available (e.g.
     -- "BulkSOL" not the Metaplex-name's "bulkSOL"). Falls back to the
@@ -65,11 +83,13 @@ select
     m.pt_mint,
     m.yt_mint,
     m.lp_mint,
+    sfo.sy_mint                                                   as sy_mint,
     et.mint                                                       as underlying_mint,
     et.decimals                                                   as underlying_decimals,
     et.symbol                                                     as underlying_symbol,
     et.name                                                       as underlying_name
 from markets m
+left join sy_from_onchain sfo on sfo.pt_mint = m.pt_mint
 left join {{ source('raw', 'raw_exponent_tokens') }} et
     on lower(et.symbol) = lower(m.ticker)
     or (lower(m.ticker) like 'w%' and lower(et.symbol) = lower(substr(m.ticker, 2)))

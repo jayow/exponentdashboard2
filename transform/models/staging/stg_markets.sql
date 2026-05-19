@@ -32,7 +32,7 @@ pt_yt_derived as (
     select
         market_key,
         'pt_yt_derived'                                        as source,
-        cast(null as varchar)                                  as sy_mint,
+        sy_mint                                                as sy_mint,
         cast(null as varchar)                                  as vault,
         pt_mint,
         yt_mint,
