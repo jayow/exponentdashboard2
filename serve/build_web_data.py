@@ -15,6 +15,7 @@ Future:
 from __future__ import annotations
 import json
 import os
+import re
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -26,6 +27,56 @@ from extract_load.config import WAREHOUSE_PATH, ROOT
 
 
 WEB_PUBLIC = ROOT / "web" / "public"
+
+
+# Platform consolidation (mirrors v1's normalize_platform). The raw platform
+# strings from the Exponent API are fine-grained (e.g. "Hylo Staked SOL",
+# "Hylo USD", "Jito Restaking") — for the dashboard we want the brand.
+_PLATFORM_RULES = [
+    (re.compile(r"^Hylo", re.I),            "Hylo"),
+    (re.compile(r"^Drift", re.I),           "Drift"),
+    (re.compile(r"^Jupiter", re.I),         "Jupiter"),
+    (re.compile(r"^Jito Restaking", re.I),  "Fragmetric"),
+    (re.compile(r"^Jito", re.I),            "Jito"),
+    (re.compile(r"^BULK", re.I),            "BULK"),
+]
+
+# Ticker → platform fallback for markets where dim_markets.platform is null
+# (typically expired markets discovered only via Metaplex name pattern).
+_TICKER_TO_PLATFORM = {
+    "USX": "Solstice", "eUSX": "Solstice",
+    "ONyc": "OnRe",
+    "BulkSOL": "BULK", "wBulkSOL": "BULK",
+    "hyloSOL": "Hylo", "hyloSOL+": "Hylo", "hySOL+": "Hylo", "hyUSD": "Hylo",
+    "sHYUSD": "Hylo", "xSOL": "Hylo",
+    "fragSOL": "Fragmetric", "fragBTC": "Fragmetric", "wfragBTC": "Fragmetric",
+    "JitoSOL": "Jito",
+    "JLP": "Jupiter", "jlUSDG": "Jupiter", "jlSOL": "Jupiter",
+    "kySOL": "Kyros",
+    "dSOL": "Drift", "dzSOL": "Drift", "dfdvSOL": "Drift",
+    "INF": "Sanctum",
+    "rkuSOL": "Kuru",
+    "CRT": "Carrot",
+    "stORE": "Ore",
+    "USDe": "Ethena", "sUSDe": "Ethena",
+    "USDC+": "Perena", "mUSDC": "Perena", "kUSDC": "Perena",
+    "USD*": "USD*",
+    "MLP": "MarginFi", "ALP": "Asgard",
+    "syUSDC": "Solend",
+}
+
+
+def normalize_platform(raw: str | None, ticker: str | None = None) -> str:
+    """Apply v1's regex normalization, with a ticker-based fallback for
+    expired/unlabeled markets."""
+    if raw:
+        for pat, name in _PLATFORM_RULES:
+            if pat.match(raw):
+                return name
+        return raw
+    if ticker and ticker in _TICKER_TO_PLATFORM:
+        return _TICKER_TO_PLATFORM[ticker]
+    return "Other"
 
 
 def _write_atomic(path: Path, payload: dict | list) -> None:
@@ -141,6 +192,27 @@ def build_volume_json(con: duckdb.DuckDBPyConnection) -> dict:
     market_totals.sort(key=lambda x: -x[2])
     top = [{"marketKey": mk, "ticker": tk, "totalUsd": tot} for mk, tk, tot in market_totals[:20]]
 
+    # Per-platform volume series — need to resolve ticker → platform.
+    # Pull the (market_key → ticker → platform) mapping from dim_markets +
+    # ticker fallback, then sum each market's total series into its platform.
+    plat_lookup_rows = con.execute("""
+        SELECT market_key, ticker, platform FROM main_core.dim_markets
+    """).fetchall()
+    platform_for_mk: dict[str, str] = {}
+    for mk, ticker, plat in plat_lookup_rows:
+        platform_for_mk[mk] = normalize_platform(plat, ticker)
+    by_platform_usd: dict[str, list[float]] = {}
+    for mk, entry in by_market_out.items():
+        plat = platform_for_mk.get(mk) or normalize_platform(None, entry["ticker"])
+        if plat not in by_platform_usd:
+            by_platform_usd[plat] = [0.0] * len(dates)
+        for i, v in enumerate(entry["totalUsd"]):
+            by_platform_usd[plat][i] += v
+    by_platform_sorted = dict(sorted(
+        by_platform_usd.items(),
+        key=lambda kv: (-sum(kv[1]), kv[0])
+    ))
+
     payload = {
         "meta": {
             "generatedAt": datetime.now(timezone.utc).isoformat(),
@@ -163,6 +235,7 @@ def build_volume_json(con: duckdb.DuckDBPyConnection) -> dict:
             "ptUsd": pt_usd, "ytUsd": yt_usd, "totalUsd": total_usd,
             "ptUnderlying": pt_und, "ytUnderlying": yt_und, "totalUnderlying": total_und,
         },
+        "byPlatform": by_platform_sorted,
         "byMarket": by_market_out,
         "topMarkets": top,
     }
@@ -189,14 +262,18 @@ def build_tvl_json(con: duckdb.DuckDBPyConnection) -> dict:
     proto_map = {r[0]: (float(r[1] or 0), float(r[2] or 0), float(r[3] or 0)) for r in proto}
     proto_usd      = [proto_map.get(d, (0, 0, 0))[0] for d in dates]
     proto_principal = [proto_map.get(d, (0, 0, 0))[1] for d in dates]
-    # Per-market series
+    # Per-market series — load raw platform too so we can roll up byPlatform
     rows = con.execute("""
-        SELECT market_key, ticker, date::VARCHAR, tvl_usd, tvl_underlying, principal_tvl_usd
-        FROM main_analytics.tvl_daily
+        SELECT t.market_key, t.ticker, t.platform, t.date::VARCHAR,
+               t.tvl_usd, t.tvl_underlying, t.principal_tvl_usd
+        FROM main_analytics.tvl_daily t
     """).fetchall()
     by_market: dict[str, dict] = {}
-    for mk, ticker, date, tvl_usd, tvl_und, principal in rows:
-        e = by_market.setdefault(mk, {"ticker": ticker, "usd_map": {}, "und_map": {}, "principal_map": {}})
+    platform_for_mk: dict[str, str] = {}
+    for mk, ticker, raw_plat, date, tvl_usd, tvl_und, principal in rows:
+        e = by_market.setdefault(mk, {"ticker": ticker, "platform": normalize_platform(raw_plat, ticker),
+                                      "usd_map": {}, "und_map": {}, "principal_map": {}})
+        platform_for_mk[mk] = e["platform"]
         e["usd_map"][date] = float(tvl_usd or 0)
         e["und_map"][date] = float(tvl_und or 0)
         e["principal_map"][date] = float(principal or 0)
@@ -208,6 +285,7 @@ def build_tvl_json(con: duckdb.DuckDBPyConnection) -> dict:
         principal = [e["principal_map"].get(d, 0.0) for d in dates]
         by_market_out[mk] = {
             "ticker": e["ticker"],
+            "platform": e["platform"],
             "tvlUsd": usd,
             "tvlUnderlying": und,
             "principalUsd": principal,
@@ -215,17 +293,68 @@ def build_tvl_json(con: duckdb.DuckDBPyConnection) -> dict:
         totals.append((mk, e["ticker"] or "", usd[-1] if usd else 0))
     totals.sort(key=lambda x: -x[2])
     top = [{"marketKey": mk, "ticker": tk, "tvlUsdNow": v} for mk, tk, v in totals[:20]]
+
+    # Per-platform daily timeseries — sum each market's series into its platform
+    by_platform: dict[str, list[float]] = {}
+    for mk, m in by_market_out.items():
+        plat = m["platform"]
+        if plat not in by_platform:
+            by_platform[plat] = [0.0] * len(dates)
+        for i, v in enumerate(m["tvlUsd"]):
+            by_platform[plat][i] += v
+    # Sort platforms by latest value, place "Other" last
+    platforms_sorted = sorted(
+        by_platform.items(),
+        key=lambda kv: (-kv[1][-1] if kv[1] else 0, kv[0])
+    )
+
+    # Decomposition: PT (principal) + LP + Idle = SY total per day
+    # Pull LP USD value (from active_positions_daily) and SY USD value
+    # (from int_sy_tvl_daily, summed across distinct sy mints per date).
+    decomp = con.execute("""
+        WITH lp AS (
+          SELECT date, SUM(usd_value) AS lp_usd
+          FROM main_analytics.active_positions_daily
+          WHERE leg = 'LP'
+          GROUP BY date
+        ),
+        sy AS (
+          SELECT date, SUM(tvl_usd) AS sy_usd FROM main_intermediate.int_sy_tvl_daily GROUP BY date
+        ),
+        pt AS (
+          SELECT date, SUM(principal_tvl_usd) AS pt_usd FROM main_analytics.tvl_daily GROUP BY date
+        )
+        SELECT sy.date::VARCHAR, sy.sy_usd, COALESCE(pt.pt_usd,0), COALESCE(lp.lp_usd,0)
+        FROM sy LEFT JOIN pt USING (date) LEFT JOIN lp USING (date)
+    """).fetchall()
+    decomp_map = {r[0]: (float(r[1] or 0), float(r[2] or 0), float(r[3] or 0)) for r in decomp}
+    pt_arr = [decomp_map.get(d, (0,0,0))[1] for d in dates]
+    lp_arr = [decomp_map.get(d, (0,0,0))[2] for d in dates]
+    # Idle = SY_total - PT - LP, floored at 0 to absorb attribution noise
+    idle_arr = [
+        max(0.0, decomp_map.get(d, (0,0,0))[0] - decomp_map.get(d, (0,0,0))[1] - decomp_map.get(d, (0,0,0))[2])
+        for d in dates
+    ]
+
     return {
         "meta": {
             "generatedAt": datetime.now(timezone.utc).isoformat(),
             "dateRange": [min_d, max_d],
             "currentTvlUsd": proto_usd[-1] if proto_usd else 0,
             "currentPrincipalUsd": proto_principal[-1] if proto_principal else 0,
+            "currentLpUsd": lp_arr[-1] if lp_arr else 0,
+            "currentIdleUsd": idle_arr[-1] if idle_arr else 0,
             "source": "tvl_daily — SY_supply × SY_rate × underlying_USD (DefiLlama-compatible). Principal series = PT_supply × underlying_USD.",
         },
         "dates": dates,
         "protocolUsd": proto_usd,
         "protocolPrincipalUsd": proto_principal,
+        "decomposition": {
+            "principalPt": pt_arr,
+            "liquidityLp": lp_arr,
+            "idle":        idle_arr,
+        },
+        "byPlatform": {plat: series for plat, series in platforms_sorted},
         "byMarket": by_market_out,
         "topMarkets": top,
     }
@@ -390,6 +519,23 @@ def build_stats_json(con: duckdb.DuckDBPyConnection) -> dict:
     first_date = con.execute(
         "SELECT MIN(date)::VARCHAR FROM main_analytics.trading_volume_daily WHERE volume_usd > 0"
     ).fetchone()[0]
+    # Holders — distinct owners across PT/YT/LP on latest snapshot
+    holders = con.execute("""
+        SELECT COUNT(DISTINCT owner) FROM main.raw_holders
+        WHERE snapshot_date = (SELECT MAX(snapshot_date) FROM main.raw_holders)
+    """).fetchone()
+    # PT / LP / Idle decomposition (latest)
+    decomp = con.execute("""
+        SELECT
+          (SELECT SUM(tvl_usd)           FROM main_intermediate.int_sy_tvl_daily
+            WHERE date = (SELECT MAX(date) FROM main_intermediate.int_sy_tvl_daily)) AS sy_usd,
+          (SELECT SUM(principal_tvl_usd) FROM main_analytics.tvl_daily
+            WHERE date = (SELECT MAX(date) FROM main_analytics.tvl_daily)) AS pt_usd,
+          (SELECT SUM(usd_value)         FROM main_analytics.active_positions_daily
+            WHERE leg = 'LP' AND date = (SELECT MAX(date) FROM main_analytics.active_positions_daily)) AS lp_usd
+    """).fetchone()
+    sy_usd = float(decomp[0] or 0); pt_usd = float(decomp[1] or 0); lp_usd = float(decomp[2] or 0)
+    idle_usd = max(0.0, sy_usd - pt_usd - lp_usd)
     return {
         "meta": {"generatedAt": datetime.now(timezone.utc).isoformat()},
         "markets": {
@@ -405,10 +551,16 @@ def build_stats_json(con: duckdb.DuckDBPyConnection) -> dict:
             "currentPrincipalUsd": float(cur[1] or 0) if cur else 0.0,
             "peakUsd":            float(peak[1] or 0) if peak else 0.0,
             "peakDate":           peak[0] if peak else None,
+            "ptUsd":              pt_usd,
+            "lpUsd":              lp_usd,
+            "idleUsd":            idle_usd,
         },
         "volume": {
             "lifetimeUsd": float(vol[0] or 0) if vol else 0.0,
             "thirty30Usd": float(vol[1] or 0) if vol else 0.0,
+        },
+        "holders": {
+            "totalUniqueOwners": int(holders[0] or 0) if holders else 0,
         },
         "protocol": {
             "firstActivityDate": first_date,
