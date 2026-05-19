@@ -361,7 +361,40 @@ def build_tvl_json(con: duckdb.DuckDBPyConnection) -> dict:
 
 
 def build_market_share_json(con: duckdb.DuckDBPyConnection) -> dict:
-    """Per-asset (ticker) market share, latest date + 30d avg."""
+    """Per-asset (ticker) market share — full daily timeseries + latest
+    snapshot + 30d rollup.
+
+    The timeseries enables a stacked-bar dominance view (which ticker
+    captured the most volume / TVL each day)."""
+    bounds = con.execute(
+        "SELECT MIN(date)::VARCHAR, MAX(date)::VARCHAR FROM main_analytics.market_share_daily WHERE ticker IS NOT NULL"
+    ).fetchone()
+    if not bounds or not bounds[0]:
+        return {"meta": {"generatedAt": datetime.now(timezone.utc).isoformat(), "empty": True}}
+    min_d, max_d = bounds
+    dates = [r[0] for r in con.execute(
+        f"SELECT generate_series::DATE::VARCHAR FROM generate_series(DATE '{min_d}', DATE '{max_d}', INTERVAL 1 DAY)"
+    ).fetchall()]
+    # Per-ticker daily series (volume USD + tvl USD)
+    ts_rows = con.execute("""
+        SELECT date::VARCHAR, ticker, volume_usd, tvl_usd
+        FROM main_analytics.market_share_daily
+        WHERE ticker IS NOT NULL
+    """).fetchall()
+    by_ticker_vol: dict[str, dict[str, float]] = {}
+    by_ticker_tvl: dict[str, dict[str, float]] = {}
+    for date, ticker, v, t in ts_rows:
+        if v: by_ticker_vol.setdefault(ticker, {})[date] = float(v)
+        if t: by_ticker_tvl.setdefault(ticker, {})[date] = float(t)
+    # Densify into arrays aligned to `dates`
+    all_tickers = sorted(set(by_ticker_vol.keys()) | set(by_ticker_tvl.keys()))
+    timeseries = {}
+    for ticker in all_tickers:
+        timeseries[ticker] = {
+            "volumeUsd": [by_ticker_vol.get(ticker, {}).get(d, 0.0) for d in dates],
+            "tvlUsd":    [by_ticker_tvl.get(ticker, {}).get(d, 0.0) for d in dates],
+        }
+    # Latest snapshot
     rows = con.execute("""
         WITH latest AS (SELECT MAX(date) AS d FROM main_analytics.market_share_daily)
         SELECT ms.ticker, ms.volume_usd, ms.volume_share_pct, ms.tvl_usd, ms.tvl_share_pct
@@ -392,7 +425,13 @@ def build_market_share_json(con: duckdb.DuckDBPyConnection) -> dict:
     ]
     rollup30.sort(key=lambda x: -x["tvlUsdAvg30d"])
     return {
-        "meta": {"generatedAt": datetime.now(timezone.utc).isoformat()},
+        "meta": {
+            "generatedAt": datetime.now(timezone.utc).isoformat(),
+            "dateRange": [min_d, max_d],
+            "tickers": all_tickers,
+        },
+        "dates": dates,
+        "byTicker": timeseries,
         "snapshot": snapshot,
         "rolling30d": rollup30,
     }
