@@ -274,33 +274,82 @@ def build_tvl_json(con: duckdb.DuckDBPyConnection) -> dict:
     proto_pt_map = {r[0]: float(r[1] or 0) for r in proto_pt}
     proto_usd       = [proto_sy_map.get(d, 0.0) for d in dates]
     proto_principal = [proto_pt_map.get(d, 0.0) for d in dates]
-    # Per-market series — load raw platform too so we can roll up byPlatform
+    # Per-market series — load raw platform + PT/YT split too so we can roll
+    # up byPlatform AND emit per-market breakdown buckets
     rows = con.execute("""
         SELECT t.market_key, t.ticker, t.platform, t.date::VARCHAR,
-               t.tvl_usd, t.tvl_underlying, t.principal_tvl_usd
+               t.tvl_usd, t.tvl_underlying, t.principal_tvl_usd,
+               t.principal_pt_usd, t.farm_yt_usd
         FROM main_analytics.tvl_daily t
     """).fetchall()
+    # LP USD per (market, date) — keyed for fast lookup in per-market breakdown
+    lp_per_market = {(r[0], r[1]): float(r[2] or 0) for r in con.execute("""
+        SELECT market_key, date::VARCHAR, SUM(usd_value)
+        FROM main_analytics.active_positions_daily
+        WHERE leg = 'LP' AND market_key IS NOT NULL
+        GROUP BY 1, 2
+    """).fetchall()}
     by_market: dict[str, dict] = {}
     platform_for_mk: dict[str, str] = {}
-    for mk, ticker, raw_plat, date, tvl_usd, tvl_und, principal in rows:
-        e = by_market.setdefault(mk, {"ticker": ticker, "platform": normalize_platform(raw_plat, ticker),
-                                      "usd_map": {}, "und_map": {}, "principal_map": {}})
+    for mk, ticker, raw_plat, date, tvl_usd, tvl_und, principal, pt_v, yt_v in rows:
+        e = by_market.setdefault(mk, {
+            "ticker": ticker, "platform": normalize_platform(raw_plat, ticker),
+            "usd_map": {}, "und_map": {}, "principal_map": {},
+            "pt_map": {}, "yt_map": {},
+        })
         platform_for_mk[mk] = e["platform"]
         e["usd_map"][date] = float(tvl_usd or 0)
         e["und_map"][date] = float(tvl_und or 0)
         e["principal_map"][date] = float(principal or 0)
+        e["pt_map"][date] = float(pt_v or 0)
+        e["yt_map"][date] = float(yt_v or 0)
     by_market_out: dict[str, dict] = {}
     totals = []
     for mk, e in by_market.items():
         usd = [e["usd_map"].get(d, 0.0) for d in dates]
         und = [e["und_map"].get(d, 0.0) for d in dates]
         principal = [e["principal_map"].get(d, 0.0) for d in dates]
+        pt_raw_m = [e["pt_map"].get(d, 0.0) for d in dates]
+        yt_raw_m = [e["yt_map"].get(d, 0.0) for d in dates]
+        pt_arr_m: list[float] = []
+        yt_arr_m: list[float] = []
+        lp_arr_m: list[float] = []
+        idle_arr_m: list[float] = []
+        for i, d in enumerate(dates):
+            scope_tvl = usd[i]
+            pt_raw = pt_raw_m[i]
+            yt_raw = yt_raw_m[i]
+            lp_face = lp_per_market.get((mk, d), 0.0)
+            # If PT+YT face exceeds the market's attributed TVL (happens when
+            # the pool has flash-minted PT to facilitate YT-buy trades — the
+            # extra PT lives in pool reserves, not user wallets), scale PT
+            # and YT proportionally so the breakdown sums to scope exactly.
+            ptyt_total = pt_raw + yt_raw
+            if ptyt_total > scope_tvl and ptyt_total > 0:
+                scale = scope_tvl / ptyt_total
+                pt_v = pt_raw * scale
+                yt_v = yt_raw * scale
+                remaining_m = 0.0
+            else:
+                pt_v = pt_raw
+                yt_v = yt_raw
+                remaining_m = max(0.0, scope_tvl - pt_v - yt_v)
+            lp_cap = min(lp_face, remaining_m)
+            pt_arr_m.append(pt_v)
+            yt_arr_m.append(yt_v)
+            lp_arr_m.append(lp_cap)
+            idle_arr_m.append(max(0.0, remaining_m - lp_cap))
         by_market_out[mk] = {
             "ticker": e["ticker"],
             "platform": e["platform"],
             "tvlUsd": usd,
             "tvlUnderlying": und,
             "principalUsd": principal,
+            # 4-bucket breakdown (sums to tvlUsd)
+            "ptUsd":    pt_arr_m,
+            "ytUsd":    yt_arr_m,
+            "lpUsd":    lp_arr_m,
+            "idleUsd":  idle_arr_m,
         }
         totals.append((mk, e["ticker"] or "", usd[-1] if usd else 0))
     totals.sort(key=lambda x: -x[2])
@@ -341,6 +390,42 @@ def build_tvl_json(con: duckdb.DuckDBPyConnection) -> dict:
         by_platform.items(),
         key=lambda kv: (-kv[1][-1] if kv[1] else 0, kv[0])
     )
+
+    # Per-platform 4-bucket breakdown: sum PT/YT per platform (from
+    # per-market data) + LP per platform + Idle = platform_total - PT - YT - LP.
+    # Buckets sum to the platform total at every date.
+    platform_pt: dict[str, list[float]] = {}
+    platform_yt: dict[str, list[float]] = {}
+    platform_lp: dict[str, list[float]] = {}
+    for mk, m in by_market_out.items():
+        plat = m.get("platform") or "Other"
+        if plat not in platform_pt:
+            platform_pt[plat] = [0.0] * len(dates)
+            platform_yt[plat] = [0.0] * len(dates)
+            platform_lp[plat] = [0.0] * len(dates)
+        for i in range(len(dates)):
+            platform_pt[plat][i] += m["ptUsd"][i]
+            platform_yt[plat][i] += m["ytUsd"][i]
+            platform_lp[plat][i] += m["lpUsd"][i]
+    by_platform_breakdown: dict[str, dict[str, list[float]]] = {}
+    for plat, plat_series in by_platform.items():
+        pt_p = platform_pt.get(plat, [0.0] * len(dates))
+        yt_p = platform_yt.get(plat, [0.0] * len(dates))
+        lp_p = platform_lp.get(plat, [0.0] * len(dates))
+        idle_p: list[float] = []
+        lp_capped: list[float] = []
+        for i in range(len(dates)):
+            scope = plat_series[i]
+            remaining = max(0.0, scope - pt_p[i] - yt_p[i])
+            lp_cap_v = min(lp_p[i], remaining)
+            lp_capped.append(lp_cap_v)
+            idle_p.append(max(0.0, remaining - lp_cap_v))
+        by_platform_breakdown[plat] = {
+            "principalPt": pt_p,
+            "farmYt":      yt_p,
+            "liquidityLp": lp_capped,
+            "idle":        idle_p,
+        }
 
     # Decomposition: PT + YT + LP + Idle = SY total per day.
     # PT/YT now valued at AMM-implied market prices (not face value), so YT
@@ -443,6 +528,7 @@ def build_tvl_json(con: duckdb.DuckDBPyConnection) -> dict:
             "idle":        idle_arr,
         },
         "byPlatform": {plat: series for plat, series in platforms_sorted},
+        "byPlatformBreakdown": by_platform_breakdown,
         "byMarket": by_market_out,
         "topMarkets": top,
         "tgeMarkers": tge_markers,
