@@ -22,7 +22,7 @@ type VolData = {
   byMarket: Record<string, { ticker: string; totalUsd: number[]; ptUsd: number[]; ytUsd: number[] }>;
 };
 
-type Metric = 'tvl' | 'volume' | 'positions' | 'breakdown';
+type Metric = 'tvl' | 'volume' | 'breakdown';
 type View = 'protocol' | 'platform' | 'market';
 type Range = '30d' | '90d' | '1y' | 'all';
 
@@ -30,9 +30,6 @@ const BREAKDOWN_COLOR: Record<string, string> = {
   'Principal (PT)': '#a78bfa',
   'Liquidity (LP)': '#4ade80',
   'Idle':           '#9ca3af',
-  'PT':             '#a78bfa',
-  'LP':             '#4ade80',
-  'Idle (SY)':      '#9ca3af',
   'TVL':            '#a78bfa',
   'Volume':         '#38bdf8',
 };
@@ -274,24 +271,6 @@ export function BigChart() {
       return emitFromSeries(seriesByMk, 'sum', true, (k: string) => platformForMk[k]);
     }
 
-    if (metric === 'positions' && tvl) {
-      const d = tvl.decomposition;
-      const pt = sampleSeries(d.principalPt);
-      const lp = sampleSeries(d.liquidityLp);
-      const idle = sampleSeries(d.idle);
-      const keys = ['PT', 'LP', 'Idle (SY)'];
-      return {
-        allKeys: keys, isFlat: false, breakdownLike: true,
-        colorMap: Object.fromEntries(keys.map(k => [k, BREAKDOWN_COLOR[k]])),
-        data: sliced.map((dt, i) => ({
-          date: dt,
-          PT:        pt[i] || 0,
-          LP:        lp[i] || 0,
-          'Idle (SY)': idle[i] || 0,
-        })),
-      };
-    }
-
     return empty;
   }, [tvl, vol, metric, effectiveView, range, start, stride, dates]);
 
@@ -329,7 +308,6 @@ export function BigChart() {
           {([
             ['tvl', 'TVL'],
             ['volume', 'Volume'],
-            ['positions', 'Positions'],
             ['breakdown', 'Breakdown'],
           ] as [Metric, string][]).map(([m, label]) => (
             <button key={m} onClick={() => setMetric(m)}
