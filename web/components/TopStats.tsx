@@ -39,7 +39,7 @@ function Delta({ now, then, kind = 'usd', good = 'up' }:
   const abs = kind === 'usd' ? fmtUsd(Math.abs(diff)) : Math.abs(diff).toLocaleString();
   return (
     <span className={`text-[10px] tabular-nums ${cls}`}>
-      {arrow} {abs} ({Math.abs(pct).toFixed(1)}%) <span className="text-white/40">7d</span>
+      {arrow} {abs} ({Math.abs(pct).toFixed(1)}%) 7d
     </span>
   );
 }
@@ -48,7 +48,7 @@ function Delta({ now, then, kind = 'usd', good = 'up' }:
 function Plus7d({ amount, kind = 'usd' }: { amount: number; kind?: 'usd' | 'count' }) {
   if (amount <= 0) return <span className="text-white/20 text-[10px]">— 7d</span>;
   const label = kind === 'usd' ? fmtUsd(amount) : amount.toLocaleString();
-  return <span className="text-[10px] tabular-nums text-emerald-400">+{label} <span className="text-white/40">7d</span></span>;
+  return <span className="text-[10px] tabular-nums text-emerald-400">+{label} 7d</span>;
 }
 
 export function TopStats() {
