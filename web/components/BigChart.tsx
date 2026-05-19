@@ -54,19 +54,23 @@ function rangeStart(dates: string[], range: Range) {
   return Math.max(0, dates.findIndex(d => d >= cutoff));
 }
 
+const TOOLTIP_CAP = 15;  // show top N entries; sum the rest into a single row
 function SortedTooltip({ active, payload, label }: TooltipProps<number, string>) {
   if (!active || !payload?.length) return null;
-  const entries = payload
+  const allEntries = payload
     .map(p => ({ name: String(p.name ?? p.dataKey ?? ''), value: typeof p.value === 'number' ? p.value : 0, color: p.color || (p as any).fill || '#888' }))
     .filter(e => Math.abs(e.value) > 0.01)
     .sort((a, b) => Math.abs(b.value) - Math.abs(a.value));
-  if (!entries.length) return null;
-  const total = entries.reduce((s, e) => s + e.value, 0);
+  if (!allEntries.length) return null;
+  const total = allEntries.reduce((s, e) => s + e.value, 0);
+  const top = allEntries.slice(0, TOOLTIP_CAP);
+  const tail = allEntries.slice(TOOLTIP_CAP);
+  const tailSum = tail.reduce((s, e) => s + e.value, 0);
   return (
-    <div className="bg-[#0a0a0a]/95 backdrop-blur border border-white/15 rounded-lg p-2 text-xs shadow-xl min-w-[220px] max-h-[360px] overflow-y-auto">
+    <div className="bg-[#0a0a0a]/95 backdrop-blur border border-white/15 rounded-lg p-2 text-xs shadow-xl min-w-[220px]">
       <div className="text-white/70 mb-1 font-medium">{label}</div>
       <div className="space-y-0.5">
-        {entries.map(e => (
+        {top.map(e => (
           <div key={e.name} className="flex justify-between gap-3 items-center">
             <span className="flex items-center gap-1.5 text-white/85 truncate">
               <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: e.color }} />
@@ -74,13 +78,19 @@ function SortedTooltip({ active, payload, label }: TooltipProps<number, string>)
             </span>
             <span className="tabular-nums text-white shrink-0">
               {fmtUsd(e.value)}
-              {entries.length > 1 && total !== 0 && <span className="text-white/40 ml-1.5">({((e.value/total)*100).toFixed(0)}%)</span>}
+              {allEntries.length > 1 && total !== 0 && <span className="text-white/40 ml-1.5">({((e.value/total)*100).toFixed(0)}%)</span>}
             </span>
           </div>
         ))}
+        {tail.length > 0 && (
+          <div className="flex justify-between gap-3 items-center text-white/40 italic">
+            <span>… {tail.length} smaller</span>
+            <span className="tabular-nums">{fmtUsd(tailSum)}</span>
+          </div>
+        )}
       </div>
-      {entries.length > 1 && (
-        <div className="flex justify-between mt-1.5 pt-1.5 border-t border-white/10 sticky bottom-0 bg-[#0a0a0a]/95">
+      {allEntries.length > 1 && (
+        <div className="flex justify-between mt-1.5 pt-1.5 border-t border-white/10">
           <span className="text-white/40">Total</span>
           <span className="tabular-nums text-white/90 font-medium">{fmtUsd(total)}</span>
         </div>
@@ -106,6 +116,15 @@ export function BigChart() {
   const effectiveView = metric === 'breakdown' ? 'protocol' : view;
   const dates = metric === 'volume' ? vol?.dates : tvl?.dates;
   const start = dates ? rangeStart(dates, range) : 0;
+  // Downsample for long ranges — render at most ~120 points per series.
+  // The user can't see daily granularity at 1000px wide anyway, and going
+  // from 571 daily to ~80 weekly points 7×s the render speed.
+  const stride = useMemo(() => {
+    if (!dates) return 1;
+    const visible = dates.length - start;
+    if (visible <= 120) return 1;
+    return Math.ceil(visible / 120);
+  }, [dates, start]);
 
   const { allKeys, data, colorMap, isFlat, breakdownLike } = useMemo(() => {
     type Result = {
@@ -114,19 +133,36 @@ export function BigChart() {
     };
     const empty: Result = { allKeys: [], data: [], colorMap: {}, isFlat: true, breakdownLike: false };
     if (!dates) return empty;
-    const sliced = dates.slice(start);
+    // Strided iteration: take every Nth index in the visible window. Picks
+    // indices 0, stride, 2·stride, … so the last point is always included.
+    const indices: number[] = [];
+    for (let i = start; i < dates.length; i += stride) indices.push(i);
+    if (indices[indices.length - 1] !== dates.length - 1) indices.push(dates.length - 1);
+    const sliced = indices.map(i => dates[i]);
+    // Build a value lookup that takes the AVERAGE across each stride window,
+    // so downsampled bars represent the visible week (not a single day).
+    const sampleSeries = (s: number[]): number[] =>
+      indices.map((iStart, k) => {
+        const iEnd = k + 1 < indices.length ? indices[k + 1] : iStart + 1;
+        let sum = 0, n = 0;
+        for (let j = iStart; j < iEnd; j++) { sum += s[j] || 0; n++; }
+        return n > 0 ? sum / n : 0;
+      });
 
     if (metric === 'breakdown' && tvl) {
       const d = tvl.decomposition;
+      const pt = sampleSeries(d.principalPt);
+      const lp = sampleSeries(d.liquidityLp);
+      const idle = sampleSeries(d.idle);
       const keys = ['Principal (PT)', 'Liquidity (LP)', 'Idle'];
       return {
         allKeys: keys, isFlat: false, breakdownLike: true,
         colorMap: Object.fromEntries(keys.map(k => [k, BREAKDOWN_COLOR[k]])),
         data: sliced.map((dt, i) => ({
           date: dt,
-          'Principal (PT)': d.principalPt[start + i] || 0,
-          'Liquidity (LP)': d.liquidityLp[start + i] || 0,
-          'Idle':           d.idle[start + i] || 0,
+          'Principal (PT)': pt[i] || 0,
+          'Liquidity (LP)': lp[i] || 0,
+          'Idle':           idle[i] || 0,
         })),
       };
     }
@@ -137,33 +173,53 @@ export function BigChart() {
       isMarket: boolean,
       platformResolver: (k: string) => string,
     ) {
-      // sortBy controls how the default top-N is picked:
-      //   'latest'     — last-day value (what's biggest now)
-      //   'sum'        — lifetime cumulative (good for volume)
-      //   'maxInRange' — max value within the visible window (catches
-      //                  historical giants that have since matured/shrunk)
-      const sortValOf = (s: number[]) => {
-        const inRange = s.slice(start);
-        if (sortBy === 'latest')     return inRange[inRange.length - 1] || 0;
-        if (sortBy === 'sum')        return inRange.reduce((a, b) => a + (b || 0), 0);
-        // maxInRange
-        let mx = 0; for (const v of inRange) if (v > mx) mx = v;
-        return mx;
-      };
-      const entries = Object.entries(seriesByKey).map(([k, s]) => ({
-        k,
-        sortVal: sortValOf(s),
-        series: s,
-      })).filter(e => e.sortVal > 0).sort((a, b) => b.sortVal - a.sortVal);
-      const allKeys = entries.map(e => e.k);
+      // Compute sort value AND max-in-range together; sample down to the
+      // visible-window stride once so we don't re-walk full daily series
+      // later when building rows.
+      type Entry = { k: string; sortVal: number; maxInRange: number; sampled: number[] };
+      const entries: Entry[] = Object.entries(seriesByKey).map(([k, s]) => {
+        let mx = 0, sum = 0;
+        for (let i = start; i < s.length; i++) {
+          const v = s[i] || 0;
+          if (v > mx) mx = v;
+          sum += v;
+        }
+        const latest = s[s.length - 1] || 0;
+        const sortVal = sortBy === 'latest' ? latest : sortBy === 'sum' ? sum : mx;
+        return { k, sortVal, maxInRange: mx, sampled: sampleSeries(s) };
+      }).filter(e => e.sortVal > 0).sort((a, b) => b.sortVal - a.sortVal);
+
+      // Long-tail filter: drop series whose peak in the visible window is
+      // <0.5% of the leader's peak. They render as invisible pixel slivers
+      // but each costs a full Recharts <Area> SVG path. Tail gets lumped
+      // into one "Other (small)" series so the stack still reconciles.
+      const peakOfPeaks = entries[0]?.maxInRange ?? 0;
+      const tailThreshold = peakOfPeaks * 0.005;
+      const trimmed = entries.filter(e => e.maxInRange >= tailThreshold);
+      const dropped = entries.slice(trimmed.length);
+
+      const allKeys = trimmed.map(e => e.k);
       const rows = sliced.map((dt, i) => {
         const row: any = { date: dt };
-        for (const e of entries) row[e.k] = e.series[start + i] || 0;
+        for (const e of trimmed) row[e.k] = e.sampled[i] || 0;
         return row;
       });
+      if (dropped.length > 0) {
+        const otherSeries: number[] = sliced.map((_, i) => {
+          let s = 0;
+          for (const e of dropped) s += e.sampled[i] || 0;
+          return s;
+        });
+        if (otherSeries.some(v => v > 0)) {
+          allKeys.push('Other (small)');
+          for (let i = 0; i < rows.length; i++) rows[i]['Other (small)'] = otherSeries[i];
+        }
+      }
+
       const seen: Record<string, number> = {};
       const colorMap: Record<string, string> = {};
       for (const k of allKeys) {
+        if (k === 'Other (small)') { colorMap[k] = '#9ca3af'; continue; }
         if (!isMarket) {
           colorMap[k] = colorForPlatform(k);
         } else {
@@ -178,10 +234,11 @@ export function BigChart() {
 
     if (metric === 'tvl' && tvl) {
       if (effectiveView === 'protocol') {
+        const sampled = sampleSeries(tvl.protocolUsd);
         return {
           allKeys: ['TVL'], isFlat: true, breakdownLike: false,
           colorMap: { TVL: BREAKDOWN_COLOR['TVL'] },
-          data: sliced.map((dt, i) => ({ date: dt, TVL: tvl.protocolUsd[start + i] || 0 })),
+          data: sliced.map((dt, i) => ({ date: dt, TVL: sampled[i] || 0 })),
         };
       }
       if (effectiveView === 'platform') {
@@ -198,10 +255,11 @@ export function BigChart() {
 
     if (metric === 'volume' && vol) {
       if (effectiveView === 'protocol') {
+        const sampled = sampleSeries(vol.protocol.totalUsd);
         return {
           allKeys: ['Volume'], isFlat: true, breakdownLike: false,
           colorMap: { Volume: BREAKDOWN_COLOR['Volume'] },
-          data: sliced.map((dt, i) => ({ date: dt, Volume: vol.protocol.totalUsd[start + i] || 0 })),
+          data: sliced.map((dt, i) => ({ date: dt, Volume: sampled[i] || 0 })),
         };
       }
       if (effectiveView === 'platform') {
@@ -218,21 +276,24 @@ export function BigChart() {
 
     if (metric === 'positions' && tvl) {
       const d = tvl.decomposition;
+      const pt = sampleSeries(d.principalPt);
+      const lp = sampleSeries(d.liquidityLp);
+      const idle = sampleSeries(d.idle);
       const keys = ['PT', 'LP', 'Idle (SY)'];
       return {
         allKeys: keys, isFlat: false, breakdownLike: true,
         colorMap: Object.fromEntries(keys.map(k => [k, BREAKDOWN_COLOR[k]])),
         data: sliced.map((dt, i) => ({
           date: dt,
-          PT:        d.principalPt[start + i] || 0,
-          LP:        d.liquidityLp[start + i] || 0,
-          'Idle (SY)': d.idle[start + i] || 0,
+          PT:        pt[i] || 0,
+          LP:        lp[i] || 0,
+          'Idle (SY)': idle[i] || 0,
         })),
       };
     }
 
     return empty;
-  }, [tvl, vol, metric, effectiveView, range, start, dates]);
+  }, [tvl, vol, metric, effectiveView, range, start, stride, dates]);
 
   // Default: show everything. User can toggle off individual series in
   // the legend (Hide All / per-chip click).
