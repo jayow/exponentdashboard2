@@ -131,8 +131,11 @@ def onchain_account_to_row(
     market_key = format_market_key(ticker, decoded.maturity_ts)
     payload = {
         "syMint": decoded.sy_mint,
+        "ptMint": decoded.pt_mint,
+        "lpMint": decoded.lp_mint,
         "vault": decoded.vault,
         "marketAccount": pubkey,
+        "ammPool": pubkey,  # the MarketThree account IS the AMM pool
         "maturityTs": decoded.maturity_ts,
         "maturityDate": datetime.fromtimestamp(
             decoded.maturity_ts, tz=timezone.utc

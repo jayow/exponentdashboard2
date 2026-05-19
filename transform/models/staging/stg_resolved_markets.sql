@@ -11,7 +11,10 @@ with onchain_markets as (
     select
         market_key,
         payload->>'$.syMint'         as sy_mint,
+        payload->>'$.ptMint'         as pt_mint,
+        payload->>'$.lpMint'         as lp_mint,
         payload->>'$.vault'          as vault,
+        payload->>'$.ammPool'        as amm_pool,
         cast(payload->>'$.maturityTs' as bigint) as maturity_ts,
         cast(payload->>'$.maturityDate' as date) as maturity_date,
         fetched_at
@@ -35,7 +38,10 @@ resolved_ticker as (
     select
         m.market_key,
         m.sy_mint,
+        m.pt_mint,
+        m.lp_mint,
         m.vault,
+        m.amm_pool,
         m.maturity_ts,
         m.maturity_date,
         sm.sy_name,
@@ -52,7 +58,10 @@ resolved_ticker as (
 select
     r.market_key                                          as raw_market_key,
     r.sy_mint,
+    r.pt_mint,
+    r.lp_mint,
     r.vault,
+    r.amm_pool,
     r.maturity_ts,
     r.maturity_date,
     r.resolved_ticker,
