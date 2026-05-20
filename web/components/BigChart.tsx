@@ -56,6 +56,20 @@ function rangeStart(dates: string[], range: Range) {
   return Math.max(0, dates.findIndex(d => d >= cutoff));
 }
 
+const MONTH_ABBR_TO_NUM: Record<string, number> = {
+  JAN: 0, FEB: 1, MAR: 2, APR: 3, MAY: 4, JUN: 5,
+  JUL: 6, AUG: 7, SEP: 8, OCT: 9, NOV: 10, DEC: 11,
+};
+// Parse maturity from a market_key like 'fragSOL-15DEC26' → ms epoch.
+// Returns null for keys without a trailing date suffix (UNCLASSIFIED, etc.).
+function maturityMs(marketKey: string): number | null {
+  const m = marketKey.match(/-(\d{2})([A-Z]{3})(\d{2})$/);
+  if (!m) return null;
+  const month = MONTH_ABBR_TO_NUM[m[2]];
+  if (month === undefined) return null;
+  return Date.UTC(2000 + Number(m[3]), month, Number(m[1]));
+}
+
 const TOOLTIP_CAP = 15;  // show top N entries; sum the rest into a single row
 function SortedTooltip({ active, payload, label }: TooltipProps<number, string>) {
   if (!active || !payload?.length) return null;
@@ -217,6 +231,20 @@ export function BigChart() {
       const tailThreshold = peakOfPeaks * 0.005;
       const trimmed = entries.filter(e => e.maxInRange >= tailThreshold);
       const dropped = entries.slice(trimmed.length);
+
+      // Market-view legends read better in chronological order — newest
+      // maturity first, so freshly-listed markets show at the head of the
+      // chip row. Keys without a parseable maturity sink to the bottom.
+      if (isMarket) {
+        trimmed.sort((a, b) => {
+          const ma = maturityMs(a.k);
+          const mb = maturityMs(b.k);
+          if (ma === null && mb === null) return 0;
+          if (ma === null) return 1;
+          if (mb === null) return -1;
+          return mb - ma;
+        });
+      }
 
       const allKeys = trimmed.map(e => e.k);
       const rows = sliced.map((dt, i) => {
