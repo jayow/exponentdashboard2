@@ -97,11 +97,22 @@ export function MarketsList() {
     }
     const filtered = out.filter(r => status === 'all' || (r.isActive && !r.isTest));
     filtered.sort((a, b) => {
-      const av = a[sortKey] as number | string;
-      const bv = b[sortKey] as number | string;
-      const cmp = typeof av === 'string'
-        ? (av as string).localeCompare(bv as string)
-        : (Number(av) || 0) - (Number(bv) || 0);
+      let cmp: number;
+      if (sortKey === 'marketKey') {
+        // Sort by parsed maturity date — alphabetical is meaningless across
+        // markets. Keys without a date suffix (UNCLASSIFIED, etc.) fall to
+        // the bottom regardless of direction.
+        const am = maturityMs(a.marketKey);
+        const bm = maturityMs(b.marketKey);
+        if (am === null && bm === null) cmp = a.marketKey.localeCompare(b.marketKey);
+        else if (am === null) cmp = 1;
+        else if (bm === null) cmp = -1;
+        else cmp = am - bm;
+      } else {
+        const av = a[sortKey] as number;
+        const bv = b[sortKey] as number;
+        cmp = (Number(av) || 0) - (Number(bv) || 0);
+      }
       return sortDesc ? -cmp : cmp;
     });
     return filtered;
@@ -109,7 +120,7 @@ export function MarketsList() {
 
   function toggleSort(k: SortKey) {
     if (k === sortKey) setSortDesc(d => !d);
-    else { setSortKey(k); setSortDesc(k !== 'marketKey'); }   // numeric keys default to desc, marketKey to asc
+    else { setSortKey(k); setSortDesc(true); }   // numeric desc / latest maturity first
   }
   const arrow = (k: SortKey) => k === sortKey ? (sortDesc ? '↓' : '↑') : '';
 
