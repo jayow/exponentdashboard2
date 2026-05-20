@@ -134,7 +134,7 @@ export function MarketsList() {
       <header className="flex items-baseline justify-between flex-wrap gap-2 mb-3">
         <div>
           <h2 className="text-sm uppercase tracking-wider text-white/60">Markets</h2>
-          <p className="text-xs text-white/40">{rows.length} markets • click for detail</p>
+          <p className="text-xs text-white/40">{rows.length} markets · click a row for detail</p>
         </div>
         <div className="flex items-center gap-1">
           {(['active', 'all'] as StatusFilter[]).map(s => (

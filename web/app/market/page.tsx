@@ -66,7 +66,7 @@ function MarketDetailView() {
 
   const [tab, setTab] = useState<Leg>('PT');
   const [metric, setMetric] = useState<Metric>('tvl');
-  const [range, setRange] = useState<Range>('all');
+  const [range, setRange] = useState<Range>('90d');
   const [search, setSearch] = useState('');
 
   useEffect(() => {
@@ -164,7 +164,7 @@ function MarketDetailView() {
             {(['30d', '90d', '1y', 'all'] as Range[]).map(r => (
               <button key={r} onClick={() => setRange(r)}
                 className={`text-xs px-2.5 py-1 rounded-md ${range === r ? 'bg-white/10 text-white' : 'text-white/30 hover:text-white/60'}`}>
-                {r}
+                {r === 'all' ? 'All' : r.toUpperCase()}
               </button>
             ))}
           </div>

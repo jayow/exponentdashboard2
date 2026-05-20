@@ -95,7 +95,7 @@ export function UsersAnalytics() {
           {(['30d', '90d', '1y', 'all'] as Range[]).map(r => (
             <button key={r} onClick={() => setRange(r)}
               className={`text-xs px-3 py-1 rounded-lg border ${range === r ? 'border-white/30 bg-white/10' : 'border-white/10 text-white/40'}`}>
-              {r}
+              {r === 'all' ? 'All' : r.toUpperCase()}
             </button>
           ))}
         </div>
