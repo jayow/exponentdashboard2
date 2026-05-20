@@ -20,7 +20,7 @@ type TvlByMarket = Record<string, {
 type ApLeg = { byMarket: Record<string, number[]>; totals: number[] };
 type ApTicker = { underlyingMint: string; latest: Record<string, number>; legs: Record<string, ApLeg> };
 
-type Volume = { dates: string[]; byMarket?: Record<string, { ticker: string; pt?: number[]; yt?: number[]; total?: number[] }> };
+type Volume = { dates: string[]; byMarket?: Record<string, { ticker: string; ptUsd?: number[]; ytUsd?: number[]; totalUsd?: number[] }> };
 
 type Range = '30d' | '90d' | '1y' | 'all';
 type Metric = 'tvl' | 'breakdown' | 'positions' | 'volume';
@@ -113,7 +113,7 @@ function MarketDetailView() {
     if (metric === 'volume' && volume) {
       const vstart = rangeStart(volume.dates, range);
       const vdates = volume.dates.slice(vstart);
-      const total = volume.byMarket?.[marketKey]?.total ?? [];
+      const total = volume.byMarket?.[marketKey]?.totalUsd ?? [];
       return vdates.map((d, i) => ({ date: d, Volume: total[vstart + i] || 0 }));
     }
     return [];
