@@ -292,20 +292,25 @@ def build_tvl_json(con: duckdb.DuckDBPyConnection) -> dict:
             "SELECT market_key FROM main_core.dim_markets WHERE is_test"
         ).fetchall()
     }
-    # Exponent-API "Liquidity" (matches their UI) and "Active TVL" pulled
-    # from the API payload. legacyLiquidity is raw atoms — divide by
-    # underlying decimals and multiply by latest underlying USD price.
-    # totalMarketSize is already in USD-equivalent human units.
-    api_metrics: dict[str, tuple[float, float]] = {}
+    # Liquidity = AMM pool reserves the user can swap against. We pull the
+    # API's legacyLiquidity (raw atoms) and price it via our own Jupiter/Pyth
+    # USD prices — the API gives us the headline reserves number; underlying
+    # USD comes from our extract_prices pipeline, not Exponent.
+    #
+    # Active TVL is NOT taken from the API anymore — our derived principalUsd
+    # (= PT_supply × underlying_USD via int_mint_supplies_daily × stg_prices)
+    # matches the API's totalMarketSize within ~1% and is fully on-chain.
+    #
+    # The only remaining Exponent-API field we use is legacyLiquidity itself.
+    # To eliminate it we'd need to derive pool reserves directly — the SY-side
+    # vault is owned by a separate Exponent program (XP1BRLn…) whose account
+    # layout we haven't decoded yet.
+    api_metrics: dict[str, float] = {}
     api_rows = con.execute("""
-        SELECT r.market_key, r.payload
-        FROM raw_markets r
-        WHERE r.source = 'api'
+        SELECT r.market_key, r.payload FROM raw_markets r WHERE r.source = 'api'
     """).fetchall()
-    # Latest price per underlying mint
     latest_prices = dict(con.execute("""
-        SELECT mint, price_usd
-        FROM main_staging.stg_prices
+        SELECT mint, price_usd FROM main_staging.stg_prices
         WHERE (mint, date) IN (
             SELECT mint, MAX(date) FROM main_staging.stg_prices GROUP BY mint
         )
@@ -314,17 +319,12 @@ def build_tvl_json(con: duckdb.DuckDBPyConnection) -> dict:
         d = json.loads(payload) if isinstance(payload, str) else payload
         legacy_liq = d.get("legacyLiquidity")
         decimals = d.get("underlyingDecimals", 6)
-        underlying = d.get("underlying")
-        price = latest_prices.get(underlying, 0) or 0
-        # Both fields are in underlying token units (not USD). USDC-based
-        # markets happened to coincide because USDC ≈ $1; SOL-based markets
-        # need the price multiplier or you get a ~100× underestimate.
+        price = latest_prices.get(d.get("underlying"), 0) or 0
         liquidity_usd = (
             float(legacy_liq) / (10 ** decimals) * float(price)
             if legacy_liq is not None else 0.0
         )
-        active_tvl_usd = float(d.get("totalMarketSize") or 0) * float(price)
-        api_metrics[mk] = (liquidity_usd, active_tvl_usd)
+        api_metrics[mk] = liquidity_usd
     # LP USD per (market, date) — keyed for fast lookup in per-market breakdown
     lp_per_market = {(r[0], r[1]): float(r[2] or 0) for r in con.execute("""
         SELECT market_key, date::VARCHAR, SUM(usd_value)
@@ -382,13 +382,16 @@ def build_tvl_json(con: duckdb.DuckDBPyConnection) -> dict:
             yt_arr_m.append(yt_v)
             lp_arr_m.append(lp_cap)
             idle_arr_m.append(max(0.0, remaining_m - lp_cap))
-        api_liq, api_active = api_metrics.get(mk, (0.0, 0.0))
         by_market_out[mk] = {
             "ticker": e["ticker"],
             "platform": e["platform"],
             "isTest": mk in test_markets,
-            "liquidityUsd": api_liq,      # Exponent UI "Liquidity"
-            "activeTvlUsd": api_active,   # Exponent UI "Active TVL"
+            # Pool reserves (matches Exponent UI's "Liquidity") — last
+            # remaining API field, see comment by api_metrics above.
+            "liquidityUsd": api_metrics.get(mk, 0.0),
+            # Active TVL = principalUsd[latest], derived fully from on-chain
+            # PT supply × Jupiter/Pyth USD price.
+            "activeTvlUsd": principal[-1] if principal else 0.0,
             "tvlUsd": usd,
             "tvlUnderlying": und,
             "principalUsd": principal,
