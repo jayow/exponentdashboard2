@@ -133,32 +133,16 @@ export function BigChart() {
 
   const effectiveView = metric === 'breakdown' ? 'protocol' : view;
   const dates = metric === 'volume' ? vol?.dates : tvl?.dates;
-  // Brush zoom — stores the selected date strings so the selection survives
-  // stride changes when granularity shifts under it. Null = no zoom.
-  const [brushWindow, setBrushWindow] = useState<{ start: string; end: string } | null>(null);
-  // Reset zoom whenever the coarse range button changes.
-  useEffect(() => { setBrushWindow(null); }, [range]);
-
-  const rangeStartIdx = dates ? rangeStart(dates, range) : 0;
-  const rangeEndIdx = dates ? dates.length - 1 : 0;
-  // Effective window: brush zoom narrows within the range, otherwise full range.
-  const start = brushWindow && dates
-    ? Math.max(rangeStartIdx, dates.findIndex(d => d >= brushWindow.start))
-    : rangeStartIdx;
-  const end = brushWindow && dates
-    ? (() => {
-        const i = dates.findIndex(d => d > brushWindow.end);
-        return Math.min(rangeEndIdx, i === -1 ? rangeEndIdx : i - 1);
-      })()
-    : rangeEndIdx;
-  // Downsample for long ranges — render at most ~120 points per series.
-  // Zooming via brush narrows the visible window and (when small enough) brings
-  // daily granularity back.
+  const start = dates ? rangeStart(dates, range) : 0;
+  const end = dates ? dates.length - 1 : 0;
+  // Downsample only for the "All" range — 30d/90d/1y stay daily so the brush
+  // doesn't need to flip granularity on drag (which used to make the handles
+  // fight the data length).
   const stride = useMemo(() => {
     if (!dates) return 1;
     const visible = end - start + 1;
-    if (visible <= 120) return 1;
-    return Math.ceil(visible / 120);
+    if (visible <= 400) return 1;
+    return Math.ceil(visible / 400);
   }, [dates, start, end]);
 
   const { allKeys, data, colorMap, isFlat, breakdownLike } = useMemo(() => {
@@ -460,8 +444,9 @@ export function BigChart() {
               stroke="#fbbf24" strokeDasharray="3 3" strokeOpacity={0.55}
               label={{ value: t.platform, position: 'top', fill: '#fbbf24', fontSize: 10, opacity: 0.85 }} />
           ))}
-          {/* Date brush — zoom into a sub-range to bring daily granularity back.
-              Shown only when the coarse range covers >120 days. */}
+          {/* Date brush — narrow the visible window by dragging the handles.
+              Uncontrolled: Recharts manages the zoom state internally so the
+              handles track smoothly. Shown only on longer ranges. */}
           {(range === '1y' || range === 'all') && data.length > 2 && (
             <Brush
               dataKey="date"
@@ -470,15 +455,6 @@ export function BigChart() {
               stroke="#666"
               fill="rgba(255,255,255,0.04)"
               tickFormatter={fmtMonth}
-              onChange={(r) => {
-                const s = r?.startIndex ?? 0;
-                const e = r?.endIndex ?? data.length - 1;
-                if (s === 0 && e === data.length - 1) {
-                  setBrushWindow(null);
-                } else {
-                  setBrushWindow({ start: data[s].date, end: data[e].date });
-                }
-              }}
             />
           )}
         </BarChart>
