@@ -2,6 +2,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine, TooltipProps, Brush,
+  ComposedChart, Line,
 } from 'recharts';
 import { colorForPlatform, colorForMarket, platformOfTicker } from '@/lib/colors';
 
@@ -138,10 +139,17 @@ export function BigChart() {
   // Recharts' SVG load reasonable.
   const stride = 1;
 
-  const { allKeys, data, colorMap, isFlat, breakdownLike } = useMemo(() => {
+  const { allKeys, data, colorMap, isFlat, breakdownLike, cumulativeKey } = useMemo<{
+    allKeys: string[]; data: any[]; colorMap: Record<string, string>;
+    isFlat: boolean; breakdownLike: boolean; cumulativeKey?: string;
+  }>(() => {
     type Result = {
       allKeys: string[]; data: any[]; colorMap: Record<string, string>;
       isFlat: boolean; breakdownLike: boolean;
+      // Set when this view wants a secondary cumulative line overlaid on
+      // the daily bars (volume protocol view). The component then renders
+      // a ComposedChart with the line on a right-side axis.
+      cumulativeKey?: string;
     };
     const empty: Result = { allKeys: [], data: [], colorMap: {}, isFlat: true, breakdownLike: false };
     if (!dates) return empty;
@@ -295,10 +303,25 @@ export function BigChart() {
     if (metric === 'volume' && vol) {
       if (effectiveView === 'protocol') {
         const sampled = sampleSeries(vol.protocol.totalUsd);
+        // Cumulative is computed on the FULL (un-strided) series and then
+        // sub-sampled, so the line reflects true cumulative-up-to-this-date
+        // even when bars are date-averaged.
+        const cumulativeFull: number[] = [];
+        let run = 0;
+        for (let i = 0; i < vol.protocol.totalUsd.length; i++) {
+          run += vol.protocol.totalUsd[i] || 0;
+          cumulativeFull.push(run);
+        }
+        const cumulativeSampled = indices.map(i => cumulativeFull[i] || 0);
         return {
-          allKeys: ['Volume'], isFlat: true, breakdownLike: false,
-          colorMap: { Volume: BREAKDOWN_COLOR['Volume'] },
-          data: sliced.map((dt, i) => ({ date: dt, Volume: sampled[i] || 0 })),
+          allKeys: ['Volume', 'Cumulative'], isFlat: true, breakdownLike: false,
+          cumulativeKey: 'Cumulative',
+          colorMap: { Volume: BREAKDOWN_COLOR['Volume'], Cumulative: '#fbbf24' },
+          data: sliced.map((dt, i) => ({
+            date: dt,
+            Volume: sampled[i] || 0,
+            Cumulative: cumulativeSampled[i] || 0,
+          })),
         };
       }
       if (effectiveView === 'platform') {
@@ -385,36 +408,68 @@ export function BigChart() {
       </header>
 
       <ResponsiveContainer width="100%" height={380}>
-        <BarChart data={data} margin={{ top: 20, right: 16, left: 8, bottom: 4 }}>
-          <XAxis dataKey="date" tick={{ fill: '#888', fontSize: 11 }} tickFormatter={fmtMonth}
-                 axisLine={false} tickLine={false} interval={interval} />
-          <YAxis tick={{ fill: '#888', fontSize: 11 }} tickFormatter={fmtUsd}
-                 axisLine={false} tickLine={false} width={70} />
-          <Tooltip content={<SortedTooltip />} cursor={{ fill: 'rgba(255,255,255,0.04)' }} />
-          {visibleKeys.map(k => (
-            <Bar key={k} dataKey={k} stackId="s"
-                 fill={colorMap[k] ?? '#9ca3af'} fillOpacity={0.9}
-                 isAnimationActive={false} />
-          ))}
-          {showTges && tgesVisible.map(t => (
-            <ReferenceLine key={t.platform + t.date} x={t.date}
-              stroke="#fbbf24" strokeDasharray="3 3" strokeOpacity={0.55}
-              label={{ value: t.platform, position: 'top', fill: '#fbbf24', fontSize: 10, opacity: 0.85 }} />
-          ))}
-          {/* Date brush — narrow the visible window by dragging the handles.
-              Uncontrolled: Recharts manages the zoom state internally so the
-              handles track smoothly. Shown only on longer ranges. */}
-          {(range === '1y' || range === 'all') && data.length > 2 && (
-            <Brush
-              dataKey="date"
-              height={22}
-              travellerWidth={8}
-              stroke="#666"
-              fill="rgba(255,255,255,0.04)"
-              tickFormatter={fmtMonth}
-            />
-          )}
-        </BarChart>
+        {cumulativeKey ? (
+          // Volume protocol view: daily bars + cumulative line on a right-side axis.
+          <ComposedChart data={data} margin={{ top: 20, right: 16, left: 8, bottom: 4 }}>
+            <XAxis dataKey="date" tick={{ fill: '#888', fontSize: 11 }} tickFormatter={fmtMonth}
+                   axisLine={false} tickLine={false} interval={interval} />
+            <YAxis yAxisId="bar" tick={{ fill: '#888', fontSize: 11 }} tickFormatter={fmtUsd}
+                   axisLine={false} tickLine={false} width={70} />
+            <YAxis yAxisId="line" orientation="right" tick={{ fill: '#fbbf24', fontSize: 11 }}
+                   tickFormatter={fmtUsd} axisLine={false} tickLine={false} width={70} />
+            <Tooltip content={<SortedTooltip />} cursor={{ fill: 'rgba(255,255,255,0.04)' }} />
+            {visibleKeys.filter(k => k !== cumulativeKey).map(k => (
+              <Bar key={k} yAxisId="bar" dataKey={k}
+                   fill={colorMap[k] ?? '#9ca3af'} fillOpacity={0.9}
+                   isAnimationActive={false} />
+            ))}
+            {!hidden.has(cumulativeKey) && (
+              <Line yAxisId="line" type="monotone" dataKey={cumulativeKey}
+                    stroke={colorMap[cumulativeKey] ?? '#fbbf24'} strokeWidth={2}
+                    dot={false} isAnimationActive={false} />
+            )}
+            {showTges && tgesVisible.map(t => (
+              <ReferenceLine key={t.platform + t.date} x={t.date} yAxisId="bar"
+                stroke="#fbbf24" strokeDasharray="3 3" strokeOpacity={0.55}
+                label={{ value: t.platform, position: 'top', fill: '#fbbf24', fontSize: 10, opacity: 0.85 }} />
+            ))}
+            {(range === '1y' || range === 'all') && data.length > 2 && (
+              <Brush dataKey="date" height={22} travellerWidth={8}
+                stroke="#666" fill="rgba(255,255,255,0.04)" tickFormatter={fmtMonth} />
+            )}
+          </ComposedChart>
+        ) : (
+          <BarChart data={data} margin={{ top: 20, right: 16, left: 8, bottom: 4 }}>
+            <XAxis dataKey="date" tick={{ fill: '#888', fontSize: 11 }} tickFormatter={fmtMonth}
+                   axisLine={false} tickLine={false} interval={interval} />
+            <YAxis tick={{ fill: '#888', fontSize: 11 }} tickFormatter={fmtUsd}
+                   axisLine={false} tickLine={false} width={70} />
+            <Tooltip content={<SortedTooltip />} cursor={{ fill: 'rgba(255,255,255,0.04)' }} />
+            {visibleKeys.map(k => (
+              <Bar key={k} dataKey={k} stackId="s"
+                   fill={colorMap[k] ?? '#9ca3af'} fillOpacity={0.9}
+                   isAnimationActive={false} />
+            ))}
+            {showTges && tgesVisible.map(t => (
+              <ReferenceLine key={t.platform + t.date} x={t.date}
+                stroke="#fbbf24" strokeDasharray="3 3" strokeOpacity={0.55}
+                label={{ value: t.platform, position: 'top', fill: '#fbbf24', fontSize: 10, opacity: 0.85 }} />
+            ))}
+            {/* Date brush — narrow the visible window by dragging the handles.
+                Uncontrolled: Recharts manages the zoom state internally so the
+                handles track smoothly. Shown only on longer ranges. */}
+            {(range === '1y' || range === 'all') && data.length > 2 && (
+              <Brush
+                dataKey="date"
+                height={22}
+                travellerWidth={8}
+                stroke="#666"
+                fill="rgba(255,255,255,0.04)"
+                tickFormatter={fmtMonth}
+              />
+            )}
+          </BarChart>
+        )}
       </ResponsiveContainer>
 
       {/* v1-style legend: Hide All / Show All + colored dots + labels */}
