@@ -5,7 +5,10 @@ type ApLeg = { byMarket: Record<string, number[]>; totals: number[] };
 type ApTicker = { underlyingMint: string; latest: Record<string, number>; legs: Record<string, ApLeg> };
 type ApData = { byTicker: Record<string, ApTicker>; meta: { tickers: { ticker: string; marketCount: number }[] } };
 
-type TvlByMarket = Record<string, { ticker: string; tvlUsd: number[]; principalUsd?: number[] }>;
+type TvlByMarket = Record<string, {
+  ticker: string; tvlUsd: number[]; principalUsd?: number[];
+  ptUsd?: number[]; ytUsd?: number[]; lpUsd?: number[]; idleUsd?: number[];
+}>;
 type TvlData = { byMarket: TvlByMarket };
 
 type Holders = { byMarketLeg: Record<string, { holders: number }> };
@@ -55,24 +58,26 @@ export function MarketsList() {
   const rows = useMemo(() => {
     if (!tvl || !ap) return [];
     const todayMs = Date.now();
-    const out: { marketKey: string; ticker: string; tvlUsd: number; oiUsd: number; pt: number; lp: number; holders: number; isActive: boolean }[] = [];
+    const out: { marketKey: string; ticker: string; tvlUsd: number; oiUsd: number; lpUsd: number; idleUsd: number; pt: number; holders: number; isActive: boolean }[] = [];
     for (const [mk, m] of Object.entries(tvl.byMarket)) {
       const ticker = m.ticker;
-      const tvlUsd = m.tvlUsd[m.tvlUsd.length - 1] || 0;
-      // OI = principal_tvl_usd = PT_supply × underlying_USD. Active notional
-      // committed to PT (Exponent's totalMarketSize). PT and YT supply are
-      // identical by Pendle construction, so we drop the YT column.
-      const oiUsd = m.principalUsd ? (m.principalUsd[m.principalUsd.length - 1] || 0) : 0;
+      const last = (arr?: number[]) => (arr && arr.length ? arr[arr.length - 1] || 0 : 0);
+      const tvlUsd = last(m.tvlUsd);
+      // OI = principal_tvl_usd = PT_supply × underlying_USD. PT and YT supply
+      // are identical by Pendle construction (1:1 co-minted) so PT count is
+      // redundant with OI up to a price multiplier — drop the supply column.
+      const oiUsd = last(m.principalUsd);
+      const lpUsd = last(m.lpUsd);
+      const idleUsd = last(m.idleUsd);
       const t = ap.byTicker[ticker];
       const pt = t?.legs.PT?.byMarket?.[mk]?.slice(-1)[0] || 0;
-      const lp = t?.legs.LP?.byMarket?.[mk]?.slice(-1)[0] || 0;
       const h = holders?.byMarketLeg?.[`${mk}:PT`]?.holders || 0;
       // Active = trailing DDMonYY in the market_key is on or after today.
       // Keys without a parseable suffix (UNCLASSIFIED, UNKNOWN, etc.) fall
       // back to the TVL/supply heuristic so they aren't unconditionally hidden.
       const mat = maturityMs(mk);
       const isActive = mat !== null ? mat >= todayMs : tvlUsd > 1 || pt > 0;
-      out.push({ marketKey: mk, ticker, tvlUsd, oiUsd, pt, lp, holders: h, isActive });
+      out.push({ marketKey: mk, ticker, tvlUsd, oiUsd, lpUsd, idleUsd, pt, holders: h, isActive });
     }
     return out
       .filter(r => status === 'all' || r.isActive)
@@ -104,10 +109,10 @@ export function MarketsList() {
             <tr>
               <th className="text-left py-2 font-normal">Market</th>
               <th className="text-right py-2 font-normal">TVL</th>
-              <th className="text-right py-2 font-normal" title="Principal × underlying USD — active notional committed to PT (Exponent totalMarketSize)">OI</th>
-              <th className="text-right py-2 font-normal">PT / YT supply</th>
-              <th className="text-right py-2 font-normal">LP supply</th>
-              <th className="text-right py-2 font-normal">Holders</th>
+              <th className="text-right py-2 font-normal" title="Principal × underlying USD — active notional committed to PT (Exponent totalMarketSize). Equivalent to PT/YT supply in USD terms.">OI</th>
+              <th className="text-right py-2 font-normal" title="LP value in USD (liquidity provider deposits)">LP</th>
+              <th className="text-right py-2 font-normal" title="Idle SY — TVL not currently split into PT/YT or in LP">Idle</th>
+              <th className="text-right py-2 font-normal">PT holders</th>
             </tr>
           </thead>
           <tbody>
@@ -117,8 +122,8 @@ export function MarketsList() {
                 <td className="py-1.5 text-white/85">{r.marketKey}</td>
                 <td className="py-1.5 text-right tabular-nums text-emerald-400/80">{fmtUsd(r.tvlUsd)}</td>
                 <td className="py-1.5 text-right tabular-nums text-amber-300/80">{r.oiUsd > 0 ? fmtUsd(r.oiUsd) : '–'}</td>
-                <td className="py-1.5 text-right tabular-nums text-white/70">{fmtCount(r.pt, r.ticker)}</td>
-                <td className="py-1.5 text-right tabular-nums text-white/70">{r.lp > 0 ? fmtCount(r.lp, r.ticker) : '–'}</td>
+                <td className="py-1.5 text-right tabular-nums text-white/70">{r.lpUsd > 0 ? fmtUsd(r.lpUsd) : '–'}</td>
+                <td className="py-1.5 text-right tabular-nums text-white/50">{r.idleUsd > 0 ? fmtUsd(r.idleUsd) : '–'}</td>
                 <td className="py-1.5 text-right tabular-nums text-white/60">{r.holders || '–'}</td>
               </tr>
             ))}
