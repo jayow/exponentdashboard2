@@ -1,7 +1,7 @@
 'use client';
 import { useEffect, useMemo, useState } from 'react';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, TooltipProps } from 'recharts';
-import { platformOfTicker, colorForMarket } from '@/lib/colors';
+import { platformOfTicker, colorForMarket, colorForPlatform } from '@/lib/colors';
 
 type ByTicker = Record<string, { volumeUsd: number[]; tvlUsd: number[] }>;
 type ShareData = {
@@ -9,9 +9,19 @@ type ShareData = {
   dates: string[];
   byTicker: ByTicker;
 };
+type VolData = {
+  dates: string[];
+  byPlatform: Record<string, number[]>;
+  byMarket: Record<string, { ticker: string; totalUsd: number[] }>;
+};
+type TvlData = {
+  dates: string[];
+  byPlatform: Record<string, number[]>;
+  byMarket: Record<string, { ticker: string; tvlUsd: number[] }>;
+};
 
 type Metric = 'volume' | 'tvl';
-type Mode = 'abs' | 'pct';
+type View = 'ticker' | 'platform' | 'market';
 type Range = '30d' | '90d' | '1y' | 'all';
 
 function fmtUsd(n: number) {
@@ -27,14 +37,13 @@ function rangeStart(dates: string[], range: Range) {
   return Math.max(0, dates.findIndex(d => d >= cutoff));
 }
 
-function StackedTooltip({ active, payload, label, mode }: TooltipProps<number, string> & { mode: Mode }) {
+function StackedTooltip({ active, payload, label }: TooltipProps<number, string>) {
   if (!active || !payload?.length) return null;
   const entries = payload
     .map(p => ({ name: String(p.name ?? p.dataKey ?? ''), value: typeof p.value === 'number' ? p.value : 0, color: p.color || (p as any).fill || '#888' }))
     .filter(e => e.value > 0.01)
     .sort((a, b) => b.value - a.value);
   if (!entries.length) return null;
-  const total = entries.reduce((s, e) => s + e.value, 0);
   return (
     <div className="bg-[#0a0a0a] border border-white/15 rounded-lg p-2 text-xs shadow-xl min-w-[220px] max-h-[360px] overflow-y-auto">
       <div className="text-white/70 mb-1 font-medium">{label}</div>
@@ -46,120 +55,137 @@ function StackedTooltip({ active, payload, label, mode }: TooltipProps<number, s
               <span className="truncate">{e.name}</span>
             </span>
             <span className="tabular-nums text-white shrink-0">
-              {mode === 'pct' ? `${e.value.toFixed(1)}%` : fmtUsd(e.value)}
-              {mode === 'abs' && total > 0 && (
-                <span className="text-white/40 ml-1.5">({((e.value/total)*100).toFixed(0)}%)</span>
-              )}
+              {e.value.toFixed(1)}%
             </span>
           </div>
         ))}
       </div>
-      {mode === 'abs' && (
-        <div className="flex justify-between mt-1.5 pt-1.5 border-t border-white/10 sticky bottom-0 bg-[#0a0a0a]">
-          <span className="text-white/40">Total</span>
-          <span className="tabular-nums text-white/90 font-medium">{fmtUsd(total)}</span>
-        </div>
-      )}
     </div>
   );
 }
 
 export function MarketShare() {
   const [data, setData] = useState<ShareData | null>(null);
+  const [vol, setVol] = useState<VolData | null>(null);
+  const [tvl, setTvl] = useState<TvlData | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [metric, setMetric] = useState<Metric>('volume');
-  const [mode, setMode] = useState<Mode>('pct');
+  const [view, setView] = useState<View>('ticker');
   const [range, setRange] = useState<Range>('90d');
   const [hidden, setHidden] = useState<Set<string>>(new Set());
 
   useEffect(() => {
-    fetch('/market_share.json')
-      .then(r => (r.ok ? r.json() : Promise.reject(`HTTP ${r.status}`)))
-      .then(setData)
+    Promise.all([
+      fetch('/market_share.json').then(r => (r.ok ? r.json() : Promise.reject(`HTTP ${r.status}`))),
+      fetch('/volume.json').then(r => r.json()),
+      fetch('/tvl.json').then(r => r.json()),
+    ])
+      .then(([m, v, t]) => { setData(m); setVol(v); setTvl(t); })
       .catch(e => setErr(String(e)));
   }, []);
 
-  // All tickers sorted by lifetime contribution within the visible window.
-  // No "Other" bucket — every ticker is its own bar segment.
-  const { allTickers, perTickerSeries } = useMemo(() => {
-    if (!data) return { allTickers: [] as string[], perTickerSeries: {} as Record<string, number[]> };
-    const start = rangeStart(data.dates, range);
-    const key = metric === 'volume' ? 'volumeUsd' : 'tvlUsd';
-    const totals = Object.entries(data.byTicker).map(([ticker, series]) => ({
-      ticker,
-      total: series[key].slice(start).reduce((s, v) => s + (v || 0), 0),
-      series: series[key],
-    }));
-    totals.sort((a, b) => b.total - a.total);
-    const filtered = totals.filter(t => t.total > 0);
-    return {
-      allTickers: filtered.map(t => t.ticker),
-      perTickerSeries: Object.fromEntries(filtered.map(t => [t.ticker, t.series])),
-    };
-  }, [data, metric, range]);
+  // Aggregate-by-view source. Each view exposes a `dates` axis and a
+  // {key → number[]} series map. Range slicing happens later in chartData.
+  const { dates, perKeySeries } = useMemo(() => {
+    if (view === 'ticker') {
+      if (!data) return { dates: [] as string[], perKeySeries: {} as Record<string, number[]> };
+      const key = metric === 'volume' ? 'volumeUsd' : 'tvlUsd';
+      const m: Record<string, number[]> = {};
+      for (const [tk, s] of Object.entries(data.byTicker)) m[tk] = s[key];
+      return { dates: data.dates, perKeySeries: m };
+    }
+    if (view === 'platform') {
+      const src = metric === 'volume' ? vol : tvl;
+      if (!src) return { dates: [], perKeySeries: {} };
+      return { dates: src.dates, perKeySeries: { ...src.byPlatform } };
+    }
+    // market view
+    const src = metric === 'volume' ? vol : tvl;
+    if (!src) return { dates: [], perKeySeries: {} };
+    const m: Record<string, number[]> = {};
+    for (const [mk, e] of Object.entries(src.byMarket)) {
+      if (mk.includes('(unsplit)')) continue;
+      m[mk] = (e as any)[metric === 'volume' ? 'totalUsd' : 'tvlUsd'];
+    }
+    return { dates: src.dates, perKeySeries: m };
+  }, [view, metric, data, vol, tvl]);
 
-  // Default: show everything. User can toggle via legend.
-  useEffect(() => { setHidden(new Set()); }, [allTickers]);
+  // All keys sorted by lifetime contribution within the visible window.
+  const allKeys = useMemo(() => {
+    if (!dates.length) return [] as string[];
+    const start = rangeStart(dates, range);
+    return Object.entries(perKeySeries)
+      .map(([k, s]) => ({ k, total: s.slice(start).reduce((a, v) => a + (v || 0), 0) }))
+      .filter(x => x.total > 0)
+      .sort((a, b) => b.total - a.total)
+      .map(x => x.k);
+  }, [perKeySeries, dates, range]);
 
-  const visibleTickers = useMemo(() => allTickers.filter(tk => !hidden.has(tk)), [allTickers, hidden]);
+  // Reset hidden when the key set changes.
+  useEffect(() => { setHidden(new Set()); }, [allKeys]);
 
-  // Build chart rows: one per date with each visible ticker (in pct or abs).
-  // In pct mode, divide by sum-of-visible-tickers so the stack still sums
-  // to ~100% even when some are toggled off.
+  const visibleKeys = useMemo(() => allKeys.filter(k => !hidden.has(k)), [allKeys, hidden]);
+
+  // Build chart rows: one per date with each visible key as a % of visible total.
   const chartData = useMemo(() => {
-    if (!data) return [];
-    const start = rangeStart(data.dates, range);
-    const sliced = data.dates.slice(start);
+    if (!dates.length) return [];
+    const start = rangeStart(dates, range);
+    const sliced = dates.slice(start);
     return sliced.map((d, i) => {
       const idx = start + i;
       const row: Record<string, number | string> = { date: d };
       let visibleTotal = 0;
-      for (const tk of visibleTickers) {
-        const v = perTickerSeries[tk]?.[idx] || 0;
-        row[tk] = v;
+      for (const k of visibleKeys) {
+        const v = perKeySeries[k]?.[idx] || 0;
+        row[k] = v;
         visibleTotal += v;
       }
-      if (mode === 'pct' && visibleTotal > 0) {
-        for (const tk of visibleTickers) row[tk] = (Number(row[tk]) / visibleTotal) * 100;
+      if (visibleTotal > 0) {
+        for (const k of visibleKeys) row[k] = (Number(row[k]) / visibleTotal) * 100;
       }
       return row;
     });
-  }, [data, visibleTickers, perTickerSeries, mode, range]);
+  }, [dates, visibleKeys, perKeySeries, range]);
 
-  // Per-ticker color: same hue family for tickers on the same platform,
-  // index-shaded so siblings differ within the family.
-  const tickerColor = useMemo(() => {
-    const seen: Record<string, number> = {};
+  // Per-key color. View determines the coloring scheme.
+  const keyColor = useMemo(() => {
     const out: Record<string, string> = {};
-    for (const tk of allTickers) {
-      const p = platformOfTicker(tk);
-      const i = seen[p] || 0;
-      out[tk] = colorForMarket(p, i);
-      seen[p] = i + 1;
+    if (view === 'platform') {
+      for (const k of allKeys) out[k] = colorForPlatform(k);
+    } else {
+      // ticker or market — group by platform with sibling shading
+      const seen: Record<string, number> = {};
+      for (const k of allKeys) {
+        const tk = view === 'market' ? k.split('-')[0] : k;
+        const p = platformOfTicker(tk);
+        const i = seen[p] || 0;
+        out[k] = colorForMarket(p, i);
+        seen[p] = i + 1;
+      }
     }
     return out;
-  }, [allTickers]);
+  }, [allKeys, view]);
 
   // Latest-day leader (among visible)
   const leader = useMemo(() => {
-    if (!data || !chartData.length) return null;
+    if (!chartData.length) return null;
     const last = chartData[chartData.length - 1];
     let best = '', bestVal = 0;
-    for (const tk of visibleTickers) {
-      const v = Number(last[tk] ?? 0);
-      if (v > bestVal) { bestVal = v; best = tk; }
+    for (const k of visibleKeys) {
+      const v = Number(last[k] ?? 0);
+      if (v > bestVal) { bestVal = v; best = k; }
     }
-    return best ? { ticker: best, value: bestVal } : null;
-  }, [data, chartData, visibleTickers]);
+    return best ? { key: best, value: bestVal } : null;
+  }, [chartData, visibleKeys]);
 
-  function toggle(tk: string) {
-    setHidden(prev => { const n = new Set(prev); if (n.has(tk)) n.delete(tk); else n.add(tk); return n; });
+  function toggle(k: string) {
+    setHidden(prev => { const n = new Set(prev); if (n.has(k)) n.delete(k); else n.add(k); return n; });
   }
   const showAll  = () => setHidden(new Set());
-  const showNone = () => setHidden(new Set(allTickers));
+  const showNone = () => setHidden(new Set(allKeys));
 
   if (err) return <div className="text-red-400 text-sm p-4">Failed to load market_share.json: {err}</div>;
-  if (!data) return <div className="text-white/40 text-sm p-4">Loading market share…</div>;
+  if (!data || !vol || !tvl) return <div className="text-white/40 text-sm p-4">Loading market share…</div>;
 
   return (
     <section className="rounded-2xl border border-white/10 bg-white/5 p-4 mb-6">
@@ -167,9 +193,9 @@ export function MarketShare() {
         <div>
           <h2 className="text-sm uppercase tracking-wider text-white/60">Market Share</h2>
           <p className="text-xs text-white/40">
-            {visibleTickers.length} of {allTickers.length} tickers • {metric === 'volume' ? 'volume' : 'TVL'} • {mode === 'pct' ? 'share %' : 'absolute USD'}
+            {visibleKeys.length} of {allKeys.length} {view === 'platform' ? 'platforms' : view === 'market' ? 'markets' : 'tickers'} • {metric === 'volume' ? 'volume' : 'TVL'} share %
             {leader && (
-              <span className="text-white/30"> • latest leader: {leader.ticker} {mode === 'pct' ? `(${leader.value.toFixed(0)}%)` : `(${fmtUsd(leader.value)})`}</span>
+              <span className="text-white/30"> • latest leader: {leader.key} ({leader.value.toFixed(0)}%)</span>
             )}
           </p>
         </div>
@@ -181,10 +207,12 @@ export function MarketShare() {
             </button>
           ))}
           <span className="w-2" />
-          {(['pct', 'abs'] as Mode[]).map(m => (
-            <button key={m} onClick={() => setMode(m)}
-              className={`text-xs px-3 py-1 rounded-lg border ${mode === m ? 'border-white/30 bg-white/10' : 'border-white/10 text-white/40'}`}>
-              {m === 'pct' ? 'Share %' : 'Absolute'}
+          {(['ticker', 'platform', 'market'] as View[]).map(v => (
+            <button key={v} onClick={() => setView(v)}
+              className={`text-xs px-3 py-1 rounded-lg transition ${
+                view === v ? 'bg-white/10 text-white' : 'text-white/40 hover:text-white'
+              }`}>
+              {v.charAt(0).toUpperCase() + v.slice(1)}
             </button>
           ))}
           <span className="w-2" />
@@ -202,13 +230,13 @@ export function MarketShare() {
           <XAxis dataKey="date" tick={{ fill: '#888', fontSize: 11 }} axisLine={false} tickLine={false} />
           <YAxis
             tick={{ fill: '#888', fontSize: 11 }} axisLine={false} tickLine={false}
-            tickFormatter={mode === 'pct' ? (v => `${v.toFixed(0)}%`) : fmtUsd}
-            domain={mode === 'pct' ? [0, 100] : ['auto', 'auto']}
+            tickFormatter={v => `${v.toFixed(0)}%`}
+            domain={[0, 100]}
           />
-          <Tooltip content={<StackedTooltip mode={mode} />} cursor={{ fill: 'rgba(255,255,255,0.04)' }} />
-          {visibleTickers.map(tk => (
-            <Bar key={tk} dataKey={tk} stackId="s"
-                 fill={tickerColor[tk]} fillOpacity={0.9} />
+          <Tooltip content={<StackedTooltip />} cursor={{ fill: 'rgba(255,255,255,0.04)' }} />
+          {visibleKeys.map(k => (
+            <Bar key={k} dataKey={k} stackId="s"
+                 fill={keyColor[k]} fillOpacity={0.9} />
           ))}
         </BarChart>
       </ResponsiveContainer>
@@ -217,29 +245,29 @@ export function MarketShare() {
       <div className="mt-3 border-t border-white/10 pt-3">
         <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
           <div className="text-[11px] text-white/40">
-            {visibleTickers.length} of {allTickers.length} visible
+            {visibleKeys.length} of {allKeys.length} visible
             <span className="text-white/30"> · click to toggle</span>
           </div>
           <div className="flex items-center gap-1">
-            <button onClick={hidden.size === allTickers.length ? showAll : showNone}
+            <button onClick={hidden.size === allKeys.length ? showAll : showNone}
               className="text-[11px] px-2 py-0.5 rounded border border-white/15 text-white/60 hover:text-white hover:bg-white/5">
-              {hidden.size === allTickers.length ? 'Show All' : 'Hide All'}
+              {hidden.size === allKeys.length ? 'Show All' : 'Hide All'}
             </button>
           </div>
         </div>
         <div className="flex flex-wrap gap-1.5 max-h-[110px] overflow-y-auto">
-          {allTickers.map(tk => {
-            const isHidden = hidden.has(tk);
+          {allKeys.map(k => {
+            const isHidden = hidden.has(k);
             return (
-              <button key={tk} onClick={() => toggle(tk)}
+              <button key={k} onClick={() => toggle(k)}
                 className={`text-[11px] px-2 py-0.5 rounded border transition ${
                   isHidden
                     ? 'border-white/5 bg-transparent text-white/30'
                     : 'border-white/15 bg-white/5 text-white/85 hover:bg-white/10'
                 }`}>
                 <span className="inline-block w-2 h-2 rounded-sm mr-1 align-middle"
-                      style={{ backgroundColor: tickerColor[tk], opacity: isHidden ? 0.3 : 1 }} />
-                <span className={isHidden ? 'line-through' : ''}>{tk}</span>
+                      style={{ backgroundColor: keyColor[k], opacity: isHidden ? 0.3 : 1 }} />
+                <span className={isHidden ? 'line-through' : ''}>{k}</span>
               </button>
             );
           })}
