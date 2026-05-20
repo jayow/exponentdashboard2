@@ -48,10 +48,16 @@ function maturityMs(marketKey: string): number | null {
   return Date.UTC(2000 + Number(m[3]), month, Number(m[1]));
 }
 
+type SortKey =
+  | 'marketKey' | 'tvlUsd' | 'ptUsd' | 'ytUsd' | 'lpUsd' | 'idleUsd'
+  | 'liquidityUsd' | 'holders';
+
 export function MarketsList() {
   const [tvl, setTvl] = useState<TvlData | null>(null);
   const [ap, setAp] = useState<ApData | null>(null);
   const [holders, setHolders] = useState<Holders | null>(null);
+  const [sortKey, setSortKey] = useState<SortKey>('tvlUsd');
+  const [sortDesc, setSortDesc] = useState<boolean>(true);
   const [status, setStatus] = useState<StatusFilter>('active');
 
   useEffect(() => {
@@ -89,11 +95,23 @@ export function MarketsList() {
       const isActive = mat !== null ? mat >= todayMs : tvlUsd > 1 || ptSupply > 0;
       out.push({ marketKey: mk, ticker, tvlUsd, ptUsd, ytUsd, lpUsd, idleUsd, liquidityUsd, ptSupply, holders: h, isActive, isTest: !!m.isTest });
     }
-    return out
-      // Active view hides test markets; All view keeps them with a chip.
-      .filter(r => status === 'all' || (r.isActive && !r.isTest))
-      .sort((a, b) => b.tvlUsd - a.tvlUsd);
-  }, [tvl, ap, holders, status]);
+    const filtered = out.filter(r => status === 'all' || (r.isActive && !r.isTest));
+    filtered.sort((a, b) => {
+      const av = a[sortKey] as number | string;
+      const bv = b[sortKey] as number | string;
+      const cmp = typeof av === 'string'
+        ? (av as string).localeCompare(bv as string)
+        : (Number(av) || 0) - (Number(bv) || 0);
+      return sortDesc ? -cmp : cmp;
+    });
+    return filtered;
+  }, [tvl, ap, holders, status, sortKey, sortDesc]);
+
+  function toggleSort(k: SortKey) {
+    if (k === sortKey) setSortDesc(d => !d);
+    else { setSortKey(k); setSortDesc(k !== 'marketKey'); }   // numeric keys default to desc, marketKey to asc
+  }
+  const arrow = (k: SortKey) => k === sortKey ? (sortDesc ? '↓' : '↑') : '';
 
   if (!tvl || !ap) return <div className="text-white/40 text-sm p-4">Loading markets…</div>;
 
@@ -118,14 +136,22 @@ export function MarketsList() {
         <table className="w-full text-xs">
           <thead className="text-white/40 border-b border-white/10">
             <tr>
-              <th className="text-left py-2 font-normal">Market</th>
-              <th className="text-right py-2 font-normal">TVL</th>
-              <th className="text-right py-2 font-normal" title="Principal — market-priced PT value (PT_supply × pt_price × underlying USD)">PT</th>
-              <th className="text-right py-2 font-normal" title="Farm — market-priced YT value (YT_supply × yt_price × underlying USD, where yt_price = 1 − pt_price)">YT</th>
-              <th className="text-right py-2 font-normal" title="LP value — user share of pool capital (LP supply × underlying USD, capped at remaining SY after PT+YT)">LP</th>
-              <th className="text-right py-2 font-normal" title="Idle SY — TVL not yet split into PT/YT and not in LP">Idle</th>
-              <th className="text-right py-2 font-normal" title="AMM pool TVL — matches Exponent UI 'Liquidity'. Formula from Exponent SDK: sy_balance × sy_rate + pt_balance / exp(last_ln_implied × years_remaining), decoded from the on-chain MarketTwo account.">Liquidity</th>
-              <th className="text-right py-2 font-normal" title="Unique wallets holding PT, YT, or LP — a wallet across multiple legs counts once">Holders</th>
+              {([
+                ['marketKey',    'Market',    'left',  ''],
+                ['tvlUsd',       'TVL',       'right', ''],
+                ['ptUsd',        'PT',        'right', 'Principal — market-priced PT value (PT_supply × pt_price × underlying USD)'],
+                ['ytUsd',        'YT',        'right', 'Farm — market-priced YT value (YT_supply × yt_price × underlying USD)'],
+                ['lpUsd',        'LP',        'right', 'LP value — user share of pool capital (LP supply × underlying USD, capped at remaining SY after PT+YT)'],
+                ['idleUsd',      'Idle',      'right', 'Idle SY — TVL not yet split into PT/YT and not in LP'],
+                ['liquidityUsd', 'Liquidity', 'right', "AMM pool TVL — matches Exponent UI 'Liquidity'. Formula: sy_balance × sy_rate + pt_balance / exp(last_ln_implied × years_remaining), decoded from the on-chain MarketTwo account."],
+                ['holders',      'Holders',   'right', 'Unique wallets holding PT, YT, or LP — a wallet across multiple legs counts once'],
+              ] as const).map(([key, label, align, tip]) => (
+                <th key={key} title={tip || undefined}
+                    className={`py-2 font-normal cursor-pointer select-none hover:text-white/70 ${align === 'left' ? 'text-left' : 'text-right'}`}
+                    onClick={() => toggleSort(key as SortKey)}>
+                  {label}<span className="ml-1 text-white/30">{arrow(key as SortKey)}</span>
+                </th>
+              ))}
             </tr>
           </thead>
           <tbody>
@@ -140,13 +166,13 @@ export function MarketsList() {
                     </span>
                   )}
                 </td>
-                <td className="py-1.5 text-right tabular-nums text-emerald-400/80">{fmtUsd(r.tvlUsd)}</td>
-                <td className="py-1.5 text-right tabular-nums" style={{ color: '#a78bfa' }}>{r.ptUsd > 0 ? fmtUsd(r.ptUsd) : '–'}</td>
-                <td className="py-1.5 text-right tabular-nums" style={{ color: '#fb923c' }}>{r.ytUsd > 0.5 ? fmtUsd(r.ytUsd) : '–'}</td>
-                <td className="py-1.5 text-right tabular-nums" style={{ color: '#4ade80', opacity: 0.85 }}>{r.lpUsd > 0 ? fmtUsd(r.lpUsd) : '–'}</td>
-                <td className="py-1.5 text-right tabular-nums text-white/40">{r.idleUsd > 0 ? fmtUsd(r.idleUsd) : '–'}</td>
-                <td className="py-1.5 text-right tabular-nums text-amber-300/80">{r.liquidityUsd > 0 ? fmtUsd(r.liquidityUsd) : '–'}</td>
-                <td className="py-1.5 text-right tabular-nums text-white/60">{r.holders || '–'}</td>
+                <td className="py-1.5 text-right tabular-nums text-white/80">{fmtUsd(r.tvlUsd)}</td>
+                <td className="py-1.5 text-right tabular-nums text-white/70">{r.ptUsd > 0 ? fmtUsd(r.ptUsd) : '–'}</td>
+                <td className="py-1.5 text-right tabular-nums text-white/70">{r.ytUsd > 0.5 ? fmtUsd(r.ytUsd) : '–'}</td>
+                <td className="py-1.5 text-right tabular-nums text-white/70">{r.lpUsd > 0 ? fmtUsd(r.lpUsd) : '–'}</td>
+                <td className="py-1.5 text-right tabular-nums text-white/70">{r.idleUsd > 0 ? fmtUsd(r.idleUsd) : '–'}</td>
+                <td className="py-1.5 text-right tabular-nums text-white/70">{r.liquidityUsd > 0 ? fmtUsd(r.liquidityUsd) : '–'}</td>
+                <td className="py-1.5 text-right tabular-nums text-white/70">{r.holders || '–'}</td>
               </tr>
             ))}
           </tbody>
