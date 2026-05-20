@@ -120,7 +120,7 @@ export function BigChart() {
   const [tvl, setTvl] = useState<TvlData | null>(null);
   const [vol, setVol] = useState<VolData | null>(null);
   const [metric, setMetric] = useState<Metric>('tvl');
-  const [view, setView] = useState<View>('platform');
+  const [view, setView] = useState<View>('protocol');
   const [range, setRange] = useState<Range>('all');
   const [showTges, setShowTges] = useState<boolean>(true);
   const [hidden, setHidden] = useState<Set<string>>(new Set());
@@ -301,18 +301,35 @@ export function BigChart() {
     }
 
     if (metric === 'volume' && vol) {
-      if (effectiveView === 'protocol') {
-        const sampled = sampleSeries(vol.protocol.totalUsd);
-        // Cumulative is computed on the FULL (un-strided) series and then
-        // sub-sampled, so the line reflects true cumulative-up-to-this-date
-        // even when bars are date-averaged.
-        const cumulativeFull: number[] = [];
+      // Protocol-wide cumulative trajectory — same series on every volume
+      // view so the line gives consistent "how much has the protocol traded
+      // over time" context regardless of the bar grouping below it.
+      // Computed on the full (un-strided) series and sub-sampled so the
+      // line is accurate up to each visible date even when bars average.
+      const cumulativeFull: number[] = [];
+      {
         let run = 0;
         for (let i = 0; i < vol.protocol.totalUsd.length; i++) {
           run += vol.protocol.totalUsd[i] || 0;
           cumulativeFull.push(run);
         }
-        const cumulativeSampled = indices.map(i => cumulativeFull[i] || 0);
+      }
+      const cumulativeSampled = indices.map(i => cumulativeFull[i] || 0);
+
+      // Helper: stitch the cumulative line into any volume-view result.
+      const withCumulative = (r: ReturnType<typeof emitFromSeries>) => {
+        const data = r.data.map((row, i) => ({ ...row, Cumulative: cumulativeSampled[i] || 0 }));
+        return {
+          ...r,
+          allKeys: [...r.allKeys, 'Cumulative'],
+          colorMap: { ...r.colorMap, Cumulative: '#fbbf24' },
+          cumulativeKey: 'Cumulative',
+          data,
+        };
+      };
+
+      if (effectiveView === 'protocol') {
+        const sampled = sampleSeries(vol.protocol.totalUsd);
         return {
           allKeys: ['Volume', 'Cumulative'], isFlat: true, breakdownLike: false,
           cumulativeKey: 'Cumulative',
@@ -325,7 +342,7 @@ export function BigChart() {
         };
       }
       if (effectiveView === 'platform') {
-        return emitFromSeries(vol.byPlatform, 'sum', false, () => '');
+        return withCumulative(emitFromSeries(vol.byPlatform, 'sum', false, () => ''));
       }
       const seriesByMk: Record<string, number[]> = {};
       const platformForMk: Record<string, string> = {};
@@ -333,7 +350,7 @@ export function BigChart() {
         seriesByMk[mk] = m.totalUsd;
         platformForMk[mk] = platformOfTicker(m.ticker);
       }
-      return emitFromSeries(seriesByMk, 'sum', true, (k: string) => platformForMk[k]);
+      return withCumulative(emitFromSeries(seriesByMk, 'sum', true, (k: string) => platformForMk[k]));
     }
 
     return empty;
@@ -425,8 +442,8 @@ export function BigChart() {
             ))}
             {!hidden.has(cumulativeKey) && (
               <Line yAxisId="line" type="monotone" dataKey={cumulativeKey}
-                    stroke={colorMap[cumulativeKey] ?? '#fbbf24'} strokeWidth={2}
-                    dot={false} isAnimationActive={false} />
+                    stroke={colorMap[cumulativeKey] ?? '#fbbf24'} strokeWidth={1.5}
+                    strokeOpacity={0.55} dot={false} isAnimationActive={false} />
             )}
             {showTges && tgesVisible.map(t => (
               <ReferenceLine key={t.platform + t.date} x={t.date} yAxisId="bar"
