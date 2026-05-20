@@ -126,33 +126,19 @@ function MarketDetailView() {
       const ytBuy  = m?.ytBuyUsd  ?? [];
       const ytSell = m?.ytSellUsd ?? [];
       const totals = m?.totalUsd  ?? [];
-      // Cumulative over the FULL series, then sub-slice to the visible window
-      // so the line is correct up to each visible date even when zoomed in.
+      // Cumulative over the FULL series so the line stays accurate to each
+      // visible date even when zoomed in. Always absolute USD; share% only
+      // applies to the bars via Recharts' stackOffset="expand".
       let run = 0;
       const cumulativeFull = totals.map(v => (run += v || 0));
       return vdates.map((d, i) => {
         const idx = vstart + i;
-        const pb = ptBuy[idx]  || 0;
-        const ps = ptSell[idx] || 0;
-        const yb = ytBuy[idx]  || 0;
-        const ys = ytSell[idx] || 0;
-        const sum = pb + ps + yb + ys;
-        if (volumeShare && sum > 0) {
-          return {
-            date: d,
-            'PT buy':  (pb / sum) * 100,
-            'PT sell': (ps / sum) * 100,
-            'YT buy':  (yb / sum) * 100,
-            'YT sell': (ys / sum) * 100,
-            Cumulative: cumulativeFull[idx] || 0,
-          };
-        }
         return {
           date: d,
-          'PT buy':  pb,
-          'PT sell': ps,
-          'YT buy':  yb,
-          'YT sell': ys,
+          'PT buy':  ptBuy[idx]  || 0,
+          'PT sell': ptSell[idx] || 0,
+          'YT buy':  ytBuy[idx]  || 0,
+          'YT sell': ytSell[idx] || 0,
           Cumulative: cumulativeFull[idx] || 0,
         };
       });
@@ -244,21 +230,23 @@ function MarketDetailView() {
               </BarChart>
             ) : metric === 'volume' ? (
               // 4-bucket stacked bars + cumulative trajectory on a 2nd axis.
-              // Share % mode normalizes each day's stack to 100%; the
-              // cumulative line keeps its absolute USD scale on the right.
-              <ComposedChart data={chartData as any} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+              // stackOffset="expand" pegs each day's stack to 100%; bars stay
+              // absolute USD otherwise. Recharts emits values in [0,1] under
+              // expand mode, so the bar Y axis formats × 100 as %.
+              <ComposedChart data={chartData as any}
+                             stackOffset={volumeShare ? 'expand' : 'none'}
+                             margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
                 <XAxis dataKey="date" tick={{ fill: '#888', fontSize: 11 }} />
                 <YAxis yAxisId="bar"
                        tick={{ fill: '#888', fontSize: 11 }}
-                       tickFormatter={volumeShare ? (v => `${v.toFixed(0)}%`) : fmtUsd}
-                       domain={volumeShare ? [0, 100] : ['auto', 'auto']} />
+                       tickFormatter={volumeShare ? (v => `${(v * 100).toFixed(0)}%`) : fmtUsd} />
                 <YAxis yAxisId="line" orientation="right"
                        tick={{ fill: '#fbbf24', fontSize: 11 }}
                        tickFormatter={fmtUsd} width={70} />
                 <Tooltip contentStyle={{ background: '#0a0a0a', border: '1px solid rgba(255,255,255,0.15)', fontSize: 11 }}
                          formatter={(v: any, name: any) => name === 'Cumulative'
                            ? fmtUsd(Number(v))
-                           : (volumeShare ? `${Number(v).toFixed(1)}%` : fmtUsd(Number(v)))} />
+                           : fmtUsd(Number(v))} />
                 <Bar yAxisId="bar" dataKey="PT buy"  stackId="v" fill="#a78bfa" fillOpacity={0.9} isAnimationActive={false} />
                 <Bar yAxisId="bar" dataKey="PT sell" stackId="v" fill="#f87171" fillOpacity={0.9} isAnimationActive={false} />
                 <Bar yAxisId="bar" dataKey="YT buy"  stackId="v" fill="#4ade80" fillOpacity={0.9} isAnimationActive={false} />
