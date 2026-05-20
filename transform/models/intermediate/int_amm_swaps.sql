@@ -57,18 +57,48 @@ tx_market_matches as (
             or c.mint = m.lp_mint)
     group by t.signature, t.block_time, t.action, m.market_key, m.source, m.maturity_ts
 ),
+-- Earliest definitive evidence that each market existed: the first time a
+-- trade touched its UNIQUE PT/YT/LP mint. SY-only trades can't be used here
+-- because SY mints are shared across maturities (that's the whole point of
+-- this temporal filter).
+market_first_strong_match as (
+    select market_key, min(block_time) as first_strong_block_time
+    from tx_market_matches
+    where match_strength = 2
+    group by market_key
+),
+-- For each candidate match, derive a [floor, maturity] window during which
+-- the market could have accepted trades. Floor = first PT/YT/LP-direct touch
+-- if known, else maturity_ts - 370d (most Exponent markets last <1 year).
+tx_market_matches_temporal as (
+    select
+        tmm.*,
+        coalesce(mfs.first_strong_block_time, tmm.maturity_ts - 370 * 86400)
+            as market_floor_ts
+    from tx_market_matches tmm
+    left join market_first_strong_match mfs using (market_key)
+),
 -- Pick the single best market per signature.
+-- A strong PT/YT/LP match always wins regardless of time. For weak SY-only
+-- matches, prefer markets whose existence-window contains the trade's
+-- block_time — otherwise the picker attributes historical trades to a
+-- market that wasn't created yet.
 tx_to_market as (
     select distinct
         signature, block_time, action,
         first_value(market_key) over (
             partition by signature
             order by
-                match_strength desc,                                    -- unique PT/YT match beats shared SY match
-                case when source = 'api' then 0 else 1 end,             -- API metadata richest
-                abs(coalesce(maturity_ts, 0) - block_time)              -- closest maturity wins
+                match_strength desc,                                       -- unique PT/YT match beats shared SY match
+                case
+                    when block_time >= market_floor_ts
+                     and block_time <= coalesce(maturity_ts, block_time)
+                    then 0 else 1
+                end,                                                       -- trade must fall inside market's lifespan
+                abs(coalesce(maturity_ts, 0) - block_time),                -- closest maturity wins among in-window
+                case when source = 'api' then 0 else 1 end                 -- API only as final tiebreak
         ) as market_key
-    from tx_market_matches
+    from tx_market_matches_temporal
 ),
 -- Step 2: for the identified market, compute two aggregates:
 --   * all_*  — sum across all parties touching the underlying mint (notional)
