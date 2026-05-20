@@ -1,19 +1,81 @@
-"""Extract daily AMM pool state — SY reserve, PT reserve, LP supply per market.
+"""Discover Exponent AMM pool accounts and snapshot their on-chain mapping.
 
-Reads each AMM pool account on-chain at one slot per day. From these reserves
-we derive PT spot price and implied APY without needing tx-level reconstruction.
+Architecture (empirically derived):
+  - Exponent's AMM lives in a separate program:
+    XP1BRLn8eCYSygrd8er5P4GKdzqKbC3DLoSsS5UYVZy
+  - One pool account per SY token (= per underlying type), NOT per market.
+  - Pool account = `fe938810a3cb625d` Anchor discriminator, sizes 380-868 bytes.
+  - SY mint sits at offset 8 (right after the discriminator).
+  - The pool account is the AUTHORITY of an SPL token account that holds the
+    SY reserves for that pool. Pool PT reserves are held in a separate token
+    account whose authority is the MarketThree account (dim_markets.amm_pool).
+  - Markets that share an underlying share an SY pool — sibling markets are
+    apportioned downstream by PT-supply weight.
 
-Writes raw_pool_state(snapshot_date, market_key, sy_reserve, pt_reserve, lp_supply).
-
-Stub — implementation in Phase 2.
+This extractor persists the (snapshot_date, sy_pool_account, sy_mint) mapping
+into raw_pool_state. Reserves themselves are computed in dbt by joining
+sy_pool_account back to stg_token_changes (we already crawl all the relevant
+mints).
 """
 from __future__ import annotations
+import asyncio
+import base64
+from datetime import datetime, timezone
+
+import base58
+from rich import print as rprint
+
+from .config import RPC_ENDPOINTS
+from .solana_rpc_client import SolanaRpcClient
 from .load import warehouse
 
 
+EXPONENT_AMM_PROGRAM = "XP1BRLn8eCYSygrd8er5P4GKdzqKbC3DLoSsS5UYVZy"
+POOL_DISCRIMINATOR = bytes.fromhex("fe938810a3cb625d")
+
+
+async def run() -> dict:
+    if not RPC_ENDPOINTS:
+        raise RuntimeError("No SOLANA_RPC_URLS configured in .env")
+    snapshot_date = datetime.now(timezone.utc).date()
+    rprint(f"[cyan]Discovering AMM pool accounts on {snapshot_date}…[/cyan]")
+
+    async with SolanaRpcClient(RPC_ENDPOINTS) as client:
+        accts = await client.get_program_accounts(
+            EXPONENT_AMM_PROGRAM,
+            filters=[
+                {"memcmp": {"offset": 0, "bytes": base58.b58encode(POOL_DISCRIMINATOR).decode()}}
+            ],
+        )
+
+    rows: list[tuple] = []
+    for a in accts:
+        data_field = a["account"]["data"]
+        data_b64 = data_field[0] if isinstance(data_field, list) else data_field
+        data = base64.b64decode(data_b64)
+        if len(data) < 40:
+            continue
+        sy_mint = base58.b58encode(data[8:40]).decode()
+        rows.append((snapshot_date, a["pubkey"], sy_mint))
+    rprint(f"  found {len(rows)} pool accounts")
+
+    with warehouse() as con:
+        con.execute("DELETE FROM raw_pool_state WHERE snapshot_date = ?", [snapshot_date])
+        if rows:
+            con.executemany(
+                "INSERT INTO raw_pool_state (snapshot_date, pool_account, sy_mint) VALUES (?, ?, ?)",
+                rows,
+            )
+
+    rprint(f"[green]Wrote {len(rows)} pool ↔ sy_mint mappings[/green]")
+    return {"pools": len(rows), "snapshot_date": str(snapshot_date)}
+
+
 def main() -> None:
-    with warehouse() as _con:
-        print("extract_pool_state: stub — Phase 2")
+    started = datetime.now(timezone.utc)
+    rprint(f"[bold]extract_pool_state[/bold]  started {started.isoformat()}")
+    asyncio.run(run())
+    rprint(f"[bold]done[/bold]  elapsed {datetime.now(timezone.utc) - started}")
 
 
 if __name__ == "__main__":

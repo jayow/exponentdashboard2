@@ -94,15 +94,15 @@ RAW_DDL = {
         )
     """,
     "raw_pool_state": """
+        -- One row per Exponent AMM pool (= per SY mint, not per market).
+        -- pool_account is the XP1BRLn8 program account that authorities the
+        -- SY-reserves token account. Reserve balances themselves are derived
+        -- in dbt from stg_token_changes — no need to snapshot them here.
         CREATE TABLE IF NOT EXISTS raw_pool_state (
-            snapshot_date DATE NOT NULL,
-            market_key    VARCHAR NOT NULL,
-            slot          BIGINT,
-            sy_reserve    DOUBLE,
-            pt_reserve    DOUBLE,
-            lp_supply     DOUBLE,
-            fetched_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            PRIMARY KEY (snapshot_date, market_key)
+            snapshot_date DATE    NOT NULL,
+            pool_account  VARCHAR NOT NULL,
+            sy_mint       VARCHAR NOT NULL,
+            PRIMARY KEY (snapshot_date, pool_account)
         )
     """,
     "raw_lst_rates": """

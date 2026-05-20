@@ -62,11 +62,13 @@ sources:
             tests: [not_null]
 
       - name: raw_pool_state
-        description: Daily AMM pool reserves (SY, PT) + LP supply per market.
+        description: One row per Exponent AMM pool account (= per SY mint). pool_account is the XP1BRLn8 program PDA that authorities the SY-reserves token account; sy_mint at offset 8.
         columns:
           - name: snapshot_date
             tests: [not_null]
-          - name: market_key
+          - name: pool_account
+            tests: [not_null]
+          - name: sy_mint
             tests: [not_null]
 
       - name: raw_lst_rates
