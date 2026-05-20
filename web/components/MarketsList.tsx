@@ -6,11 +6,10 @@ type ApTicker = { underlyingMint: string; latest: Record<string, number>; legs: 
 type ApData = { byTicker: Record<string, ApTicker>; meta: { tickers: { ticker: string; marketCount: number }[] } };
 
 type TvlByMarket = Record<string, {
-  ticker: string; tvlUsd: number[]; principalUsd?: number[];
+  ticker: string; tvlUsd: number[];
   ptUsd?: number[]; ytUsd?: number[]; lpUsd?: number[]; idleUsd?: number[];
   isTest?: boolean;
   liquidityUsd?: number;   // matches Exponent UI Liquidity (SDK formula on-chain)
-  activeTvlUsd?: number;   // PT_supply × underlying USD
 }>;
 type TvlData = { byMarket: TvlByMarket };
 
@@ -69,30 +68,26 @@ export function MarketsList() {
     // server-side `maturity_date >= current_date` logic in stg_markets.
     const now = new Date();
     const todayMs = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
-    const out: { marketKey: string; ticker: string; tvlUsd: number; activeTvlUsd: number; liquidityUsd: number; idleUsd: number; pt: number; holders: number; isActive: boolean; isTest: boolean }[] = [];
+    const out: { marketKey: string; ticker: string; tvlUsd: number; ptUsd: number; ytUsd: number; lpUsd: number; idleUsd: number; liquidityUsd: number; ptSupply: number; holders: number; isActive: boolean; isTest: boolean }[] = [];
     for (const [mk, m] of Object.entries(tvl.byMarket)) {
       const ticker = m.ticker;
       const last = (arr?: number[]) => (arr && arr.length ? arr[arr.length - 1] || 0 : 0);
       const tvlUsd = last(m.tvlUsd);
-      // Active TVL = PT_supply × underlying_USD. Matches Exponent's
-      // `totalMarketSize` field. PT and YT supply are equal by Pendle
-      // construction, so this single USD column captures both legs.
-      const activeTvlUsd = m.activeTvlUsd ?? last(m.principalUsd);
-      // Liquidity = Exponent SDK formula computed on-chain — exact replica of
-      // Exponent UI's Liquidity field. See int_pool_reserves_daily.
-      const liquidityUsd = m.liquidityUsd ?? last(m.lpUsd);
+      // TVL decomposition (PT + YT + LP + Idle sums to tvlUsd by construction).
+      const ptUsd   = last(m.ptUsd);
+      const ytUsd   = last(m.ytUsd);
+      const lpUsd   = last(m.lpUsd);
       const idleUsd = last(m.idleUsd);
+      // Liquidity = Exponent SDK formula computed on-chain (matches their UI).
+      const liquidityUsd = m.liquidityUsd ?? lpUsd;
       const t = ap.byTicker[ticker];
-      const pt = t?.legs.PT?.byMarket?.[mk]?.slice(-1)[0] || 0;
-      // Unique holders across PT + YT + LP for this market — a wallet
-      // holding multiple legs counts once.
+      const ptSupply = t?.legs.PT?.byMarket?.[mk]?.slice(-1)[0] || 0;
+      // Unique holders across PT + YT + LP for this market.
       const h = holders?.holdersByMarket?.[mk] ?? holders?.byMarketLeg?.[`${mk}:PT`]?.holders ?? 0;
       // Active = trailing DDMonYY in the market_key is on or after today.
-      // Keys without a parseable suffix (UNCLASSIFIED, UNKNOWN, etc.) fall
-      // back to the TVL/supply heuristic so they aren't unconditionally hidden.
       const mat = maturityMs(mk);
-      const isActive = mat !== null ? mat >= todayMs : tvlUsd > 1 || pt > 0;
-      out.push({ marketKey: mk, ticker, tvlUsd, activeTvlUsd, liquidityUsd, idleUsd, pt, holders: h, isActive, isTest: !!m.isTest });
+      const isActive = mat !== null ? mat >= todayMs : tvlUsd > 1 || ptSupply > 0;
+      out.push({ marketKey: mk, ticker, tvlUsd, ptUsd, ytUsd, lpUsd, idleUsd, liquidityUsd, ptSupply, holders: h, isActive, isTest: !!m.isTest });
     }
     return out
       // Active view hides test markets; All view keeps them with a chip.
@@ -125,9 +120,11 @@ export function MarketsList() {
             <tr>
               <th className="text-left py-2 font-normal">Market</th>
               <th className="text-right py-2 font-normal">TVL</th>
-              <th className="text-right py-2 font-normal" title="PT_supply × underlying_USD — matches Exponent's 'Active TVL' / totalMarketSize. PT and YT supply are equal by Pendle construction, so this captures both legs in USD.">Active TVL</th>
-              <th className="text-right py-2 font-normal" title="AMM pool TVL — matches Exponent's UI 'Liquidity'. Formula from Exponent's SDK: sy_balance × sy_rate + pt_balance / exp(last_ln_implied × years_remaining), all decoded from the on-chain MarketTwo account. No Exponent API dep.">Liquidity</th>
-              <th className="text-right py-2 font-normal" title="Idle SY — TVL not currently split into PT/YT or in LP">Idle</th>
+              <th className="text-right py-2 font-normal" title="Principal — market-priced PT value (PT_supply × pt_price × underlying USD)">PT</th>
+              <th className="text-right py-2 font-normal" title="Farm — market-priced YT value (YT_supply × yt_price × underlying USD, where yt_price = 1 − pt_price)">YT</th>
+              <th className="text-right py-2 font-normal" title="LP value — user share of pool capital (LP supply × underlying USD, capped at remaining SY after PT+YT)">LP</th>
+              <th className="text-right py-2 font-normal" title="Idle SY — TVL not yet split into PT/YT and not in LP">Idle</th>
+              <th className="text-right py-2 font-normal" title="AMM pool TVL — matches Exponent UI 'Liquidity'. Formula from Exponent SDK: sy_balance × sy_rate + pt_balance / exp(last_ln_implied × years_remaining), decoded from the on-chain MarketTwo account.">Liquidity</th>
               <th className="text-right py-2 font-normal" title="Unique wallets holding PT, YT, or LP — a wallet across multiple legs counts once">Holders</th>
             </tr>
           </thead>
@@ -144,9 +141,11 @@ export function MarketsList() {
                   )}
                 </td>
                 <td className="py-1.5 text-right tabular-nums text-emerald-400/80">{fmtUsd(r.tvlUsd)}</td>
-                <td className="py-1.5 text-right tabular-nums text-amber-300/80">{r.activeTvlUsd > 0 ? fmtUsd(r.activeTvlUsd) : '–'}</td>
-                <td className="py-1.5 text-right tabular-nums text-white/70">{r.liquidityUsd > 0 ? fmtUsd(r.liquidityUsd) : '–'}</td>
-                <td className="py-1.5 text-right tabular-nums text-white/50">{r.idleUsd > 0 ? fmtUsd(r.idleUsd) : '–'}</td>
+                <td className="py-1.5 text-right tabular-nums" style={{ color: '#a78bfa' }}>{r.ptUsd > 0 ? fmtUsd(r.ptUsd) : '–'}</td>
+                <td className="py-1.5 text-right tabular-nums" style={{ color: '#fb923c' }}>{r.ytUsd > 0.5 ? fmtUsd(r.ytUsd) : '–'}</td>
+                <td className="py-1.5 text-right tabular-nums" style={{ color: '#4ade80', opacity: 0.85 }}>{r.lpUsd > 0 ? fmtUsd(r.lpUsd) : '–'}</td>
+                <td className="py-1.5 text-right tabular-nums text-white/40">{r.idleUsd > 0 ? fmtUsd(r.idleUsd) : '–'}</td>
+                <td className="py-1.5 text-right tabular-nums text-amber-300/80">{r.liquidityUsd > 0 ? fmtUsd(r.liquidityUsd) : '–'}</td>
                 <td className="py-1.5 text-right tabular-nums text-white/60">{r.holders || '–'}</td>
               </tr>
             ))}
