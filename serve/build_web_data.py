@@ -149,37 +149,48 @@ def build_volume_json(con: duckdb.DuckDBPyConnection) -> dict:
     total_usd = [a + b for a, b in zip(pt_usd, yt_usd)]
     total_und = [a + b for a, b in zip(pt_und, yt_und)]
 
-    # Per-market series + top (USD)
+    # Per-market series — split USD volume into 4 buckets so the market
+    # detail page can render the buy/sell decomposition:
+    #   ptBuyUsd, ptSellUsd, ytBuyUsd, ytSellUsd. Sum = totalUsd.
     per_market_rows = con.execute(
         """
         SELECT market_key, ticker, date::VARCHAR, side,
-               SUM(volume_usd) AS v_usd, SUM(volume_underlying) AS v_und
+               SUM(volume_usd_buys)  AS buy_usd,
+               SUM(volume_usd_sells) AS sell_usd,
+               SUM(volume_underlying) AS v_und
         FROM main_analytics.trading_volume_daily
         GROUP BY 1, 2, 3, 4
         """
     ).fetchall()
     by_market: dict[str, dict] = {}
-    for market_key, ticker, date, side, v_usd, v_und in per_market_rows:
+    for market_key, ticker, date, side, buy_usd, sell_usd, v_und in per_market_rows:
         entry = by_market.setdefault(
             market_key,
             {
                 "ticker": ticker,
-                "pt_usd_map": {}, "yt_usd_map": {},
+                "pt_buy_map": {}, "pt_sell_map": {},
+                "yt_buy_map": {}, "yt_sell_map": {},
                 "pt_und_map": {}, "yt_und_map": {},
             },
         )
         if side == "PT":
-            entry["pt_usd_map"][date] = float(v_usd or 0)
-            entry["pt_und_map"][date] = float(v_und or 0)
+            entry["pt_buy_map"][date]  = float(buy_usd or 0)
+            entry["pt_sell_map"][date] = float(sell_usd or 0)
+            entry["pt_und_map"][date]  = float(v_und or 0)
         elif side == "YT":
-            entry["yt_usd_map"][date] = float(v_usd or 0)
-            entry["yt_und_map"][date] = float(v_und or 0)
+            entry["yt_buy_map"][date]  = float(buy_usd or 0)
+            entry["yt_sell_map"][date] = float(sell_usd or 0)
+            entry["yt_und_map"][date]  = float(v_und or 0)
 
     by_market_out: dict[str, dict] = {}
     market_totals: list[tuple[str, str, float]] = []
     for market_key, entry in by_market.items():
-        pt_usd_arr = [entry["pt_usd_map"].get(d, 0.0) for d in dates]
-        yt_usd_arr = [entry["yt_usd_map"].get(d, 0.0) for d in dates]
+        pt_buy   = [entry["pt_buy_map"].get(d, 0.0)  for d in dates]
+        pt_sell  = [entry["pt_sell_map"].get(d, 0.0) for d in dates]
+        yt_buy   = [entry["yt_buy_map"].get(d, 0.0)  for d in dates]
+        yt_sell  = [entry["yt_sell_map"].get(d, 0.0) for d in dates]
+        pt_usd_arr = [a + b for a, b in zip(pt_buy, pt_sell)]
+        yt_usd_arr = [a + b for a, b in zip(yt_buy, yt_sell)]
         pt_und_arr = [entry["pt_und_map"].get(d, 0.0) for d in dates]
         yt_und_arr = [entry["yt_und_map"].get(d, 0.0) for d in dates]
         total_usd_arr = [a + b for a, b in zip(pt_usd_arr, yt_usd_arr)]
@@ -189,6 +200,10 @@ def build_volume_json(con: duckdb.DuckDBPyConnection) -> dict:
             "ticker": entry["ticker"],
             "ptUsd": pt_usd_arr,
             "ytUsd": yt_usd_arr,
+            "ptBuyUsd":  pt_buy,
+            "ptSellUsd": pt_sell,
+            "ytBuyUsd":  yt_buy,
+            "ytSellUsd": yt_sell,
             "totalUsd": total_usd_arr,
             "ptUnderlying": pt_und_arr,
             "ytUnderlying": yt_und_arr,

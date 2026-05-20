@@ -20,7 +20,12 @@ type TvlByMarket = Record<string, {
 type ApLeg = { byMarket: Record<string, number[]>; totals: number[] };
 type ApTicker = { underlyingMint: string; latest: Record<string, number>; legs: Record<string, ApLeg> };
 
-type Volume = { dates: string[]; byMarket?: Record<string, { ticker: string; ptUsd?: number[]; ytUsd?: number[]; totalUsd?: number[] }> };
+type Volume = { dates: string[]; byMarket?: Record<string, {
+  ticker: string;
+  ptUsd?: number[]; ytUsd?: number[]; totalUsd?: number[];
+  ptBuyUsd?: number[]; ptSellUsd?: number[];
+  ytBuyUsd?: number[]; ytSellUsd?: number[];
+}> };
 
 type Range = '30d' | '90d' | '1y' | 'all';
 type Metric = 'tvl' | 'breakdown' | 'positions' | 'volume';
@@ -113,8 +118,18 @@ function MarketDetailView() {
     if (metric === 'volume' && volume) {
       const vstart = rangeStart(volume.dates, range);
       const vdates = volume.dates.slice(vstart);
-      const total = volume.byMarket?.[marketKey]?.totalUsd ?? [];
-      return vdates.map((d, i) => ({ date: d, Volume: total[vstart + i] || 0 }));
+      const m = volume.byMarket?.[marketKey];
+      const ptBuy  = m?.ptBuyUsd  ?? [];
+      const ptSell = m?.ptSellUsd ?? [];
+      const ytBuy  = m?.ytBuyUsd  ?? [];
+      const ytSell = m?.ytSellUsd ?? [];
+      return vdates.map((d, i) => ({
+        date: d,
+        'PT buy':  ptBuy[vstart + i]  || 0,
+        'PT sell': ptSell[vstart + i] || 0,
+        'YT buy':  ytBuy[vstart + i]  || 0,
+        'YT sell': ytSell[vstart + i] || 0,
+      }));
     }
     return [];
   }, [tvl, positions, volume, metric, range, marketKey, ticker, tvlSeries, tickerData]);
@@ -190,12 +205,25 @@ function MarketDetailView() {
                 <Bar dataKey="Liquidity (LP)" stackId="b" fill={BREAKDOWN_COLOR['Liquidity (LP)']} fillOpacity={0.9} isAnimationActive={false} />
                 <Bar dataKey="Idle"           stackId="b" fill={BREAKDOWN_COLOR['Idle']}           fillOpacity={0.9} isAnimationActive={false} />
               </BarChart>
+            ) : metric === 'volume' ? (
+              <BarChart data={chartData as any} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+                <XAxis dataKey="date" tick={{ fill: '#888', fontSize: 11 }} />
+                <YAxis tick={{ fill: '#888', fontSize: 11 }} tickFormatter={fmtUsd} />
+                <Tooltip contentStyle={{ background: '#0a0a0a', border: '1px solid rgba(255,255,255,0.15)', fontSize: 11 }} formatter={(v: any) => fmtUsd(Number(v))} />
+                {/* 4-bucket volume stack: PT buys (violet), PT sells (rose),
+                    YT buys (emerald), YT sells (orange). Same direction colors
+                    used wherever buy/sell appear elsewhere on the dashboard. */}
+                <Bar dataKey="PT buy"  stackId="v" fill="#a78bfa" fillOpacity={0.9} isAnimationActive={false} />
+                <Bar dataKey="PT sell" stackId="v" fill="#f87171" fillOpacity={0.9} isAnimationActive={false} />
+                <Bar dataKey="YT buy"  stackId="v" fill="#4ade80" fillOpacity={0.9} isAnimationActive={false} />
+                <Bar dataKey="YT sell" stackId="v" fill="#fb923c" fillOpacity={0.9} isAnimationActive={false} />
+              </BarChart>
             ) : (
               <BarChart data={chartData as any} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
                 <XAxis dataKey="date" tick={{ fill: '#888', fontSize: 11 }} />
                 <YAxis tick={{ fill: '#888', fontSize: 11 }} tickFormatter={fmtUsd} />
                 <Tooltip contentStyle={{ background: '#0a0a0a', border: '1px solid rgba(255,255,255,0.15)', fontSize: 11 }} formatter={(v: any) => fmtUsd(Number(v))} />
-                <Bar dataKey={metric === 'tvl' ? 'TVL' : 'Volume'} fill={metric === 'tvl' ? '#a78bfa' : '#38bdf8'} fillOpacity={0.85} />
+                <Bar dataKey="TVL" fill="#a78bfa" fillOpacity={0.85} />
               </BarChart>
             )}
           </ResponsiveContainer>
