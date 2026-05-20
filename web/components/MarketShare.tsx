@@ -3,12 +3,6 @@ import { useEffect, useMemo, useState } from 'react';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, TooltipProps } from 'recharts';
 import { platformOfTicker, colorForMarket, colorForPlatform } from '@/lib/colors';
 
-type ByTicker = Record<string, { volumeUsd: number[]; tvlUsd: number[] }>;
-type ShareData = {
-  meta: { generatedAt: string; dateRange: [string, string]; tickers: string[] };
-  dates: string[];
-  byTicker: ByTicker;
-};
 type VolData = {
   dates: string[];
   byPlatform: Record<string, number[]>;
@@ -21,7 +15,7 @@ type TvlData = {
 };
 
 type Metric = 'volume' | 'tvl';
-type View = 'ticker' | 'platform' | 'market';
+type View = 'platform' | 'market';
 type Range = '30d' | '90d' | '1y' | 'all';
 
 function fmtUsd(n: number) {
@@ -65,50 +59,41 @@ function StackedTooltip({ active, payload, label }: TooltipProps<number, string>
 }
 
 export function MarketShare() {
-  const [data, setData] = useState<ShareData | null>(null);
   const [vol, setVol] = useState<VolData | null>(null);
   const [tvl, setTvl] = useState<TvlData | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [metric, setMetric] = useState<Metric>('volume');
-  const [view, setView] = useState<View>('ticker');
+  const [view, setView] = useState<View>('platform');
   const [range, setRange] = useState<Range>('90d');
   const [hidden, setHidden] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     Promise.all([
-      fetch('/market_share.json').then(r => (r.ok ? r.json() : Promise.reject(`HTTP ${r.status}`))),
-      fetch('/volume.json').then(r => r.json()),
-      fetch('/tvl.json').then(r => r.json()),
+      fetch('/volume.json').then(r => (r.ok ? r.json() : Promise.reject(`HTTP ${r.status}`))),
+      fetch('/tvl.json').then(r => (r.ok ? r.json() : Promise.reject(`HTTP ${r.status}`))),
     ])
-      .then(([m, v, t]) => { setData(m); setVol(v); setTvl(t); })
+      .then(([v, t]) => { setVol(v); setTvl(t); })
       .catch(e => setErr(String(e)));
   }, []);
 
   // Aggregate-by-view source. Each view exposes a `dates` axis and a
   // {key → number[]} series map. Range slicing happens later in chartData.
   const { dates, perKeySeries } = useMemo(() => {
-    if (view === 'ticker') {
-      if (!data) return { dates: [] as string[], perKeySeries: {} as Record<string, number[]> };
-      const key = metric === 'volume' ? 'volumeUsd' : 'tvlUsd';
-      const m: Record<string, number[]> = {};
-      for (const [tk, s] of Object.entries(data.byTicker)) m[tk] = s[key];
-      return { dates: data.dates, perKeySeries: m };
-    }
     if (view === 'platform') {
       const src = metric === 'volume' ? vol : tvl;
-      if (!src) return { dates: [], perKeySeries: {} };
+      if (!src) return { dates: [] as string[], perKeySeries: {} as Record<string, number[]> };
       return { dates: src.dates, perKeySeries: { ...src.byPlatform } };
     }
     // market view
     const src = metric === 'volume' ? vol : tvl;
-    if (!src) return { dates: [], perKeySeries: {} };
+    if (!src) return { dates: [] as string[], perKeySeries: {} as Record<string, number[]> };
     const m: Record<string, number[]> = {};
     for (const [mk, e] of Object.entries(src.byMarket)) {
       if (mk.includes('(unsplit)')) continue;
       m[mk] = (e as any)[metric === 'volume' ? 'totalUsd' : 'tvlUsd'];
     }
     return { dates: src.dates, perKeySeries: m };
-  }, [view, metric, data, vol, tvl]);
+  }, [view, metric, vol, tvl]);
 
   // All keys sorted by lifetime contribution within the visible window.
   const allKeys = useMemo(() => {
@@ -126,17 +111,29 @@ export function MarketShare() {
 
   const visibleKeys = useMemo(() => allKeys.filter(k => !hidden.has(k)), [allKeys, hidden]);
 
-  // Build chart rows: one per date with each visible key as a % of visible total.
+  // Build chart rows: one per visible bucket with each visible key as a %
+  // of visible total. Daily for 30d/90d; weekly (stride 7) for 1y/All to
+  // keep bar width readable, matching BigChart's downsample rule.
   const chartData = useMemo(() => {
     if (!dates.length) return [];
     const start = rangeStart(dates, range);
-    const sliced = dates.slice(start);
-    return sliced.map((d, i) => {
-      const idx = start + i;
-      const row: Record<string, number | string> = { date: d };
+    const end = dates.length - 1;
+    const visible = end - start + 1;
+    const stride = visible <= 120 ? 1 : 7;
+    const bucketStarts: number[] = [];
+    for (let i = start; i <= end; i += stride) bucketStarts.push(i);
+    if (bucketStarts[bucketStarts.length - 1] !== end) bucketStarts.push(end);
+
+    return bucketStarts.map((bStart, bIdx) => {
+      const bEnd = bIdx + 1 < bucketStarts.length ? bucketStarts[bIdx + 1] : bStart + 1;
+      const row: Record<string, number | string> = { date: dates[bStart] };
       let visibleTotal = 0;
+      // Sum values across the bucket window — share % then reflects the
+      // average composition over the bucket period.
       for (const k of visibleKeys) {
-        const v = perKeySeries[k]?.[idx] || 0;
+        let v = 0;
+        const s = perKeySeries[k];
+        if (s) for (let j = bStart; j < bEnd; j++) v += s[j] || 0;
         row[k] = v;
         visibleTotal += v;
       }
@@ -184,8 +181,8 @@ export function MarketShare() {
   const showAll  = () => setHidden(new Set());
   const showNone = () => setHidden(new Set(allKeys));
 
-  if (err) return <div className="text-red-400 text-sm p-4">Failed to load market_share.json: {err}</div>;
-  if (!data || !vol || !tvl) return <div className="text-white/40 text-sm p-4">Loading market share…</div>;
+  if (err) return <div className="text-red-400 text-sm p-4">Failed to load market share: {err}</div>;
+  if (!vol || !tvl) return <div className="text-white/40 text-sm p-4">Loading market share…</div>;
 
   return (
     <section className="rounded-2xl border border-white/10 bg-white/5 p-4 mb-6">
@@ -193,7 +190,7 @@ export function MarketShare() {
         <div>
           <h2 className="text-sm uppercase tracking-wider text-white/60">Market Share</h2>
           <p className="text-xs text-white/40">
-            {visibleKeys.length} of {allKeys.length} {view === 'platform' ? 'platforms' : view === 'market' ? 'markets' : 'tickers'} • {metric === 'volume' ? 'volume' : 'TVL'} share %
+            {visibleKeys.length} of {allKeys.length} {view === 'platform' ? 'platforms' : 'markets'} • {metric === 'volume' ? 'volume' : 'TVL'} share %
             {leader && (
               <span className="text-white/30"> • latest leader: {leader.key} ({leader.value.toFixed(0)}%)</span>
             )}
@@ -207,7 +204,7 @@ export function MarketShare() {
             </button>
           ))}
           <span className="w-2" />
-          {(['ticker', 'platform', 'market'] as View[]).map(v => (
+          {(['platform', 'market'] as View[]).map(v => (
             <button key={v} onClick={() => setView(v)}
               className={`text-xs px-3 py-1 rounded-lg transition ${
                 view === v ? 'bg-white/10 text-white' : 'text-white/40 hover:text-white'
