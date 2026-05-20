@@ -251,9 +251,12 @@ export function BigChart() {
       // into one "Other (small)" series so the stack still reconciles.
       // Active markets (maturity ≥ today) bypass the filter — small-but-live
       // markets belong in the legend even if they don't yet move the chart.
+      // Use UTC start-of-today (calendar) so a market maturing today stays
+      // active through its maturity date, matching the server-side logic.
       const peakOfPeaks = entries[0]?.maxInRange ?? 0;
       const tailThreshold = peakOfPeaks * 0.005;
-      const todayMs = Date.now();
+      const _now = new Date();
+      const todayMs = Date.UTC(_now.getUTCFullYear(), _now.getUTCMonth(), _now.getUTCDate());
       const isActive = (k: string) => {
         if (!isMarket) return false;
         const m = maturityMs(k);

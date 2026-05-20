@@ -61,7 +61,12 @@ export function MarketsList() {
 
   const rows = useMemo(() => {
     if (!tvl || !ap) return [];
-    const todayMs = Date.now();
+    // Compare to TODAY's UTC midnight (calendar-day), not Date.now(). A
+    // market maturing 'today' parses to midnight UTC; using Date.now()
+    // would flip it to expired the moment the day starts. Matches the
+    // server-side `maturity_date >= current_date` logic in stg_markets.
+    const now = new Date();
+    const todayMs = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
     const out: { marketKey: string; ticker: string; tvlUsd: number; oiUsd: number; lpUsd: number; idleUsd: number; pt: number; holders: number; isActive: boolean; isTest: boolean }[] = [];
     for (const [mk, m] of Object.entries(tvl.byMarket)) {
       const ticker = m.ticker;
