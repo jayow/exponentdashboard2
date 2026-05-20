@@ -227,10 +227,18 @@ export function BigChart() {
       // <0.5% of the leader's peak. They render as invisible pixel slivers
       // but each costs a full Recharts <Area> SVG path. Tail gets lumped
       // into one "Other (small)" series so the stack still reconciles.
+      // Active markets (maturity ≥ today) bypass the filter — small-but-live
+      // markets belong in the legend even if they don't yet move the chart.
       const peakOfPeaks = entries[0]?.maxInRange ?? 0;
       const tailThreshold = peakOfPeaks * 0.005;
-      const trimmed = entries.filter(e => e.maxInRange >= tailThreshold);
-      const dropped = entries.slice(trimmed.length);
+      const todayMs = Date.now();
+      const isActive = (k: string) => {
+        if (!isMarket) return false;
+        const m = maturityMs(k);
+        return m !== null && m >= todayMs;
+      };
+      const trimmed = entries.filter(e => e.maxInRange >= tailThreshold || isActive(e.k));
+      const dropped = entries.filter(e => e.maxInRange < tailThreshold && !isActive(e.k));
 
       // Market-view legends read better in chronological order — newest
       // maturity first, so freshly-listed markets show at the head of the
