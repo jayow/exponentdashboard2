@@ -53,6 +53,7 @@ function WalletDetailView() {
   const [events, setEvents] = useState<WalletEvent[] | null>(null);
   const [notFound, setNotFound] = useState(false);
   const [unclaimed, setUnclaimed] = useState<{ marketKey: string; ytBalance: number }[]>([]);
+  const [positions, setPositions] = useState<{ marketKey: string; ticker: string; maturityDate: string; leg: 'PT' | 'YT' | 'LP'; balance: number }[]>([]);
   const [enabled, setEnabled] = useState<Set<Filter>>(new Set(ALL_FILTERS));
   const [sortKey, setSortKey] = useState<SortKey>('date');
   const [asc, setAsc] = useState(false);
@@ -63,7 +64,7 @@ function WalletDetailView() {
         if (r.status === 404) { setNotFound(true); setEvents([]); return null; }
         return r.json();
       })
-      .then(d => { if (d) setEvents(d.events); })
+      .then(d => { if (d) { setEvents(d.events); setPositions(d.positions ?? []); } })
       .catch(() => setEvents([]));
     fetch('/unclaimed_yield.json')
       .then(r => r.json())
@@ -117,6 +118,43 @@ function WalletDetailView() {
           <Stat key={f} label={LABEL[f]} value={String(actionCounts[f])} />
         ))}
       </div>
+
+      {/* Current positions */}
+      {positions.length > 0 && (
+        <div className="mt-6">
+          <h2 className="text-sm uppercase tracking-wider text-white/60 mb-2">Current positions</h2>
+          <div className="rounded-2xl border border-white/10 bg-white/5 overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="text-xs uppercase tracking-wider text-white/40">
+                <tr>
+                  <th className="text-left px-4 py-2 font-normal">Market</th>
+                  <th className="text-left px-4 py-2 font-normal">Leg</th>
+                  <th className="text-left px-4 py-2 font-normal">Matures</th>
+                  <th className="text-right px-4 py-2 font-normal">Balance</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-white/5">
+                {positions.map(p => (
+                  <tr key={`${p.marketKey}:${p.leg}`} className="hover:bg-white/5">
+                    <td className="px-4 py-1.5">
+                      <Link href={`/market/?key=${p.marketKey}`} className="text-white/85 hover:text-white">{p.marketKey}</Link>
+                    </td>
+                    <td className="px-4 py-1.5">
+                      <span className={`text-xs px-1.5 py-0.5 rounded ${
+                        p.leg === 'PT' ? 'bg-violet-500/20 text-violet-300'
+                        : p.leg === 'YT' ? 'bg-orange-500/20 text-orange-300'
+                        :                 'bg-emerald-500/20 text-emerald-300'
+                      }`}>{p.leg}</span>
+                    </td>
+                    <td className="px-4 py-1.5 text-white/50">{p.maturityDate}</td>
+                    <td className="px-4 py-1.5 text-right tabular-nums text-white">{fmtAmount(p.balance)} {p.ticker}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       {/* Unclaimed yield */}
       {unclaimed.length > 0 && (

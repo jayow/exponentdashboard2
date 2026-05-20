@@ -733,10 +733,11 @@ def build_stats_json(con: duckdb.DuckDBPyConnection) -> dict:
     first_date = con.execute(
         "SELECT MIN(date)::VARCHAR FROM main_analytics.trading_volume_daily WHERE volume_usd > 0"
     ).fetchone()[0]
-    # Holders — distinct owners across PT/YT/LP on latest snapshot
+    # Holders — distinct owners across PT/YT/LP. int_holders_current unions
+    # PT (from raw_holders snapshot) with YT/LP (from raw_positions Anchor
+    # accounts), so this count reflects real user wallets, not pool PDAs.
     holders = con.execute("""
-        SELECT COUNT(DISTINCT owner) FROM main.raw_holders
-        WHERE snapshot_date = (SELECT MAX(snapshot_date) FROM main.raw_holders)
+        SELECT COUNT(DISTINCT owner) FROM main_intermediate.int_holders_current
     """).fetchone()
     # PT / YT / LP / Idle decomposition (latest) — market-priced
     decomp = con.execute("""
@@ -1132,10 +1133,48 @@ def build_wallet_shards(con: duckdb.DuckDBPyConnection) -> None:
             ],
         })
 
+    # Current positions per wallet — derived from int_holders_current. Pulls
+    # PT (via raw_holders) + YT/LP (via raw_positions Anchor accounts) and
+    # joins to dim_markets to attach market_key/ticker/leg labels.
+    rprint("  attaching current positions to each wallet…")
+    pos_rows = con.execute("""
+        SELECT h.owner, m.market_key, m.ticker, m.maturity_date::VARCHAR,
+               CASE WHEN m.pt_mint = h.mint THEN 'PT'
+                    WHEN m.yt_mint = h.mint THEN 'YT'
+                    WHEN m.lp_mint = h.mint THEN 'LP'
+               END AS leg,
+               h.amount
+        FROM main_intermediate.int_holders_current h
+        JOIN main_core.dim_markets m
+          ON h.mint IN (m.pt_mint, m.yt_mint, m.lp_mint)
+        WHERE h.amount > 0.000001
+    """).fetchall()
+    positions_by_wallet: dict[str, list[dict]] = {}
+    for owner, mk, ticker, maturity, leg, amt in pos_rows:
+        if leg is None:
+            continue
+        positions_by_wallet.setdefault(owner, []).append({
+            "marketKey": mk,
+            "ticker": ticker,
+            "maturityDate": maturity,
+            "leg": leg,
+            "balance": float(amt or 0),
+        })
+    for ps in positions_by_wallet.values():
+        ps.sort(key=lambda p: (-p["balance"], p["marketKey"]))
+
+    # Ensure wallets with positions but no events still get a shard
+    for wallet in positions_by_wallet:
+        by_wallet.setdefault(wallet, [])
+
     rprint(f"  writing {len(by_wallet):,} wallet shards…")
     for wallet, events in by_wallet.items():
         with open(shard_dir / f"{wallet}.json", "w") as f:
-            json.dump({"wallet": wallet, "events": events}, f, separators=(",", ":"))
+            json.dump({
+                "wallet": wallet,
+                "events": events,
+                "positions": positions_by_wallet.get(wallet, []),
+            }, f, separators=(",", ":"))
     rprint(f"[green]wrote {len(by_wallet):,} wallet shards[/green] ({sum(len(e) for e in by_wallet.values()):,} events total)")
 
 

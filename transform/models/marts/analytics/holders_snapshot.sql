@@ -1,11 +1,13 @@
 -- Per (market_key, leg) holder concentration snapshot.
 --
--- For each PT/YT/LP mint we have a holder snapshot (raw_holders).
--- We aggregate to: total holders, top-1/top-5/top-10 concentration %,
--- supply distribution metrics.
+-- Sources from int_holders_current — which unions:
+--   PT  from raw_holders (getProgramAccounts SPL token-account scan), and
+--   YT/LP from raw_positions (YieldTokenPosition + LpPosition Anchor
+--   accounts under the Exponent core program).
 --
--- Uses the latest snapshot_date available per mint (typically the same
--- day across all mints, but resilient if one mint's snapshot failed).
+-- We aggregate to: total holders, top-1/top-5/top-10 concentration %,
+-- supply distribution metrics. snapshot_date is set to current_date by
+-- int_holders_current — i.e., "as of the latest extract".
 {{ config(materialized='table') }}
 
 with mint_legs as (
