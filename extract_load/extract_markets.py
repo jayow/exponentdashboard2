@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any
 
@@ -186,23 +187,59 @@ async def run() -> dict:
     rprint("[cyan]Fetching MarketThree accounts on-chain…[/cyan]")
     async with SolanaRpcClient(RPC_ENDPOINTS) as client:
         onchain_raw = await fetch_onchain_market_accounts(client)
-    rprint(f"  got {len(onchain_raw)} MarketThree accounts on-chain")
+        rprint(f"  got {len(onchain_raw)} MarketThree accounts on-chain")
 
-    onchain_rows: list[tuple[str, dict]] = []
-    seen_keys: set[str] = set()
-    for acct in onchain_raw:
-        pubkey = acct["pubkey"]
-        data_field = acct["account"]["data"]
-        data_b64 = data_field[0] if isinstance(data_field, list) else data_field
-        row = onchain_account_to_row(pubkey, data_b64, ticker_by_sy)
-        if row is None:
-            continue
-        key, payload = row
-        # Dedupe: a single SY mint with the same maturity date shouldn't appear twice.
-        if key in seen_keys:
-            continue
-        seen_keys.add(key)
-        onchain_rows.append((key, payload))
+        # Decode all candidates first — DON'T dedupe yet. Some markets
+        # (notably fragSOL-10JUL25, ALP-20OCT25, JLP-28OCT25, USX-23JAN25)
+        # have multiple MarketThree accounts on-chain because Exponent
+        # re-deployed the market with a fresh PT mint mid-flight. The old
+        # account lingers with a stale PT mint that has near-zero supply,
+        # while the new account holds the actually-traded PT mint. Picking
+        # the wrong one strands the SY-supply as "unsplit" at the protocol
+        # level (the wrong PT mint shows zero PT/YT, so tvl_daily attributes
+        # nothing to the market).
+        candidates: dict[str, list[tuple[str, dict]]] = defaultdict(list)
+        for acct in onchain_raw:
+            pubkey = acct["pubkey"]
+            data_field = acct["account"]["data"]
+            data_b64 = data_field[0] if isinstance(data_field, list) else data_field
+            row = onchain_account_to_row(pubkey, data_b64, ticker_by_sy)
+            if row is None:
+                continue
+            key, payload = row
+            candidates[key].append((pubkey, payload))
+
+        onchain_rows: list[tuple[str, dict]] = []
+        for key, entries in candidates.items():
+            if len(entries) == 1:
+                onchain_rows.append((key, entries[0][1]))
+                continue
+            # Same PT mint across all entries → arbitrary pick is fine.
+            distinct_pt = {p["ptMint"] for _, p in entries}
+            if len(distinct_pt) == 1:
+                onchain_rows.append((key, entries[0][1]))
+                continue
+            # Different PT mints → query Metaplex to find the canonical one.
+            # The live PT mint is named "Exponent PT-<ticker>-<DDMonYY>";
+            # legacy/migration mints use other naming (e.g. lowercase "PT-fragSol-…").
+            names: dict[str, str] = {}
+            for pt in distinct_pt:
+                asset = await client.get_asset(pt)
+                names[pt] = ((asset or {}).get("content", {}).get("metadata", {}) or {}).get("name", "") or ""
+            winner = next(
+                (e for e in entries if names.get(e[1]["ptMint"], "").startswith("Exponent PT-")),
+                None,
+            )
+            if winner is None:
+                # No Metaplex-canonical name — fall back to largest account
+                # (richer fields, more likely the active variant).
+                winner = max(entries, key=lambda e: e[1].get("rawSize", 0))
+            rprint(
+                f"  [yellow]disambiguated[/yellow] {key}: "
+                f"{len(entries)} candidates → kept {winner[0][:10]}… "
+                f"(pt_mint name: {names.get(winner[1]['ptMint'], '?')!r})"
+            )
+            onchain_rows.append((key, winner[1]))
 
     rprint(f"  parsed {len(onchain_rows)} unique market_keys on-chain")
 
