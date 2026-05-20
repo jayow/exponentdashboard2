@@ -1,7 +1,7 @@
 'use client';
 import { useEffect, useMemo, useState } from 'react';
 import {
-  BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine, TooltipProps,
+  BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine, TooltipProps, Brush,
 } from 'recharts';
 import { colorForPlatform, colorForMarket, platformOfTicker } from '@/lib/colors';
 
@@ -133,16 +133,33 @@ export function BigChart() {
 
   const effectiveView = metric === 'breakdown' ? 'protocol' : view;
   const dates = metric === 'volume' ? vol?.dates : tvl?.dates;
-  const start = dates ? rangeStart(dates, range) : 0;
+  // Brush zoom — stores the selected date strings so the selection survives
+  // stride changes when granularity shifts under it. Null = no zoom.
+  const [brushWindow, setBrushWindow] = useState<{ start: string; end: string } | null>(null);
+  // Reset zoom whenever the coarse range button changes.
+  useEffect(() => { setBrushWindow(null); }, [range]);
+
+  const rangeStartIdx = dates ? rangeStart(dates, range) : 0;
+  const rangeEndIdx = dates ? dates.length - 1 : 0;
+  // Effective window: brush zoom narrows within the range, otherwise full range.
+  const start = brushWindow && dates
+    ? Math.max(rangeStartIdx, dates.findIndex(d => d >= brushWindow.start))
+    : rangeStartIdx;
+  const end = brushWindow && dates
+    ? (() => {
+        const i = dates.findIndex(d => d > brushWindow.end);
+        return Math.min(rangeEndIdx, i === -1 ? rangeEndIdx : i - 1);
+      })()
+    : rangeEndIdx;
   // Downsample for long ranges — render at most ~120 points per series.
-  // The user can't see daily granularity at 1000px wide anyway, and going
-  // from 571 daily to ~80 weekly points 7×s the render speed.
+  // Zooming via brush narrows the visible window and (when small enough) brings
+  // daily granularity back.
   const stride = useMemo(() => {
     if (!dates) return 1;
-    const visible = dates.length - start;
+    const visible = end - start + 1;
     if (visible <= 120) return 1;
     return Math.ceil(visible / 120);
-  }, [dates, start]);
+  }, [dates, start, end]);
 
   const { allKeys, data, colorMap, isFlat, breakdownLike } = useMemo(() => {
     type Result = {
@@ -154,8 +171,8 @@ export function BigChart() {
     // Strided iteration: take every Nth index in the visible window. Picks
     // indices 0, stride, 2·stride, … so the last point is always included.
     const indices: number[] = [];
-    for (let i = start; i < dates.length; i += stride) indices.push(i);
-    if (indices[indices.length - 1] !== dates.length - 1) indices.push(dates.length - 1);
+    for (let i = start; i <= end; i += stride) indices.push(i);
+    if (indices[indices.length - 1] !== end) indices.push(end);
     const sliced = indices.map(i => dates[i]);
     // Build a value lookup that takes the AVERAGE across each stride window,
     // so downsampled bars represent the visible week (not a single day).
@@ -213,12 +230,13 @@ export function BigChart() {
       type Entry = { k: string; sortVal: number; maxInRange: number; sampled: number[] };
       const entries: Entry[] = Object.entries(seriesByKey).map(([k, s]) => {
         let mx = 0, sum = 0;
-        for (let i = start; i < s.length; i++) {
+        const last = Math.min(end, s.length - 1);
+        for (let i = start; i <= last; i++) {
           const v = s[i] || 0;
           if (v > mx) mx = v;
           sum += v;
         }
-        const latest = s[s.length - 1] || 0;
+        const latest = s[last] || 0;
         const sortVal = sortBy === 'latest' ? latest : sortBy === 'sum' ? sum : mx;
         return { k, sortVal, maxInRange: mx, sampled: sampleSeries(s) };
       }).filter(e => e.sortVal > 0).sort((a, b) => b.sortVal - a.sortVal);
@@ -331,7 +349,7 @@ export function BigChart() {
     }
 
     return empty;
-  }, [tvl, vol, metric, effectiveView, range, start, stride, dates, breakdownScope]);
+  }, [tvl, vol, metric, effectiveView, range, start, end, stride, dates, breakdownScope]);
 
   // Default: show everything. User can toggle off individual series in
   // the legend (Hide All / per-chip click).
@@ -442,6 +460,27 @@ export function BigChart() {
               stroke="#fbbf24" strokeDasharray="3 3" strokeOpacity={0.55}
               label={{ value: t.platform, position: 'top', fill: '#fbbf24', fontSize: 10, opacity: 0.85 }} />
           ))}
+          {/* Date brush — zoom into a sub-range to bring daily granularity back.
+              Shown only when the coarse range covers >120 days. */}
+          {(range === '1y' || range === 'all') && data.length > 2 && (
+            <Brush
+              dataKey="date"
+              height={22}
+              travellerWidth={8}
+              stroke="#666"
+              fill="rgba(255,255,255,0.04)"
+              tickFormatter={fmtMonth}
+              onChange={(r) => {
+                const s = r?.startIndex ?? 0;
+                const e = r?.endIndex ?? data.length - 1;
+                if (s === 0 && e === data.length - 1) {
+                  setBrushWindow(null);
+                } else {
+                  setBrushWindow({ start: data[s].date, end: data[e].date });
+                }
+              }}
+            />
+          )}
         </BarChart>
       </ResponsiveContainer>
 
