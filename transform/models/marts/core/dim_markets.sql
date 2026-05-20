@@ -19,5 +19,6 @@ select
     maturity_ts,
     maturity_date,
     status,
-    interface_type
+    interface_type,
+    is_test
 from {{ ref('stg_markets') }}

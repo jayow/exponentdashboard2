@@ -62,7 +62,10 @@ _TICKER_TO_PLATFORM = {
     "USDC+": "Perena", "mUSDC": "Perena", "kUSDC": "Perena",
     "USD*": "Perena",
     "MLP": "MarginFi", "ALP": "Asgard",
-    "syUSDC": "Solend",
+    # syUSDC / syrupUSDC = Maple Finance's Syrup USDC (NOT Solend — early
+    # 'syUSDC' was Exponent's short form for syrupUSDC; underlying mint
+    # tzqPfHkN… is labeled "Exponent Wrapped syrupUSDC" in Metaplex).
+    "syUSDC": "Maple", "syrupUSDC": "Maple",
 }
 
 
@@ -282,6 +285,13 @@ def build_tvl_json(con: duckdb.DuckDBPyConnection) -> dict:
                t.principal_pt_usd, t.farm_yt_usd
         FROM main_analytics.tvl_daily t
     """).fetchall()
+    # Test markets — propagate dim_markets.is_test so the web can label
+    # known on-chain-but-never-productized markets explicitly.
+    test_markets = {
+        mk for (mk,) in con.execute(
+            "SELECT market_key FROM main_core.dim_markets WHERE is_test"
+        ).fetchall()
+    }
     # LP USD per (market, date) — keyed for fast lookup in per-market breakdown
     lp_per_market = {(r[0], r[1]): float(r[2] or 0) for r in con.execute("""
         SELECT market_key, date::VARCHAR, SUM(usd_value)
@@ -342,6 +352,7 @@ def build_tvl_json(con: duckdb.DuckDBPyConnection) -> dict:
         by_market_out[mk] = {
             "ticker": e["ticker"],
             "platform": e["platform"],
+            "isTest": mk in test_markets,
             "tvlUsd": usd,
             "tvlUnderlying": und,
             "principalUsd": principal,

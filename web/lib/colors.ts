@@ -23,7 +23,7 @@ export const PLATFORM_BASE: Record<string, string> = {
   Ore:        '#e879f9',  // fuchsia
   Ethena:     '#fb7185',  // rose-400
   Perena:     '#60a5fa',  // blue-400
-  Solend:     '#fcd34d',  // amber-300
+  Maple:      '#fcd34d',  // amber-300 — syrupUSDC / syUSDC
   MarginFi:   '#c084fc',  // purple-400
   Asgard:     '#86efac',  // green-300
   Other:      '#9ca3af',  // gray-400
@@ -53,7 +53,9 @@ const TICKER_TO_PLATFORM: Record<string, string> = {
   'USDC+': 'Perena', mUSDC: 'Perena', kUSDC: 'Perena',
   'USD*': 'Perena',
   MLP: 'MarginFi', ALP: 'Asgard',
-  syUSDC: 'Solend',
+  // Maple Finance's Syrup USDC — Exponent's old "syUSDC" markets and the
+  // current "syrupUSDC" both wrap Maple's Syrup deposit receipt.
+  syUSDC: 'Maple', syrupUSDC: 'Maple',
 };
 
 export function platformOfTicker(ticker: string | null | undefined): string {

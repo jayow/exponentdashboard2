@@ -8,6 +8,7 @@ type ApData = { byTicker: Record<string, ApTicker>; meta: { tickers: { ticker: s
 type TvlByMarket = Record<string, {
   ticker: string; tvlUsd: number[]; principalUsd?: number[];
   ptUsd?: number[]; ytUsd?: number[]; lpUsd?: number[]; idleUsd?: number[];
+  isTest?: boolean;
 }>;
 type TvlData = { byMarket: TvlByMarket };
 
@@ -61,7 +62,7 @@ export function MarketsList() {
   const rows = useMemo(() => {
     if (!tvl || !ap) return [];
     const todayMs = Date.now();
-    const out: { marketKey: string; ticker: string; tvlUsd: number; oiUsd: number; lpUsd: number; idleUsd: number; pt: number; holders: number; isActive: boolean }[] = [];
+    const out: { marketKey: string; ticker: string; tvlUsd: number; oiUsd: number; lpUsd: number; idleUsd: number; pt: number; holders: number; isActive: boolean; isTest: boolean }[] = [];
     for (const [mk, m] of Object.entries(tvl.byMarket)) {
       const ticker = m.ticker;
       const last = (arr?: number[]) => (arr && arr.length ? arr[arr.length - 1] || 0 : 0);
@@ -82,10 +83,11 @@ export function MarketsList() {
       // back to the TVL/supply heuristic so they aren't unconditionally hidden.
       const mat = maturityMs(mk);
       const isActive = mat !== null ? mat >= todayMs : tvlUsd > 1 || pt > 0;
-      out.push({ marketKey: mk, ticker, tvlUsd, oiUsd, lpUsd, idleUsd, pt, holders: h, isActive });
+      out.push({ marketKey: mk, ticker, tvlUsd, oiUsd, lpUsd, idleUsd, pt, holders: h, isActive, isTest: !!m.isTest });
     }
     return out
-      .filter(r => status === 'all' || r.isActive)
+      // Active view hides test markets; All view keeps them with a chip.
+      .filter(r => status === 'all' || (r.isActive && !r.isTest))
       .sort((a, b) => b.tvlUsd - a.tvlUsd);
   }, [tvl, ap, holders, status]);
 
@@ -124,7 +126,14 @@ export function MarketsList() {
             {rows.slice(0, 100).map(r => (
               <tr key={r.marketKey} className="border-b border-white/5 hover:bg-white/5 cursor-pointer"
                   onClick={() => window.location.href = `/market/?key=${r.marketKey}`}>
-                <td className="py-1.5 text-white/85">{r.marketKey}</td>
+                <td className="py-1.5 text-white/85">
+                  {r.marketKey}
+                  {r.isTest && (
+                    <span className="ml-2 text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded border border-amber-400/30 bg-amber-400/10 text-amber-300" title="Test/calibration deployment — never went into production">
+                      test
+                    </span>
+                  )}
+                </td>
                 <td className="py-1.5 text-right tabular-nums text-emerald-400/80">{fmtUsd(r.tvlUsd)}</td>
                 <td className="py-1.5 text-right tabular-nums text-amber-300/80">{r.oiUsd > 0 ? fmtUsd(r.oiUsd) : '–'}</td>
                 <td className="py-1.5 text-right tabular-nums text-white/70">{r.lpUsd > 0 ? fmtUsd(r.lpUsd) : '–'}</td>

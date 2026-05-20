@@ -76,6 +76,22 @@ resolved_onchain as (
         cast(current_timestamp as timestamp)                   as fetched_at
     from {{ ref('stg_resolved_markets') }} r
 ),
+-- Suppress pt_yt_derived rows whose pt_mint is already covered by a
+-- higher-priority source under a DIFFERENT market_key. Otherwise we get
+-- ticker-renaming duplicates: the same on-chain market_three account
+-- surfaces once with the canonical ticker (e.g. syrupUSDC-25SEP25 via
+-- on-chain SY-mint Metaplex) and again with the legacy PT-mint Metaplex
+-- ticker (syUSDC-25SEP25). Similar pairs: hyloSOL+ vs hySOL+,
+-- wfragBTC vs fragBTC, MLP (USDC-USDT) vs MLP.
+pt_yt_derived_filtered as (
+    select * from pt_yt_derived
+    where pt_mint is null
+       or pt_mint not in (
+            select pt_mint from api              where pt_mint is not null
+            union
+            select pt_mint from resolved_onchain where pt_mint is not null
+       )
+),
 -- Coalesce across the 3 layers: api > resolved_onchain > pt_yt_derived.
 -- For each market_key, take the FIRST non-null value of each column from
 -- the highest-priority layer that has it. This way an api active market
@@ -86,7 +102,7 @@ all_layers as (
     union all
     select 2 as priority, * from resolved_onchain
     union all
-    select 3 as priority, * from pt_yt_derived
+    select 3 as priority, * from pt_yt_derived_filtered
 ),
 final as (
     select
@@ -119,5 +135,15 @@ select
     amm_pool, clmm_orderbook, pool,
     underlying_mint, ticker, underlying_decimals, platform,
     maturity_ts, maturity_date, status, interface_type,
+    -- Test/calibration markets — deployed on-chain but never went into real
+    -- production. Identified manually (low activity / parallel-to-canonical
+    -- maturity). Surfaced as a separate flag so downstream views can
+    -- filter them out without misclassifying them as expired or hidden.
+    market_key in (
+        'USX-10JUN26',   -- 35 swaps, $8 total, all in 3-day Jan 2026 window;
+                         -- canonical USX June market is USX-01JUN26 ($56M TVL)
+        'eUSX-10JUN26'   -- 45 swaps, $8 total, same window;
+                         -- canonical is eUSX-01JUN26 ($5.5M TVL)
+    ) as is_test,
     fetched_at
 from final
