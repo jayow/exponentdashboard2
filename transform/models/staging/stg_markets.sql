@@ -46,7 +46,8 @@ pt_yt_derived as (
         cast(null as varchar)                                  as platform,
         cast(null as bigint)                                   as maturity_ts,
         maturity_date,
-        'expired'                                              as status,
+        case when maturity_date >= current_date
+             then 'active' else 'expired' end                  as status,
         cast(null as varchar)                                  as interface_type,
         cast(current_timestamp as timestamp)                   as fetched_at
     from {{ ref('stg_pt_yt_markets') }}
@@ -69,7 +70,8 @@ resolved_onchain as (
         cast(null as varchar)                                  as platform,
         r.maturity_ts                                          as maturity_ts,
         r.maturity_date                                        as maturity_date,
-        'expired'                                              as status,
+        case when r.maturity_date >= current_date
+             then 'active' else 'expired' end                  as status,
         cast(null as varchar)                                  as interface_type,
         cast(current_timestamp as timestamp)                   as fetched_at
     from {{ ref('stg_resolved_markets') }} r
