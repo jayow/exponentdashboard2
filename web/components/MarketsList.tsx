@@ -55,13 +55,16 @@ export function MarketsList() {
   const rows = useMemo(() => {
     if (!tvl || !ap) return [];
     const todayMs = Date.now();
-    const out: { marketKey: string; ticker: string; tvlUsd: number; pt: number; yt: number; lp: number; holders: number; isActive: boolean }[] = [];
+    const out: { marketKey: string; ticker: string; tvlUsd: number; oiUsd: number; pt: number; lp: number; holders: number; isActive: boolean }[] = [];
     for (const [mk, m] of Object.entries(tvl.byMarket)) {
       const ticker = m.ticker;
       const tvlUsd = m.tvlUsd[m.tvlUsd.length - 1] || 0;
+      // OI = principal_tvl_usd = PT_supply × underlying_USD. Active notional
+      // committed to PT (Exponent's totalMarketSize). PT and YT supply are
+      // identical by Pendle construction, so we drop the YT column.
+      const oiUsd = m.principalUsd ? (m.principalUsd[m.principalUsd.length - 1] || 0) : 0;
       const t = ap.byTicker[ticker];
       const pt = t?.legs.PT?.byMarket?.[mk]?.slice(-1)[0] || 0;
-      const yt = t?.legs.YT?.byMarket?.[mk]?.slice(-1)[0] || 0;
       const lp = t?.legs.LP?.byMarket?.[mk]?.slice(-1)[0] || 0;
       const h = holders?.byMarketLeg?.[`${mk}:PT`]?.holders || 0;
       // Active = trailing DDMonYY in the market_key is on or after today.
@@ -69,7 +72,7 @@ export function MarketsList() {
       // back to the TVL/supply heuristic so they aren't unconditionally hidden.
       const mat = maturityMs(mk);
       const isActive = mat !== null ? mat >= todayMs : tvlUsd > 1 || pt > 0;
-      out.push({ marketKey: mk, ticker, tvlUsd, pt, yt, lp, holders: h, isActive });
+      out.push({ marketKey: mk, ticker, tvlUsd, oiUsd, pt, lp, holders: h, isActive });
     }
     return out
       .filter(r => status === 'all' || r.isActive)
@@ -101,8 +104,8 @@ export function MarketsList() {
             <tr>
               <th className="text-left py-2 font-normal">Market</th>
               <th className="text-right py-2 font-normal">TVL</th>
-              <th className="text-right py-2 font-normal">PT supply</th>
-              <th className="text-right py-2 font-normal">YT supply</th>
+              <th className="text-right py-2 font-normal" title="Principal × underlying USD — active notional committed to PT (Exponent totalMarketSize)">OI</th>
+              <th className="text-right py-2 font-normal">PT / YT supply</th>
               <th className="text-right py-2 font-normal">LP supply</th>
               <th className="text-right py-2 font-normal">Holders</th>
             </tr>
@@ -113,8 +116,8 @@ export function MarketsList() {
                   onClick={() => window.location.href = `/market/?key=${r.marketKey}`}>
                 <td className="py-1.5 text-white/85">{r.marketKey}</td>
                 <td className="py-1.5 text-right tabular-nums text-emerald-400/80">{fmtUsd(r.tvlUsd)}</td>
+                <td className="py-1.5 text-right tabular-nums text-amber-300/80">{r.oiUsd > 0 ? fmtUsd(r.oiUsd) : '–'}</td>
                 <td className="py-1.5 text-right tabular-nums text-white/70">{fmtCount(r.pt, r.ticker)}</td>
-                <td className="py-1.5 text-right tabular-nums text-white/70">{fmtCount(r.yt, r.ticker)}</td>
                 <td className="py-1.5 text-right tabular-nums text-white/70">{r.lp > 0 ? fmtCount(r.lp, r.ticker) : '–'}</td>
                 <td className="py-1.5 text-right tabular-nums text-white/60">{r.holders || '–'}</td>
               </tr>
