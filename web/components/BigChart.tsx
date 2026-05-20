@@ -72,16 +72,24 @@ function maturityMs(marketKey: string): number | null {
 }
 
 const TOOLTIP_CAP = 15;  // show top N entries; sum the rest into a single row
+// Series whose values are overlays (lines on a separate axis), not stacked
+// bar contributions. They get displayed in the tooltip but EXCLUDED from the
+// per-day total at the bottom — otherwise e.g. a $500M cumulative line would
+// be summed into a $100K daily bar total.
+const OVERLAY_SERIES = new Set(['Cumulative']);
 function SortedTooltip({ active, payload, label }: TooltipProps<number, string>) {
   if (!active || !payload?.length) return null;
-  const allEntries = payload
+  const mapped = payload
     .map(p => ({ name: String(p.name ?? p.dataKey ?? ''), value: typeof p.value === 'number' ? p.value : 0, color: p.color || (p as any).fill || '#888' }))
-    .filter(e => Math.abs(e.value) > 0.01)
+    .filter(e => Math.abs(e.value) > 0.01);
+  if (!mapped.length) return null;
+  const overlays = mapped.filter(e => OVERLAY_SERIES.has(e.name));
+  const stacked = mapped
+    .filter(e => !OVERLAY_SERIES.has(e.name))
     .sort((a, b) => Math.abs(b.value) - Math.abs(a.value));
-  if (!allEntries.length) return null;
-  const total = allEntries.reduce((s, e) => s + e.value, 0);
-  const top = allEntries.slice(0, TOOLTIP_CAP);
-  const tail = allEntries.slice(TOOLTIP_CAP);
+  const total = stacked.reduce((s, e) => s + e.value, 0);
+  const top = stacked.slice(0, TOOLTIP_CAP);
+  const tail = stacked.slice(TOOLTIP_CAP);
   const tailSum = tail.reduce((s, e) => s + e.value, 0);
   return (
     <div className="bg-[#0a0a0a]/95 backdrop-blur border border-white/15 rounded-lg p-2 text-xs shadow-xl min-w-[220px]">
@@ -95,7 +103,7 @@ function SortedTooltip({ active, payload, label }: TooltipProps<number, string>)
             </span>
             <span className="tabular-nums text-white shrink-0">
               {fmtUsd(e.value)}
-              {allEntries.length > 1 && total !== 0 && <span className="text-white/40 ml-1.5">({((e.value/total)*100).toFixed(0)}%)</span>}
+              {stacked.length > 1 && total !== 0 && <span className="text-white/40 ml-1.5">({((e.value/total)*100).toFixed(0)}%)</span>}
             </span>
           </div>
         ))}
@@ -106,12 +114,21 @@ function SortedTooltip({ active, payload, label }: TooltipProps<number, string>)
           </div>
         )}
       </div>
-      {allEntries.length > 1 && (
+      {stacked.length > 1 && (
         <div className="flex justify-between mt-1.5 pt-1.5 border-t border-white/10">
           <span className="text-white/40">Total</span>
           <span className="tabular-nums text-white/90 font-medium">{fmtUsd(total)}</span>
         </div>
       )}
+      {overlays.map(e => (
+        <div key={e.name} className="flex justify-between mt-1 pt-1 border-t border-white/10">
+          <span className="flex items-center gap-1.5 text-white/50">
+            <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: e.color }} />
+            {e.name}
+          </span>
+          <span className="tabular-nums text-white/70">{fmtUsd(e.value)}</span>
+        </div>
+      ))}
     </div>
   );
 }
