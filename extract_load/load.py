@@ -69,18 +69,31 @@ RAW_DDL = {
         )
     """,
     "raw_positions": """
-        -- YieldTokenPosition (YT) and LpPosition (LP) custom Anchor accounts.
-        -- Each row = one on-chain position account: owner is the actual user
-        -- wallet (stored at offset 8 of the account), vault links to a market
-        -- (matches dim_markets.vault).
+        -- YT / LP Anchor positions. leg ∈ {'YT', 'LP', 'LP_CLMM'}:
+        --   YT       — YieldTokenPosition, core program. vault = SY vault.
+        --   LP       — LpPosition, core AMM. vault = MarketTwo (amm_pool).
+        --   LP_CLMM  — LpPosition, CLMM program. vault = CLMM market account
+        --              (different struct, longer; balance at offset 104).
+        -- Owner is always the user wallet at offset 8.
         CREATE TABLE IF NOT EXISTS raw_positions (
             snapshot_date    DATE NOT NULL,
-            leg              VARCHAR NOT NULL,  -- 'YT' or 'LP'
+            leg              VARCHAR NOT NULL,
             position_account VARCHAR NOT NULL,
             owner            VARCHAR NOT NULL,
             vault            VARCHAR NOT NULL,
             amount_raw       UBIGINT,
             PRIMARY KEY (snapshot_date, position_account)
+        )
+    """,
+    "raw_clmm_markets": """
+        -- CLMM market accounts (disc f2f01a0f94bab9cd) under EXPONENT_CLMM_PROGRAM.
+        -- Maps each clmm_market account to its pt_mint, so int_holders_current
+        -- can resolve CLMM LP positions back to a market_key via dim_markets.
+        CREATE TABLE IF NOT EXISTS raw_clmm_markets (
+            snapshot_date DATE NOT NULL,
+            clmm_market   VARCHAR NOT NULL,
+            pt_mint       VARCHAR NOT NULL,
+            PRIMARY KEY (snapshot_date, clmm_market)
         )
     """,
     "raw_tvl_snapshots": """

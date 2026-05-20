@@ -48,18 +48,63 @@ positions_latest as (
     from {{ source('raw', 'raw_positions') }} p, latest_snap ls
     where p.snapshot_date = ls.d and p.amount_raw > 0
 ),
-yt_lp_holders as (
+-- YT positions reference the SY vault (m.vault) at offset 40, while LP
+-- positions reference the MarketTwo account (m.amm_pool) at the same
+-- offset — different field meaning, same byte layout. Join each leg via
+-- its own field.
+yt_holders_anchor as (
     select
-        case when p.leg = 'YT' then m.yt_mint else m.lp_mint end as mint,
+        m.yt_mint as mint,
         p.owner,
         sum(p.amount_raw / power(10.0, coalesce(m.underlying_decimals, 6))) as amount
     from positions_latest p
     join {{ ref('dim_markets') }} m on m.vault = p.vault
-    where
-        (p.leg = 'YT' and m.yt_mint is not null)
-        or (p.leg = 'LP' and m.lp_mint is not null)
+    where p.leg = 'YT' and m.yt_mint is not null
     group by 1, 2
     having sum(p.amount_raw) > 0
+),
+lp_holders_anchor as (
+    select
+        m.lp_mint as mint,
+        p.owner,
+        sum(p.amount_raw / power(10.0, coalesce(m.underlying_decimals, 6))) as amount
+    from positions_latest p
+    join {{ ref('dim_markets') }} m on m.amm_pool = p.vault
+    where p.leg = 'LP' and m.lp_mint is not null
+    group by 1, 2
+    having sum(p.amount_raw) > 0
+),
+-- CLMM LpPositions: vault field is the CLMM market account (not amm_pool).
+-- Resolve clmm_market → pt_mint via raw_clmm_markets, then pt_mint → market
+-- via dim_markets. CLMM markets are a different program from the AMM but
+-- track per-user LP positions with the same Anchor discriminator (longer
+-- struct; balance at offset 104).
+latest_clmm_snap as (
+    select max(snapshot_date) as d from {{ source('raw', 'raw_clmm_markets') }}
+),
+clmm_market_pt as (
+    select clmm_market, pt_mint
+    from {{ source('raw', 'raw_clmm_markets') }} c, latest_clmm_snap ls
+    where c.snapshot_date = ls.d
+),
+lp_holders_clmm as (
+    select
+        m.lp_mint as mint,
+        p.owner,
+        sum(p.amount_raw / power(10.0, coalesce(m.underlying_decimals, 6))) as amount
+    from positions_latest p
+    join clmm_market_pt cm   on cm.clmm_market = p.vault
+    join {{ ref('dim_markets') }} m on m.pt_mint = cm.pt_mint
+    where p.leg = 'LP_CLMM' and m.lp_mint is not null
+    group by 1, 2
+    having sum(p.amount_raw) > 0
+),
+yt_lp_holders as (
+    select mint, owner, amount from yt_holders_anchor
+    union all
+    select mint, owner, amount from lp_holders_anchor
+    union all
+    select mint, owner, amount from lp_holders_clmm
 )
 
 -- ─── Union ─────────────────────────────────────────────────────────────

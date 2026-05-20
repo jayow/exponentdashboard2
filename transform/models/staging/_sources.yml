@@ -41,7 +41,7 @@ sources:
         description: Daily holder snapshots per PT/YT/LP mint.
 
       - name: raw_positions
-        description: YieldTokenPosition + LpPosition Anchor accounts (per user, per market). Owner field at offset 8 is the user wallet; vault field links to dim_markets.vault.
+        description: YT / LP / LP_CLMM Anchor positions. Owner = user wallet at offset 8. vault depends on leg — see load.py for layout.
         columns:
           - name: snapshot_date
             tests: [not_null]
@@ -49,8 +49,16 @@ sources:
             tests:
               - not_null
               - accepted_values:
-                  values: ['YT', 'LP']
+                  values: ['YT', 'LP', 'LP_CLMM']
           - name: position_account
+            tests: [not_null]
+
+      - name: raw_clmm_markets
+        description: CLMM market accounts (disc f2f01a0f94bab9cd) → pt_mint mapping.
+        columns:
+          - name: snapshot_date
+            tests: [not_null]
+          - name: clmm_market
             tests: [not_null]
 
       - name: raw_tvl_snapshots
