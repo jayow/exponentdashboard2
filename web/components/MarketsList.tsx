@@ -26,6 +26,20 @@ function fmtCount(n: number, ticker: string) {
   return `${n.toFixed(0)} ${ticker}`;
 }
 
+const MONTH_ABBR_TO_NUM: Record<string, number> = {
+  JAN: 0, FEB: 1, MAR: 2, APR: 3, MAY: 4, JUN: 5,
+  JUL: 6, AUG: 7, SEP: 8, OCT: 9, NOV: 10, DEC: 11,
+};
+// Parse the trailing DDMonYY in a market_key (e.g. 'fragSOL-15DEC26').
+// Returns null for keys without a parseable date suffix.
+function maturityMs(marketKey: string): number | null {
+  const m = marketKey.match(/-(\d{2})([A-Z]{3})(\d{2})$/);
+  if (!m) return null;
+  const month = MONTH_ABBR_TO_NUM[m[2]];
+  if (month === undefined) return null;
+  return Date.UTC(2000 + Number(m[3]), month, Number(m[1]));
+}
+
 export function MarketsList() {
   const [tvl, setTvl] = useState<TvlData | null>(null);
   const [ap, setAp] = useState<ApData | null>(null);
@@ -40,6 +54,7 @@ export function MarketsList() {
 
   const rows = useMemo(() => {
     if (!tvl || !ap) return [];
+    const todayMs = Date.now();
     const out: { marketKey: string; ticker: string; tvlUsd: number; pt: number; yt: number; lp: number; holders: number; isActive: boolean }[] = [];
     for (const [mk, m] of Object.entries(tvl.byMarket)) {
       const ticker = m.ticker;
@@ -49,9 +64,11 @@ export function MarketsList() {
       const yt = t?.legs.YT?.byMarket?.[mk]?.slice(-1)[0] || 0;
       const lp = t?.legs.LP?.byMarket?.[mk]?.slice(-1)[0] || 0;
       const h = holders?.byMarketLeg?.[`${mk}:PT`]?.holders || 0;
-      // Active = market_key date suffix is in the future (rough heuristic)
-      const suffix = mk.split('-').slice(-1)[0]; // DDMonYY
-      const isActive = tvlUsd > 1 || pt > 0;
+      // Active = trailing DDMonYY in the market_key is on or after today.
+      // Keys without a parseable suffix (UNCLASSIFIED, UNKNOWN, etc.) fall
+      // back to the TVL/supply heuristic so they aren't unconditionally hidden.
+      const mat = maturityMs(mk);
+      const isActive = mat !== null ? mat >= todayMs : tvlUsd > 1 || pt > 0;
       out.push({ marketKey: mk, ticker, tvlUsd, pt, yt, lp, holders: h, isActive });
     }
     return out
