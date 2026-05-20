@@ -59,13 +59,17 @@ _TICKER_TO_PLATFORM = {
     "CRT": "Carrot",
     "stORE": "Ore",
     "USDe": "Ethena", "sUSDe": "Ethena",
-    "USDC+": "Perena", "mUSDC": "Perena", "kUSDC": "Perena",
     "USD*": "Perena",
-    "MLP": "MarginFi", "ALP": "Asgard",
+    "MLP": "MarginFi", "ALP": "Adrena",
     # syUSDC / syrupUSDC = Maple Finance's Syrup USDC (NOT Solend — early
     # 'syUSDC' was Exponent's short form for syrupUSDC; underlying mint
     # tzqPfHkN… is labeled "Exponent Wrapped syrupUSDC" in Metaplex).
     "syUSDC": "Maple", "syrupUSDC": "Maple",
+    # Per-protocol USDC variants — the prefix indicates the issuer.
+    "USDC+":   "Reflect",   # Reflect Protocol's stablecoin vault
+    "mUSDC":   "Marinade",  # Marinade's USDC product
+    "kUSDC":   "Kyros",     # Kyros's USDC vault
+    "wkySOL":  "Kyros",     # wrapped kySOL
 }
 
 
