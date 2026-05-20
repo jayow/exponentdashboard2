@@ -11,20 +11,17 @@
 {{ config(materialized='view') }}
 
 with yt_holdings as (
-    -- Wallets currently holding YT (latest snapshot, balance > 0)
+    -- Wallets currently holding YT (derived from tx history, always fresh)
     select
         ml.market_key,
         h.owner            as wallet,
         h.amount           as yt_balance
-    from {{ source('raw', 'raw_holders') }} h
+    from {{ ref('int_holders_current') }} h
     join (
         select pt_mint as mint, market_key, 'PT' leg from {{ ref('dim_markets') }} where pt_mint is not null
         union all select yt_mint, market_key, 'YT' from {{ ref('dim_markets') }} where yt_mint is not null
     ) ml on ml.mint = h.mint
     where ml.leg = 'YT' and h.amount > 0.000001
-      and h.snapshot_date = (
-        select max(snapshot_date) from {{ source('raw', 'raw_holders') }} h2 where h2.mint = h.mint
-      )
 ),
 claims as (
     -- Wallets that have ever fired a claimYield for a given market

@@ -17,7 +17,7 @@ with mint_legs as (
 ),
 latest_snap as (
     select mint, max(snapshot_date) as snapshot_date
-    from {{ source('raw', 'raw_holders') }}
+    from {{ ref('int_holders_current') }}
     group by mint
 ),
 ranked as (
@@ -30,7 +30,7 @@ ranked as (
         h.amount,
         sum(h.amount) over (partition by h.mint)                          as total_supply,
         row_number() over (partition by h.mint order by h.amount desc)    as rk
-    from {{ source('raw', 'raw_holders') }} h
+    from {{ ref('int_holders_current') }} h
     join latest_snap ls on ls.mint = h.mint and ls.snapshot_date = h.snapshot_date
     join mint_legs ml on ml.mint = h.mint
     where h.amount > 0
