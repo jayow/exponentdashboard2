@@ -11,7 +11,10 @@ type TvlByMarket = Record<string, {
 }>;
 type TvlData = { byMarket: TvlByMarket };
 
-type Holders = { byMarketLeg: Record<string, { holders: number }> };
+type Holders = {
+  byMarketLeg: Record<string, { holders: number }>;
+  holdersByMarket?: Record<string, number>;
+};
 
 type StatusFilter = 'active' | 'all';
 
@@ -71,7 +74,9 @@ export function MarketsList() {
       const idleUsd = last(m.idleUsd);
       const t = ap.byTicker[ticker];
       const pt = t?.legs.PT?.byMarket?.[mk]?.slice(-1)[0] || 0;
-      const h = holders?.byMarketLeg?.[`${mk}:PT`]?.holders || 0;
+      // Unique holders across PT + YT + LP for this market — a wallet
+      // holding multiple legs counts once.
+      const h = holders?.holdersByMarket?.[mk] ?? holders?.byMarketLeg?.[`${mk}:PT`]?.holders ?? 0;
       // Active = trailing DDMonYY in the market_key is on or after today.
       // Keys without a parseable suffix (UNCLASSIFIED, UNKNOWN, etc.) fall
       // back to the TVL/supply heuristic so they aren't unconditionally hidden.
@@ -112,7 +117,7 @@ export function MarketsList() {
               <th className="text-right py-2 font-normal" title="Principal × underlying USD — active notional committed to PT (Exponent totalMarketSize). Equivalent to PT/YT supply in USD terms.">OI</th>
               <th className="text-right py-2 font-normal" title="LP value in USD (liquidity provider deposits)">LP</th>
               <th className="text-right py-2 font-normal" title="Idle SY — TVL not currently split into PT/YT or in LP">Idle</th>
-              <th className="text-right py-2 font-normal">PT holders</th>
+              <th className="text-right py-2 font-normal" title="Unique wallets holding PT, YT, or LP — a wallet across multiple legs counts once">Holders</th>
             </tr>
           </thead>
           <tbody>

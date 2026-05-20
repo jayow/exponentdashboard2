@@ -1021,9 +1021,25 @@ def build_market_holders_json(con: duckdb.DuckDBPyConnection) -> dict:
     """).fetchall())
     for k, v in out.items():
         v["holders"] = int(counts.get(k, v["holders"]))
+    # Per-market unique holder count — union of PT, YT, LP owners. A wallet
+    # holding multiple legs of the same market counts as ONE market holder.
+    unique_per_market = dict(con.execute("""
+        WITH mint_legs AS (
+            SELECT pt_mint AS mint, market_key FROM main_core.dim_markets WHERE pt_mint IS NOT NULL
+            UNION ALL
+            SELECT yt_mint, market_key FROM main_core.dim_markets WHERE yt_mint IS NOT NULL
+            UNION ALL
+            SELECT lp_mint, market_key FROM main_core.dim_markets WHERE lp_mint IS NOT NULL
+        )
+        SELECT ml.market_key, COUNT(DISTINCT h.owner) AS n
+        FROM main_intermediate.int_holders_current h
+        JOIN mint_legs ml USING (mint)
+        GROUP BY ml.market_key
+    """).fetchall())
     return {
         "meta": {"generatedAt": datetime.now(timezone.utc).isoformat(), "markets": len(out)},
         "byMarketLeg": out,
+        "holdersByMarket": {k: int(v) for k, v in unique_per_market.items()},
     }
 
 
