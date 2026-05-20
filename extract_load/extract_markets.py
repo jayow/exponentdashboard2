@@ -102,6 +102,11 @@ def api_market_to_row(m: dict) -> tuple[str, dict] | None:
         "marketStatus": m.get("marketStatus") or "active",
         "syExchangeRate": m.get("syExchangeRate"),
         "interfaceType": m.get("interfaceType", ""),
+        # AMM pool reserves (raw atom units, divide by decimals for human).
+        # Match Exponent's UI "Liquidity" via legacyLiquidity / 10^decimals × price.
+        "legacyLiquidity": m.get("legacyLiquidity"),
+        # Active TVL — PT_supply × underlying_USD, human units already.
+        "totalMarketSize": m.get("totalMarketSize"),
     }
     return market_key, payload
 
