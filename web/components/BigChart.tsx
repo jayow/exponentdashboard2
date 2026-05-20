@@ -135,15 +135,10 @@ export function BigChart() {
   const dates = metric === 'volume' ? vol?.dates : tvl?.dates;
   const start = dates ? rangeStart(dates, range) : 0;
   const end = dates ? dates.length - 1 : 0;
-  // Downsample only for the "All" range — 30d/90d/1y stay daily so the brush
-  // doesn't need to flip granularity on drag (which used to make the handles
-  // fight the data length).
-  const stride = useMemo(() => {
-    if (!dates) return 1;
-    const visible = end - start + 1;
-    if (visible <= 400) return 1;
-    return Math.ceil(visible / 400);
-  }, [dates, start, end]);
+  // Daily everywhere — modern desktop browsers handle ~570 × 30-series stacks
+  // without trouble, and the long-tail filter + animation-off already keep
+  // Recharts' SVG load reasonable.
+  const stride = 1;
 
   const { allKeys, data, colorMap, isFlat, breakdownLike } = useMemo(() => {
     type Result = {
