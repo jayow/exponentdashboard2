@@ -20,13 +20,23 @@
 {{ config(materialized='table') }}
 
 -- ─── PT branch (regular SPL token) ─────────────────────────────────────
-with pt_holders as (
-    select c.mint, c.owner, sum(c.delta_ui) as amount
-    from {{ ref('stg_token_changes') }} c
-    join {{ ref('dim_markets') }} m on m.pt_mint = c.mint
-    where c.owner is not null
-    group by c.mint, c.owner
-    having sum(c.delta_ui) > 1e-9
+-- Use raw_holders (extract_holders' getProgramAccounts snapshot) — that's
+-- the on-chain truth (matches Solscan). Deriving from stg_token_changes
+-- drifts by a handful of accounts because plain SPL transfers between
+-- user wallets bypass all the addresses we crawl in extract_signatures,
+-- so we see the inflows but not the matching outflows.
+with pt_latest_snap as (
+    select pt_mint as mint, max(snapshot_date) as snapshot_date
+    from {{ source('raw', 'raw_holders') }} h
+    join {{ ref('dim_markets') }} m on m.pt_mint = h.mint
+    group by pt_mint
+),
+pt_holders as (
+    select h.mint, h.owner, sum(h.amount) as amount
+    from {{ source('raw', 'raw_holders') }} h
+    join pt_latest_snap ls on ls.mint = h.mint and ls.snapshot_date = h.snapshot_date
+    where h.amount > 0
+    group by h.mint, h.owner
 ),
 
 -- ─── YT / LP branch ────────────────────────────────────────────────────
