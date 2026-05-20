@@ -6,7 +6,7 @@ type ApTicker = { underlyingMint: string; latest: Record<string, number>; legs: 
 type ApData = { byTicker: Record<string, ApTicker>; meta: { tickers: { ticker: string; marketCount: number }[] } };
 
 type TvlByMarket = Record<string, {
-  ticker: string; tvlUsd: number[];
+  ticker: string; platform: string; tvlUsd: number[];
   ptUsd?: number[]; ytUsd?: number[]; lpUsd?: number[]; idleUsd?: number[];
   isTest?: boolean;
   liquidityUsd?: number;   // matches Exponent UI Liquidity (SDK formula on-chain)
@@ -49,7 +49,7 @@ function maturityMs(marketKey: string): number | null {
 }
 
 type SortKey =
-  | 'marketKey' | 'tvlUsd' | 'ptUsd' | 'ytUsd' | 'lpUsd' | 'idleUsd'
+  | 'marketKey' | 'platform' | 'tvlUsd' | 'ptUsd' | 'ytUsd' | 'lpUsd' | 'idleUsd'
   | 'liquidityUsd' | 'holders';
 
 export function MarketsList() {
@@ -74,9 +74,10 @@ export function MarketsList() {
     // server-side `maturity_date >= current_date` logic in stg_markets.
     const now = new Date();
     const todayMs = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
-    const out: { marketKey: string; ticker: string; tvlUsd: number; ptUsd: number; ytUsd: number; lpUsd: number; idleUsd: number; liquidityUsd: number; ptSupply: number; holders: number; isActive: boolean; isTest: boolean }[] = [];
+    const out: { marketKey: string; ticker: string; platform: string; tvlUsd: number; ptUsd: number; ytUsd: number; lpUsd: number; idleUsd: number; liquidityUsd: number; ptSupply: number; holders: number; isActive: boolean; isTest: boolean }[] = [];
     for (const [mk, m] of Object.entries(tvl.byMarket)) {
       const ticker = m.ticker;
+      const platform = m.platform || 'Other';
       const last = (arr?: number[]) => (arr && arr.length ? arr[arr.length - 1] || 0 : 0);
       const tvlUsd = last(m.tvlUsd);
       // TVL decomposition (PT + YT + LP + Idle sums to tvlUsd by construction).
@@ -93,7 +94,7 @@ export function MarketsList() {
       // Active = trailing DDMonYY in the market_key is on or after today.
       const mat = maturityMs(mk);
       const isActive = mat !== null ? mat >= todayMs : tvlUsd > 1 || ptSupply > 0;
-      out.push({ marketKey: mk, ticker, tvlUsd, ptUsd, ytUsd, lpUsd, idleUsd, liquidityUsd, ptSupply, holders: h, isActive, isTest: !!m.isTest });
+      out.push({ marketKey: mk, ticker, platform, tvlUsd, ptUsd, ytUsd, lpUsd, idleUsd, liquidityUsd, ptSupply, holders: h, isActive, isTest: !!m.isTest });
     }
     const filtered = out.filter(r => status === 'all' || (r.isActive && !r.isTest));
     filtered.sort((a, b) => {
@@ -108,6 +109,8 @@ export function MarketsList() {
         else if (am === null) cmp = 1;
         else if (bm === null) cmp = -1;
         else cmp = am - bm;
+      } else if (sortKey === 'platform') {
+        cmp = a.platform.localeCompare(b.platform);
       } else {
         const av = a[sortKey] as number;
         const bv = b[sortKey] as number;
@@ -149,6 +152,7 @@ export function MarketsList() {
             <tr>
               {([
                 ['marketKey',    'Market',    'left',  ''],
+                ['platform',     'Platform',  'left',  ''],
                 ['tvlUsd',       'TVL',       'right', ''],
                 ['ptUsd',        'PT',        'right', 'Principal — market-priced PT value (PT_supply × pt_price × underlying USD)'],
                 ['ytUsd',        'YT',        'right', 'Farm — market-priced YT value (YT_supply × yt_price × underlying USD)'],
@@ -177,6 +181,7 @@ export function MarketsList() {
                     </span>
                   )}
                 </td>
+                <td className="py-1.5 text-white/60">{r.platform}</td>
                 <td className="py-1.5 text-right tabular-nums text-white/80">{fmtUsd(r.tvlUsd)}</td>
                 <td className="py-1.5 text-right tabular-nums text-white/70">{r.ptUsd > 0 ? fmtUsd(r.ptUsd) : '–'}</td>
                 <td className="py-1.5 text-right tabular-nums text-white/70">{r.ytUsd > 0.5 ? fmtUsd(r.ytUsd) : '–'}</td>

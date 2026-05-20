@@ -4,15 +4,17 @@ import { TopStats } from '@/components/TopStats';
 import { TvlByPlatform } from '@/components/TvlByPlatform';
 import { BigChart } from '@/components/BigChart';
 import { MarketsList } from '@/components/MarketsList';
+import { PlatformsList } from '@/components/PlatformsList';
 import { UsersAnalytics } from '@/components/UsersAnalytics';
 import { HoldersAnalytics } from '@/components/HoldersAnalytics';
 
-type Tab = 'markets' | 'holders' | 'users';
+type Tab = 'markets' | 'platforms' | 'holders' | 'users';
 
 const TABS: { key: Tab; label: string }[] = [
-  { key: 'markets', label: 'Markets' },
-  { key: 'holders', label: 'Holders' },
-  { key: 'users',   label: 'Users' },
+  { key: 'markets',   label: 'Markets' },
+  { key: 'platforms', label: 'Platforms' },
+  { key: 'holders',   label: 'Holders' },
+  { key: 'users',     label: 'Users' },
 ];
 
 export default function HomePage() {
@@ -49,9 +51,10 @@ export default function HomePage() {
           ))}
         </div>
 
-        {tab === 'markets' && <MarketsList />}
-        {tab === 'holders' && <HoldersAnalytics />}
-        {tab === 'users'   && <UsersAnalytics />}
+        {tab === 'markets'   && <MarketsList />}
+        {tab === 'platforms' && <PlatformsList />}
+        {tab === 'holders'   && <HoldersAnalytics />}
+        {tab === 'users'     && <UsersAnalytics />}
       </div>
     </main>
   );
