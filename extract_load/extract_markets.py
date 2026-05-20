@@ -143,6 +143,13 @@ def onchain_account_to_row(
         ).strftime("%Y-%m-%d"),
         "underlyingTicker": ticker,
         "rawSize": decoded.raw_size,
+        # AMM-internal pool reserves + time-curve params (raw u64 atom units;
+        # last_ln_implied_rate is the per-year ln(1+APY) from the curve).
+        # Used to compute the canonical liquidity_pool_tvl exactly:
+        #   sy × sy_rate + pt / exp(last_ln_implied × years_remaining)
+        "ptBalance": decoded.pt_balance,
+        "syBalance": decoded.sy_balance,
+        "lastLnImpliedRate": decoded.last_ln_implied_rate,
     }
     return market_key, payload
 

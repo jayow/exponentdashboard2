@@ -53,6 +53,14 @@ class MarketThree:
     lp_mint: str
     maturity_ts: int | None
     raw_size: int
+    # Pool reserves (raw u64 atom units, stored in MarketTwo.financials).
+    # Use these to compute Exponent's UI 'Liquidity' exactly via the
+    # liquidity_pool_tvl formula:
+    #   sy_balance × sy_exchange_rate + pt_balance / exp(last_ln_implied × yrs)
+    pt_balance: int | None = None
+    sy_balance: int | None = None
+    # Time-curve params for computing pt_exchange_rate at any timestamp.
+    last_ln_implied_rate: float | None = None
 
 
 def _decode_pubkey(data: bytes, offset: int) -> str:
@@ -86,16 +94,32 @@ def is_market_three(data: bytes) -> bool:
 def decode(data: bytes) -> MarketThree | None:
     """Decode a MarketThree account. Returns None if discriminator doesn't match
     or the account is too short to contain key fields.
+
+    Reserve/time-curve fields (pt_balance, sy_balance, last_ln_implied_rate)
+    live in MarketTwo.financials starting at offset 364 — only present in
+    full-size accounts. Older partial-layout variants return them as None.
     """
     if not is_market_three(data):
         return None
     if len(data) < 168:
         return None
+    pt_bal = sy_bal = None
+    last_ln = None
+    maturity_ts = find_maturity_ts(data)
+    if maturity_ts is not None and maturity_ts == _read_i64_le(data, 364) and len(data) >= 404:
+        # Standard MarketTwo financials layout — offset 364 expiration_ts,
+        # 372 pt_balance, 380 sy_balance, 388 ln_fee_rate, 396 last_ln_implied
+        pt_bal = struct.unpack("<Q", data[372:380])[0]
+        sy_bal = struct.unpack("<Q", data[380:388])[0]
+        last_ln = struct.unpack("<d", data[396:404])[0]
     return MarketThree(
         pt_mint=_decode_pubkey(data, 40),
         sy_mint=_decode_pubkey(data, 72),
         vault=_decode_pubkey(data, 104),
         lp_mint=_decode_pubkey(data, 136),
-        maturity_ts=find_maturity_ts(data),
+        maturity_ts=maturity_ts,
         raw_size=len(data),
+        pt_balance=pt_bal,
+        sy_balance=sy_bal,
+        last_ln_implied_rate=last_ln,
     )

@@ -292,39 +292,19 @@ def build_tvl_json(con: duckdb.DuckDBPyConnection) -> dict:
             "SELECT market_key FROM main_core.dim_markets WHERE is_test"
         ).fetchall()
     }
-    # Liquidity = AMM pool reserves the user can swap against. We pull the
-    # API's legacyLiquidity (raw atoms) and price it via our own Jupiter/Pyth
-    # USD prices — the API gives us the headline reserves number; underlying
-    # USD comes from our extract_prices pipeline, not Exponent.
-    #
-    # Active TVL is NOT taken from the API anymore — our derived principalUsd
-    # (= PT_supply × underlying_USD via int_mint_supplies_daily × stg_prices)
-    # matches the API's totalMarketSize within ~1% and is fully on-chain.
-    #
-    # The only remaining Exponent-API field we use is legacyLiquidity itself.
-    # To eliminate it we'd need to derive pool reserves directly — the SY-side
-    # vault is owned by a separate Exponent program (XP1BRLn…) whose account
-    # layout we haven't decoded yet.
-    api_metrics: dict[str, float] = {}
-    api_rows = con.execute("""
-        SELECT r.market_key, r.payload FROM raw_markets r WHERE r.source = 'api'
-    """).fetchall()
-    latest_prices = dict(con.execute("""
-        SELECT mint, price_usd FROM main_staging.stg_prices
-        WHERE (mint, date) IN (
-            SELECT mint, MAX(date) FROM main_staging.stg_prices GROUP BY mint
-        )
-    """).fetchall())
-    for mk, payload in api_rows:
-        d = json.loads(payload) if isinstance(payload, str) else payload
-        legacy_liq = d.get("legacyLiquidity")
-        decimals = d.get("underlyingDecimals", 6)
-        price = latest_prices.get(d.get("underlying"), 0) or 0
-        liquidity_usd = (
-            float(legacy_liq) / (10 ** decimals) * float(price)
-            if legacy_liq is not None else 0.0
-        )
-        api_metrics[mk] = liquidity_usd
+    # Liquidity — exact replica of Exponent's UI value, fully on-chain.
+    # Formula from the SDK (market.js): sy_balance × sy_rate + pt_balance /
+    # exp(last_ln_implied × years_remaining). sy_balance, pt_balance, and
+    # last_ln_implied_rate are read from MarketTwo.financials (offsets 380,
+    # 372, 396) in the on-chain account itself — same values the SDK reads.
+    # USD price comes from Jupiter/Pyth via stg_prices.
+    # Verified against API legacyLiquidity for USX-01JUN26: derived
+    # 26,113,411 USX vs API 26,113,405 USX (4-unit slot drift).
+    liquidity_by_market: dict[str, float] = {
+        mk: float(v or 0) for mk, v in con.execute(
+            "SELECT market_key, liquidity_usd FROM main_intermediate.int_pool_reserves_daily"
+        ).fetchall()
+    }
     # LP USD per (market, date) — keyed for fast lookup in per-market breakdown
     lp_per_market = {(r[0], r[1]): float(r[2] or 0) for r in con.execute("""
         SELECT market_key, date::VARCHAR, SUM(usd_value)
@@ -386,9 +366,9 @@ def build_tvl_json(con: duckdb.DuckDBPyConnection) -> dict:
             "ticker": e["ticker"],
             "platform": e["platform"],
             "isTest": mk in test_markets,
-            # Pool reserves (matches Exponent UI's "Liquidity") — last
-            # remaining API field, see comment by api_metrics above.
-            "liquidityUsd": api_metrics.get(mk, 0.0),
+            # Liquidity (= Exponent UI's Liquidity) — fully derived on-chain
+            # via the SDK formula. See liquidity_by_market construction above.
+            "liquidityUsd": liquidity_by_market.get(mk, 0.0),
             # Active TVL = principalUsd[latest], derived fully from on-chain
             # PT supply × Jupiter/Pyth USD price.
             "activeTvlUsd": principal[-1] if principal else 0.0,
