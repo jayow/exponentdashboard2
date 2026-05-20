@@ -12,7 +12,7 @@ type TvlData = {
   protocolPrincipalUsd: number[];
   decomposition: { principalPt: number[]; farmYt: number[]; liquidityLp: number[]; idle: number[] };
   byPlatform: Record<string, number[]>;
-  byPlatformBreakdown: Record<string, { principalPt: number[]; farmYt: number[]; liquidityLp: number[]; idle: number[] }>;
+  byPlatformBreakdown?: Record<string, { principalPt: number[]; farmYt: number[]; liquidityLp: number[]; idle: number[] }>;
   byMarket: Record<string, {
     ticker: string; platform: string; tvlUsd: number[];
     ptUsd?: number[]; ytUsd?: number[]; lpUsd?: number[]; idleUsd?: number[];
@@ -123,8 +123,6 @@ export function BigChart() {
   const [range, setRange] = useState<Range>('all');
   const [showTges, setShowTges] = useState<boolean>(true);
   const [hidden, setHidden] = useState<Set<string>>(new Set());
-  // Scope for Breakdown view: 'protocol' | 'platform:<name>' | 'market:<key>'
-  const [breakdownScope, setBreakdownScope] = useState<string>('protocol');
 
   useEffect(() => {
     fetch('/tvl.json').then(r => r.json()).then(setTvl).catch(() => null);
@@ -164,21 +162,9 @@ export function BigChart() {
       });
 
     if (metric === 'breakdown' && tvl) {
-      // Pick the scope's 4-bucket source: protocol / platform:X / market:X
-      let src: { principalPt: number[]; farmYt: number[]; liquidityLp: number[]; idle: number[] } | null = null;
-      if (breakdownScope === 'protocol') {
-        src = tvl.decomposition;
-      } else if (breakdownScope.startsWith('platform:')) {
-        const name = breakdownScope.slice('platform:'.length);
-        src = tvl.byPlatformBreakdown?.[name] ?? null;
-      } else if (breakdownScope.startsWith('market:')) {
-        const mk = breakdownScope.slice('market:'.length);
-        const m = tvl.byMarket?.[mk];
-        if (m && m.ptUsd && m.ytUsd && m.lpUsd && m.idleUsd) {
-          src = { principalPt: m.ptUsd, farmYt: m.ytUsd, liquidityLp: m.lpUsd, idle: m.idleUsd };
-        }
-      }
-      if (!src) return empty;
+      // Protocol-scoped only. Per-market and per-platform breakdowns live on
+      // the market detail pages, where they don't compete with the main chart.
+      const src = tvl.decomposition;
       const pt = sampleSeries(src.principalPt);
       const yt = sampleSeries(src.farmYt);
       const lp = sampleSeries(src.liquidityLp);
@@ -328,7 +314,7 @@ export function BigChart() {
     }
 
     return empty;
-  }, [tvl, vol, metric, effectiveView, range, start, end, stride, dates, breakdownScope]);
+  }, [tvl, vol, metric, effectiveView, range, start, end, stride, dates]);
 
   // Default: show everything. User can toggle off individual series in
   // the legend (Hide All / per-chip click).
@@ -372,38 +358,14 @@ export function BigChart() {
             </button>
           ))}
           <span className="w-3" />
-          {metric !== 'breakdown' ? (
-            (['protocol', 'platform', 'market'] as View[]).map(v => (
-              <button key={v} onClick={() => setView(v)}
-                className={`text-xs px-3 py-1 rounded-lg transition ${
-                  view === v ? 'bg-white/10 text-white' : 'text-white/40 hover:text-white'
-                }`}>
-                {v.charAt(0).toUpperCase() + v.slice(1)}
-              </button>
-            ))
-          ) : (
-            // Breakdown scope dropdown — protocol / each platform / each market
-            <select
-              value={breakdownScope}
-              onChange={e => setBreakdownScope(e.target.value)}
-              className="text-xs px-2 py-1 rounded-lg border border-white/15 bg-[#0a0a0a] text-white/85 hover:border-white/30 max-w-[260px]"
-            >
-              <option value="protocol">Protocol</option>
-              <optgroup label="Platform">
-                {tvl && Object.entries(tvl.byPlatform)
-                  .sort((a, b) => (b[1][b[1].length - 1] || 0) - (a[1][a[1].length - 1] || 0))
-                  .filter(([, s]) => (s[s.length - 1] || 0) > 100)
-                  .map(([p]) => <option key={p} value={`platform:${p}`}>{p}</option>)}
-              </optgroup>
-              <optgroup label="Market">
-                {tvl && Object.entries(tvl.byMarket)
-                  .filter(([k, m]) => !k.includes('(unsplit)') && (m.tvlUsd[m.tvlUsd.length - 1] || 0) > 1000)
-                  .sort((a, b) => (b[1].tvlUsd[b[1].tvlUsd.length - 1] || 0) - (a[1].tvlUsd[a[1].tvlUsd.length - 1] || 0))
-                  .slice(0, 40)
-                  .map(([k]) => <option key={k} value={`market:${k}`}>{k}</option>)}
-              </optgroup>
-            </select>
-          )}
+          {metric !== 'breakdown' && (['protocol', 'platform', 'market'] as View[]).map(v => (
+            <button key={v} onClick={() => setView(v)}
+              className={`text-xs px-3 py-1 rounded-lg transition ${
+                view === v ? 'bg-white/10 text-white' : 'text-white/40 hover:text-white'
+              }`}>
+              {v.charAt(0).toUpperCase() + v.slice(1)}
+            </button>
+          ))}
         </div>
         <div className="flex items-center gap-1">
           <button onClick={() => setShowTges(v => !v)}
