@@ -27,7 +27,7 @@ type VolData = {
   byMarket: Record<string, { ticker: string; totalUsd: number[]; ptUsd: number[]; ytUsd: number[] }>;
 };
 
-type Metric = 'tvl' | 'volume' | 'breakdown';
+type Metric = 'tvl' | 'volume' | 'breakdown' | 'marketshare';
 type View = 'protocol' | 'platform' | 'market';
 type Range = '30d' | '90d' | '1y' | 'all';
 
@@ -140,7 +140,8 @@ export function BigChart() {
   const [view, setView] = useState<View>('protocol');
   const [range, setRange] = useState<Range>('all');
   const [showTges, setShowTges] = useState<boolean>(true);
-  const [sharePct, setSharePct] = useState<boolean>(false);
+  // For the Market Share tab — which underlying powers the share calc.
+  const [mscBase, setMscBase] = useState<'volume' | 'tvl'>('volume');
   const [hidden, setHidden] = useState<Set<string>>(new Set());
 
   useEffect(() => {
@@ -148,8 +149,16 @@ export function BigChart() {
     fetch('/volume.json').then(r => r.json()).then(setVol).catch(() => null);
   }, []);
 
-  const effectiveView = metric === 'breakdown' ? 'protocol' : view;
-  const dates = metric === 'volume' ? vol?.dates : tvl?.dates;
+  // Market Share is just a share-% rendering of the underlying tvl/volume
+  // data — collapse to the underlying metric for series fetching.
+  const effectiveMetric: 'tvl' | 'volume' | 'breakdown' =
+    metric === 'marketshare' ? mscBase : metric;
+  // Market Share is only meaningful with >1 bar series → force platform if
+  // the user lands here from Protocol view.
+  const effectiveView = metric === 'breakdown'
+    ? 'protocol'
+    : (metric === 'marketshare' && view === 'protocol' ? 'platform' : view);
+  const dates = effectiveMetric === 'volume' ? vol?.dates : tvl?.dates;
   const start = dates ? rangeStart(dates, range) : 0;
   const end = dates ? dates.length - 1 : 0;
   // Daily for 30d/90d (≤120 visible days). Weekly for 1y/All — at that zoom
@@ -191,7 +200,7 @@ export function BigChart() {
         return n > 0 ? sum / n : 0;
       });
 
-    if (metric === 'breakdown' && tvl) {
+    if (effectiveMetric === 'breakdown' && tvl) {
       // Protocol-scoped only. Per-market and per-platform breakdowns live on
       // the market detail pages, where they don't compete with the main chart.
       const src = tvl.decomposition;
@@ -301,7 +310,7 @@ export function BigChart() {
       return { allKeys, data: rows, colorMap, isFlat: false, breakdownLike: false };
     }
 
-    if (metric === 'tvl' && tvl) {
+    if (effectiveMetric === 'tvl' && tvl) {
       if (effectiveView === 'protocol') {
         const sampled = sampleSeries(tvl.protocolUsd);
         return {
@@ -322,7 +331,7 @@ export function BigChart() {
       return emitFromSeries(seriesByMk, 'maxInRange', true, (k: string) => platformForMk[k]);
     }
 
-    if (metric === 'volume' && vol) {
+    if (effectiveMetric === 'volume' && vol) {
       // Protocol-wide cumulative trajectory — same series on every volume
       // view so the line gives consistent "how much has the protocol traded
       // over time" context regardless of the bar grouping below it.
@@ -376,7 +385,7 @@ export function BigChart() {
     }
 
     return empty;
-  }, [tvl, vol, metric, effectiveView, range, start, end, stride, dates]);
+  }, [tvl, vol, metric, effectiveMetric, effectiveView, range, start, end, stride, dates]);
 
   // Default: show everything. User can toggle off individual series in
   // the legend (Hide All / per-chip click).
@@ -384,10 +393,9 @@ export function BigChart() {
 
   const visibleKeys = useMemo(() => allKeys.filter(k => !hidden.has(k)), [allKeys, hidden]);
 
-  // Share % toggle only makes sense for multi-series stacked views.
-  // Single-series flat views (tvl/volume protocol) have nothing to share.
-  const shareAllowed = !isFlat;
-  const sharePctActive = sharePct && shareAllowed;
+  // The Market Share metric tab renders the underlying tvl/volume as 100%
+  // stacks. Single-series flat views have no share story, so suppress.
+  const sharePctActive = metric === 'marketshare' && !isFlat;
 
   // Normalize each row to % of the row's stacked-bar sum (excluding overlay
   // series like Cumulative — they continue to read absolute on their own axis,
@@ -428,11 +436,12 @@ export function BigChart() {
     <section className="rounded-2xl border border-white/10 bg-white/5 p-4 mb-6">
       <header className="flex items-center justify-between flex-wrap gap-3 mb-3">
         <div className="flex items-center gap-1 flex-wrap">
-          {/* Metric tabs — match v1 order */}
+          {/* Metric tabs */}
           {([
             ['tvl', 'TVL'],
             ['volume', 'Volume'],
             ['breakdown', 'Breakdown'],
+            ['marketshare', 'Market Share'],
           ] as [Metric, string][]).map(([m, label]) => (
             <button key={m} onClick={() => setMetric(m)}
               className={`text-xs px-3 py-1.5 rounded-lg border transition ${metric === m ? 'border-white/30 bg-white/10 text-white' : 'border-white/10 text-white/40 hover:text-white'}`}>
@@ -440,27 +449,34 @@ export function BigChart() {
             </button>
           ))}
           <span className="w-3" />
-          {metric !== 'breakdown' && (['protocol', 'platform', 'market'] as View[]).map(v => (
-            <button key={v} onClick={() => setView(v)}
-              className={`text-xs px-3 py-1 rounded-lg transition ${
-                view === v ? 'bg-white/10 text-white' : 'text-white/40 hover:text-white'
-              }`}>
-              {v.charAt(0).toUpperCase() + v.slice(1)}
-            </button>
-          ))}
+          {/* Market Share: switch between sharing the volume vs the tvl axis */}
+          {metric === 'marketshare' && (
+            <>
+              {(['volume', 'tvl'] as const).map(b => (
+                <button key={b} onClick={() => setMscBase(b)}
+                  className={`text-xs px-3 py-1 rounded-lg transition ${
+                    mscBase === b ? 'bg-white/10 text-white' : 'text-white/40 hover:text-white'
+                  }`}>
+                  {b === 'volume' ? 'Volume' : 'TVL'} share
+                </button>
+              ))}
+              <span className="w-3" />
+            </>
+          )}
+          {/* View selector (skipped for breakdown; protocol hidden for marketshare) */}
+          {metric !== 'breakdown' &&
+            (['protocol', 'platform', 'market'] as View[])
+              .filter(v => !(metric === 'marketshare' && v === 'protocol'))
+              .map(v => (
+                <button key={v} onClick={() => setView(v)}
+                  className={`text-xs px-3 py-1 rounded-lg transition ${
+                    effectiveView === v ? 'bg-white/10 text-white' : 'text-white/40 hover:text-white'
+                  }`}>
+                  {v.charAt(0).toUpperCase() + v.slice(1)}
+                </button>
+              ))}
         </div>
         <div className="flex items-center gap-1">
-          {shareAllowed && (
-            <button onClick={() => setSharePct(v => !v)}
-              className={`text-[11px] px-2.5 py-1 rounded-md border transition ${
-                sharePctActive
-                  ? 'border-white/30 bg-white/10 text-white'
-                  : 'border-white/10 text-white/30 hover:text-white/60'
-              }`}
-              title="Toggle share % stacked view">
-              Share %
-            </button>
-          )}
           <button onClick={() => setShowTges(v => !v)}
             className={`text-[11px] px-2.5 py-1 rounded-md border transition ${
               showTges ? 'border-amber-400/40 bg-amber-400/10 text-amber-300'

@@ -3,7 +3,6 @@ import { useState } from 'react';
 import { TopStats } from '@/components/TopStats';
 import { TvlByPlatform } from '@/components/TvlByPlatform';
 import { BigChart } from '@/components/BigChart';
-import { MarketShare } from '@/components/MarketShare';
 import { MarketsList } from '@/components/MarketsList';
 import { UsersAnalytics } from '@/components/UsersAnalytics';
 import { HoldersAnalytics } from '@/components/HoldersAnalytics';
@@ -36,7 +35,6 @@ export default function HomePage() {
       <TopStats />
       <TvlByPlatform />
       <BigChart />
-      <MarketShare />
 
       {/* Tabbed analytics */}
       <div className="mb-8">
