@@ -13,15 +13,25 @@ type Snapshot = {
 };
 type MarketHoldersData = { meta: any; byMarketLeg: Record<string, Snapshot> };
 
-type TvlByMarket = Record<string, { ticker: string; tvlUsd: number[]; tvlUnderlying: number[]; principalUsd?: number[] }>;
+type TvlByMarket = Record<string, {
+  ticker: string; tvlUsd: number[]; tvlUnderlying: number[]; principalUsd?: number[];
+  ptUsd?: number[]; ytUsd?: number[]; lpUsd?: number[]; idleUsd?: number[];
+}>;
 type ApLeg = { byMarket: Record<string, number[]>; totals: number[] };
 type ApTicker = { underlyingMint: string; latest: Record<string, number>; legs: Record<string, ApLeg> };
 
 type Volume = { dates: string[]; byMarket?: Record<string, { ticker: string; pt?: number[]; yt?: number[]; total?: number[] }> };
 
 type Range = '30d' | '90d' | '1y' | 'all';
-type Metric = 'tvl' | 'positions' | 'volume';
+type Metric = 'tvl' | 'breakdown' | 'positions' | 'volume';
 type Leg = 'PT' | 'YT' | 'LP';
+
+const BREAKDOWN_COLOR = {
+  'Principal (PT)': '#a78bfa',
+  'Farm (YT)':      '#fb923c',
+  'Liquidity (LP)': '#4ade80',
+  'Idle':           '#9ca3af',
+} as const;
 
 function fmtUsd(n: number) {
   if (!n) return '$0';
@@ -81,6 +91,17 @@ function MarketDetailView() {
     if (metric === 'tvl') {
       return dates.map((d, i) => ({ date: d, TVL: tvlSeries[start + i] || 0 }));
     }
+    if (metric === 'breakdown') {
+      const m = tvl.byMarket?.[marketKey];
+      const pt = m?.ptUsd ?? [], yt = m?.ytUsd ?? [], lp = m?.lpUsd ?? [], idle = m?.idleUsd ?? [];
+      return dates.map((d, i) => ({
+        date: d,
+        'Principal (PT)': pt[start + i] || 0,
+        'Farm (YT)':      yt[start + i] || 0,
+        'Liquidity (LP)': lp[start + i] || 0,
+        'Idle':           idle[start + i] || 0,
+      }));
+    }
     if (metric === 'positions' && tickerData) {
       return dates.map((d, i) => ({
         date: d,
@@ -132,10 +153,10 @@ function MarketDetailView() {
       <div className="mt-8">
         <div className="flex items-center justify-between mb-3 flex-wrap gap-3">
           <div className="flex items-center gap-1">
-            {(['tvl', 'positions', 'volume'] as Metric[]).map(m => (
+            {(['tvl', 'breakdown', 'positions', 'volume'] as Metric[]).map(m => (
               <button key={m} onClick={() => setMetric(m)}
                 className={`text-xs px-3 py-1 rounded-lg border ${metric === m ? 'border-white/30 bg-white/10 text-white' : 'border-white/10 text-white/40'}`}>
-                {m === 'tvl' ? 'TVL' : m === 'positions' ? 'Positions' : 'Volume'}
+                {m === 'tvl' ? 'TVL' : m === 'breakdown' ? 'Breakdown' : m === 'positions' ? 'Positions' : 'Volume'}
               </button>
             ))}
           </div>
@@ -151,7 +172,7 @@ function MarketDetailView() {
         <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
           <ResponsiveContainer width="100%" height={300}>
             {metric === 'positions' ? (
-              <AreaChart data={chartData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+              <AreaChart data={chartData as any} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
                 <XAxis dataKey="date" tick={{ fill: '#888', fontSize: 11 }} />
                 <YAxis tick={{ fill: '#888', fontSize: 11 }} tickFormatter={n => fmtCount(n, '').trim()} />
                 <Tooltip contentStyle={{ background: '#0a0a0a', border: '1px solid rgba(255,255,255,0.15)', fontSize: 11 }} formatter={(v: any) => fmtCount(Number(v), ticker)} />
@@ -159,8 +180,18 @@ function MarketDetailView() {
                 <Area type="monotone" dataKey="YT" stroke="#38bdf8" fill="#38bdf866" />
                 <Area type="monotone" dataKey="LP" stroke="#4ade80" fill="#4ade8066" />
               </AreaChart>
+            ) : metric === 'breakdown' ? (
+              <BarChart data={chartData as any} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+                <XAxis dataKey="date" tick={{ fill: '#888', fontSize: 11 }} />
+                <YAxis tick={{ fill: '#888', fontSize: 11 }} tickFormatter={fmtUsd} />
+                <Tooltip contentStyle={{ background: '#0a0a0a', border: '1px solid rgba(255,255,255,0.15)', fontSize: 11 }} formatter={(v: any) => fmtUsd(Number(v))} />
+                <Bar dataKey="Principal (PT)" stackId="b" fill={BREAKDOWN_COLOR['Principal (PT)']} fillOpacity={0.9} isAnimationActive={false} />
+                <Bar dataKey="Farm (YT)"      stackId="b" fill={BREAKDOWN_COLOR['Farm (YT)']}      fillOpacity={0.9} isAnimationActive={false} />
+                <Bar dataKey="Liquidity (LP)" stackId="b" fill={BREAKDOWN_COLOR['Liquidity (LP)']} fillOpacity={0.9} isAnimationActive={false} />
+                <Bar dataKey="Idle"           stackId="b" fill={BREAKDOWN_COLOR['Idle']}           fillOpacity={0.9} isAnimationActive={false} />
+              </BarChart>
             ) : (
-              <BarChart data={chartData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+              <BarChart data={chartData as any} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
                 <XAxis dataKey="date" tick={{ fill: '#888', fontSize: 11 }} />
                 <YAxis tick={{ fill: '#888', fontSize: 11 }} tickFormatter={fmtUsd} />
                 <Tooltip contentStyle={{ background: '#0a0a0a', border: '1px solid rgba(255,255,255,0.15)', fontSize: 11 }} formatter={(v: any) => fmtUsd(Number(v))} />
