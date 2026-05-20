@@ -109,6 +109,17 @@ def test_find_maturity_ts_rejects_out_of_range():
     assert find_maturity_ts(bytes(buf)) is None
 
 
+def test_decode_prefers_offset_364_over_416_when_both_set():
+    """Regression for the silent-wrong-maturity bug: prior order tried 416
+    first, so a created_at-style timestamp at 416 hid the real maturity_ts
+    at 364. Now 364 must win when both are populated."""
+    buf = bytearray(_build_account(maturity_offset=416, maturity_ts=1_750_000_000))
+    # Plant the real maturity_ts at 364
+    struct.pack_into("<q", buf, 364, 1_786_000_000)
+    decoded = decode(bytes(buf))
+    assert decoded.maturity_ts == 1_786_000_000
+
+
 def test_find_maturity_ts_brute_scan_fallback():
     """If none of the canonical offsets work, the scan from 104..500 step 8 finds one."""
     buf = bytearray(600)

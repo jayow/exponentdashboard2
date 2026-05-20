@@ -13,10 +13,17 @@ Offset map (verified against active markets in v1):
   [104..136) Vault PDA (holds the underlying)      ← key field
   [136..168) LP mint                               ← key field
 
-  Maturity timestamp (i64 LE) lives at one of these offsets, in order of
-  observed frequency: 416 / 364 / 312 / 260 / 208. We probe each and
-  validate the value is plausible (after 2023, before 2030). Fallback:
-  scan i64-aligned offsets for the first plausible timestamp.
+  Maturity timestamp (i64 LE) lives at offset 364 for every active market
+  account we've seen (verified 9/9 by cross-referencing the API's maturityTs).
+  Older expired accounts may use other offsets — we probe them as fallbacks.
+  Each candidate value must be plausible (after 2023, before 2030).
+  Final fallback: scan i64-aligned offsets for the first plausible timestamp
+  — used only when none of the known offsets contain a valid value.
+
+  Why 364 first: the prior order (416, 364, …) caused the decoder to
+  silently latch onto the wrong i64 field (likely created_at) for several
+  current markets, mis-deriving the market_key. Empirically 364 is the
+  correct field for every active MarketThree.
 
 This decoder is pure: takes account-data bytes, returns a dict. No I/O.
 """
@@ -35,7 +42,7 @@ TS_MIN = 1_700_000_000
 TS_MAX = 1_900_000_000
 
 # Tried in order; first plausible wins.
-MATURITY_TS_CANDIDATE_OFFSETS = (416, 364, 312, 260, 208)
+MATURITY_TS_CANDIDATE_OFFSETS = (364, 416, 312, 260, 208)
 
 
 @dataclass
