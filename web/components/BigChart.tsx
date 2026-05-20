@@ -134,10 +134,14 @@ export function BigChart() {
   const dates = metric === 'volume' ? vol?.dates : tvl?.dates;
   const start = dates ? rangeStart(dates, range) : 0;
   const end = dates ? dates.length - 1 : 0;
-  // Daily everywhere — modern desktop browsers handle ~570 × 30-series stacks
-  // without trouble, and the long-tail filter + animation-off already keep
-  // Recharts' SVG load reasonable.
-  const stride = 1;
+  // Daily for 30d/90d (≤120 visible days). Weekly for 1y/All — at that zoom
+  // each bar would be ~1px wide otherwise, and stacking ~30 series ×
+  // ~570 days starts to feel sluggish.
+  const stride = useMemo(() => {
+    if (!dates) return 1;
+    const visible = end - start + 1;
+    return visible <= 120 ? 1 : 7;
+  }, [dates, start, end]);
 
   const { allKeys, data, colorMap, isFlat, breakdownLike, cumulativeKey } = useMemo<{
     allKeys: string[]; data: any[]; colorMap: Record<string, string>;
@@ -436,7 +440,7 @@ export function BigChart() {
                    tickFormatter={fmtUsd} axisLine={false} tickLine={false} width={70} />
             <Tooltip content={<SortedTooltip />} cursor={{ fill: 'rgba(255,255,255,0.04)' }} />
             {visibleKeys.filter(k => k !== cumulativeKey).map(k => (
-              <Bar key={k} yAxisId="bar" dataKey={k}
+              <Bar key={k} yAxisId="bar" dataKey={k} stackId="s"
                    fill={colorMap[k] ?? '#9ca3af'} fillOpacity={0.9}
                    isAnimationActive={false} />
             ))}
