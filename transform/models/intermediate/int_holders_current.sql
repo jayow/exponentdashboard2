@@ -1,76 +1,94 @@
--- Current holder balances derived from transaction history, attributed
--- to the underlying user wallet (not the on-chain token-account owner).
+-- Current holder balances per (mint, owner), as of the latest snapshot.
 --
--- For each token account (keyed by SPL `owner` field) we sum delta_ui to
--- get its current balance, then attribute that balance to:
---   - the wallet itself, if it's a normal user wallet (the only signer of
---     outflows from this account is the wallet itself),
---   - the user wallet behind a PDA, if the PDA has ≤3 distinct outflow
---     signers (covers the user + occasional protocol keepers),
---   - nothing, if it's a shared protocol pool/vault (many distinct outflow
---     signers — each user trading through it).
+-- Two source paths, unioned:
 --
--- Why outflows specifically: only the token account's true authority can
--- authorize an outflow (delta < 0). Inflows give noisy signal because
--- any user can transfer INTO any wallet. So restricting the signer count
--- to outflow txs cleanly separates per-user accounts from shared pools.
+-- 1. PT (regular SPL token, transferable, usually held directly in user
+--    wallets): derived from stg_token_changes, with an outflow-signer remap
+--    to attribute PDA-custodied PT (e.g. CLMM position PDAs) back to the
+--    user wallet that authorized the outflows.
 --
--- Why this matters: Exponent uses program-owned PDAs to custody user PT/YT
--- positions. A user who calls buyYt sees the YT delivered to a CLMM-owned
--- PDA, not their main wallet. Without remapping, our holder list would
--- show that PDA as the "holder" and the user wouldn't find themselves
--- anywhere.
+-- 2. YT and LP (custom Anchor accounts, custodied by Exponent core):
+--    sourced from raw_positions, which decodes YieldTokenPosition and
+--    LpPosition accounts directly. The on-chain account stores the user
+--    wallet at offset 8 — no remap needed. Vault is the link to a market.
+--
+-- Why YT/LP need the Anchor path: their SPL "mint" token accounts are all
+-- owned by program PDAs (the pool/orderbook vaults). Scanning the YT mint
+-- via stg_token_changes only sees the pool's vault, not the underlying user
+-- positions. The Anchor account is where the user is recorded.
 {{ config(materialized='table') }}
 
-with raw_balances as (
-    select
-        mint,
-        owner,
-        sum(delta_ui) as amount
-    from {{ ref('stg_token_changes') }}
-    where owner is not null
-    group by mint, owner
+-- ─── PT branch ─────────────────────────────────────────────────────────
+with pt_raw_balances as (
+    select c.mint, c.owner, sum(c.delta_ui) as amount
+    from {{ ref('stg_token_changes') }} c
+    join {{ ref('dim_markets') }} m on m.pt_mint = c.mint
+    where c.owner is not null
+    group by c.mint, c.owner
 ),
--- For each token account, who signed the txs that DECREASED its balance?
--- Only an account's authority can authorize an outflow, so this set is
--- exactly {the wallet} for direct holders or {the user(s)} for PDAs.
-outflow_signers as (
+pt_outflow_signers as (
     select
         c.owner,
         h.signer,
         count(distinct c.signature) as n_sigs
     from {{ ref('stg_token_changes') }} c
+    join {{ ref('dim_markets') }} m on m.pt_mint = c.mint
     join {{ ref('stg_helius_tx') }} h using (signature)
-    where c.owner is not null
-      and c.delta_ui < 0
+    where c.owner is not null and c.delta_ui < 0
     group by c.owner, h.signer
 ),
-owner_summary as (
+pt_owner_summary as (
     select
         owner,
-        count(distinct signer)   as n_outflow_signers,
-        arg_max(signer, n_sigs)  as top_signer
-    from outflow_signers
+        count(distinct signer) as n_outflow_signers,
+        arg_max(signer, n_sigs) as top_signer
+    from pt_outflow_signers
     group by owner
 ),
-attributed as (
+pt_attributed as (
     select
         b.mint,
         case
-            when os.n_outflow_signers is null     then b.owner   -- never had an outflow → assume user wallet, keep
-            when os.n_outflow_signers > 3         then null      -- shared protocol pool — exclude
-            else coalesce(os.top_signer, b.owner)                -- attribute to the authority
-        end as effective_owner,
+            when os.n_outflow_signers is null then b.owner
+            when os.n_outflow_signers > 3     then null   -- shared pool
+            else coalesce(os.top_signer, b.owner)
+        end as owner,
         b.amount
-    from raw_balances b
-    left join owner_summary os on os.owner = b.owner
+    from pt_raw_balances b
+    left join pt_owner_summary os on os.owner = b.owner
+),
+pt_holders as (
+    select mint, owner, sum(amount) as amount
+    from pt_attributed
+    where owner is not null
+    group by mint, owner
+    having sum(amount) > 1e-9
+),
+
+-- ─── YT / LP branch ────────────────────────────────────────────────────
+latest_snap as (
+    select max(snapshot_date) as d from {{ source('raw', 'raw_positions') }}
+),
+positions_latest as (
+    select p.leg, p.owner, p.vault, p.amount_raw
+    from {{ source('raw', 'raw_positions') }} p, latest_snap ls
+    where p.snapshot_date = ls.d and p.amount_raw > 0
+),
+yt_lp_holders as (
+    select
+        case when p.leg = 'YT' then m.yt_mint else m.lp_mint end as mint,
+        p.owner,
+        sum(p.amount_raw / power(10.0, coalesce(m.underlying_decimals, 6))) as amount
+    from positions_latest p
+    join {{ ref('dim_markets') }} m on m.vault = p.vault
+    where
+        (p.leg = 'YT' and m.yt_mint is not null)
+        or (p.leg = 'LP' and m.lp_mint is not null)
+    group by 1, 2
+    having sum(p.amount_raw) > 0
 )
-select
-    mint,
-    effective_owner as owner,
-    sum(amount)     as amount,
-    current_date    as snapshot_date
-from attributed
-where effective_owner is not null
-group by mint, effective_owner
-having sum(amount) > 1e-9
+
+-- ─── Union ─────────────────────────────────────────────────────────────
+select mint, owner, amount, current_date as snapshot_date from pt_holders
+union all
+select mint, owner, amount, current_date as snapshot_date from yt_lp_holders

@@ -23,6 +23,7 @@ extract:
 	python3 -m extract_load.extract_transactions
 	python3 -m extract_load.extract_token_metadata
 	python3 -m extract_load.extract_prices
+	python3 -m extract_load.extract_positions
 
 transform:
 	cd transform && DBT_PROFILES_DIR=. dbt build

@@ -68,6 +68,21 @@ RAW_DDL = {
             PRIMARY KEY (snapshot_date, mint, owner)
         )
     """,
+    "raw_positions": """
+        -- YieldTokenPosition (YT) and LpPosition (LP) custom Anchor accounts.
+        -- Each row = one on-chain position account: owner is the actual user
+        -- wallet (stored at offset 8 of the account), vault links to a market
+        -- (matches dim_markets.vault).
+        CREATE TABLE IF NOT EXISTS raw_positions (
+            snapshot_date    DATE NOT NULL,
+            leg              VARCHAR NOT NULL,  -- 'YT' or 'LP'
+            position_account VARCHAR NOT NULL,
+            owner            VARCHAR NOT NULL,
+            vault            VARCHAR NOT NULL,
+            amount_raw       UBIGINT,
+            PRIMARY KEY (snapshot_date, position_account)
+        )
+    """,
     "raw_tvl_snapshots": """
         CREATE TABLE IF NOT EXISTS raw_tvl_snapshots (
             snapshot_date DATE NOT NULL,
