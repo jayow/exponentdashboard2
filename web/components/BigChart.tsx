@@ -77,7 +77,7 @@ const TOOLTIP_CAP = 15;  // show top N entries; sum the rest into a single row
 // per-day total at the bottom — otherwise e.g. a $500M cumulative line would
 // be summed into a $100K daily bar total.
 const OVERLAY_SERIES = new Set(['Cumulative']);
-function SortedTooltip({ active, payload, label }: TooltipProps<number, string>) {
+function SortedTooltip({ active, payload, label, sharePct }: TooltipProps<number, string> & { sharePct?: boolean }) {
   if (!active || !payload?.length) return null;
   const mapped = payload
     .map(p => ({ name: String(p.name ?? p.dataKey ?? ''), value: typeof p.value === 'number' ? p.value : 0, color: p.color || (p as any).fill || '#888' }))
@@ -102,8 +102,8 @@ function SortedTooltip({ active, payload, label }: TooltipProps<number, string>)
               <span className="truncate">{e.name}</span>
             </span>
             <span className="tabular-nums text-white shrink-0">
-              {fmtUsd(e.value)}
-              {stacked.length > 1 && total !== 0 && <span className="text-white/40 ml-1.5">({((e.value/total)*100).toFixed(0)}%)</span>}
+              {sharePct ? `${e.value.toFixed(1)}%` : fmtUsd(e.value)}
+              {!sharePct && stacked.length > 1 && total !== 0 && <span className="text-white/40 ml-1.5">({((e.value/total)*100).toFixed(0)}%)</span>}
             </span>
           </div>
         ))}
@@ -114,7 +114,7 @@ function SortedTooltip({ active, payload, label }: TooltipProps<number, string>)
           </div>
         )}
       </div>
-      {stacked.length > 1 && (
+      {!sharePct && stacked.length > 1 && (
         <div className="flex justify-between mt-1.5 pt-1.5 border-t border-white/10">
           <span className="text-white/40">Total</span>
           <span className="tabular-nums text-white/90 font-medium">{fmtUsd(total)}</span>
@@ -140,6 +140,7 @@ export function BigChart() {
   const [view, setView] = useState<View>('protocol');
   const [range, setRange] = useState<Range>('all');
   const [showTges, setShowTges] = useState<boolean>(true);
+  const [sharePct, setSharePct] = useState<boolean>(false);
   const [hidden, setHidden] = useState<Set<string>>(new Set());
 
   useEffect(() => {
@@ -383,6 +384,26 @@ export function BigChart() {
 
   const visibleKeys = useMemo(() => allKeys.filter(k => !hidden.has(k)), [allKeys, hidden]);
 
+  // Share % toggle only makes sense for multi-series stacked views.
+  // Single-series flat views (tvl/volume protocol) have nothing to share.
+  const shareAllowed = !isFlat;
+  const sharePctActive = sharePct && shareAllowed;
+
+  // Normalize each row to % of the row's stacked-bar sum (excluding overlay
+  // series like Cumulative — they continue to read absolute on their own axis,
+  // but we hide them in share% mode since the unit context doesn't fit).
+  const displayData = useMemo(() => {
+    if (!sharePctActive) return data;
+    const stackedKeys = visibleKeys.filter(k => !OVERLAY_SERIES.has(k));
+    return data.map(row => {
+      const out: Record<string, number | string> = { date: row.date };
+      let total = 0;
+      for (const k of stackedKeys) total += Number(row[k] || 0);
+      for (const k of stackedKeys) out[k] = total > 0 ? (Number(row[k] || 0) / total) * 100 : 0;
+      return out;
+    });
+  }, [data, sharePctActive, visibleKeys]);
+
   // TGE markers in visible range
   const tgesVisible = useMemo(() => {
     if (!tvl?.tgeMarkers || !data.length) return [];
@@ -429,6 +450,17 @@ export function BigChart() {
           ))}
         </div>
         <div className="flex items-center gap-1">
+          {shareAllowed && (
+            <button onClick={() => setSharePct(v => !v)}
+              className={`text-[11px] px-2.5 py-1 rounded-md border transition ${
+                sharePctActive
+                  ? 'border-white/30 bg-white/10 text-white'
+                  : 'border-white/10 text-white/30 hover:text-white/60'
+              }`}
+              title="Toggle share % stacked view">
+              Share %
+            </button>
+          )}
           <button onClick={() => setShowTges(v => !v)}
             className={`text-[11px] px-2.5 py-1 rounded-md border transition ${
               showTges ? 'border-amber-400/40 bg-amber-400/10 text-amber-300'
@@ -446,16 +478,17 @@ export function BigChart() {
       </header>
 
       <ResponsiveContainer width="100%" height={380}>
-        {cumulativeKey ? (
+        {cumulativeKey && !sharePctActive ? (
           // Volume protocol view: daily bars + cumulative line on a right-side axis.
-          <ComposedChart data={data} margin={{ top: 20, right: 16, left: 8, bottom: 4 }}>
+          <ComposedChart data={displayData} margin={{ top: 20, right: 16, left: 8, bottom: 4 }}>
             <XAxis dataKey="date" tick={{ fill: '#888', fontSize: 11 }} tickFormatter={fmtMonth}
                    axisLine={false} tickLine={false} interval={interval} />
             <YAxis yAxisId="bar" tick={{ fill: '#888', fontSize: 11 }} tickFormatter={fmtUsd}
                    axisLine={false} tickLine={false} width={70} />
             <YAxis yAxisId="line" orientation="right" tick={{ fill: '#fbbf24', fontSize: 11 }}
                    tickFormatter={fmtUsd} axisLine={false} tickLine={false} width={70} />
-            <Tooltip content={<SortedTooltip />} cursor={{ fill: 'rgba(255,255,255,0.04)' }} />
+            <Tooltip content={(p: any) => <SortedTooltip {...p} sharePct={sharePctActive} />}
+                     cursor={{ fill: 'rgba(255,255,255,0.04)' }} />
             {visibleKeys.filter(k => k !== cumulativeKey).map(k => (
               <Bar key={k} yAxisId="bar" dataKey={k} stackId="s"
                    fill={colorMap[k] ?? '#9ca3af'} fillOpacity={0.9}
@@ -477,13 +510,16 @@ export function BigChart() {
             )}
           </ComposedChart>
         ) : (
-          <BarChart data={data} margin={{ top: 20, right: 16, left: 8, bottom: 4 }}>
+          <BarChart data={displayData} margin={{ top: 20, right: 16, left: 8, bottom: 4 }}>
             <XAxis dataKey="date" tick={{ fill: '#888', fontSize: 11 }} tickFormatter={fmtMonth}
                    axisLine={false} tickLine={false} interval={interval} />
-            <YAxis tick={{ fill: '#888', fontSize: 11 }} tickFormatter={fmtUsd}
+            <YAxis tick={{ fill: '#888', fontSize: 11 }}
+                   tickFormatter={sharePctActive ? (v => `${v.toFixed(0)}%`) : fmtUsd}
+                   domain={sharePctActive ? [0, 100] : ['auto', 'auto']}
                    axisLine={false} tickLine={false} width={70} />
-            <Tooltip content={<SortedTooltip />} cursor={{ fill: 'rgba(255,255,255,0.04)' }} />
-            {visibleKeys.map(k => (
+            <Tooltip content={(p: any) => <SortedTooltip {...p} sharePct={sharePctActive} />}
+                     cursor={{ fill: 'rgba(255,255,255,0.04)' }} />
+            {visibleKeys.filter(k => !OVERLAY_SERIES.has(k)).map(k => (
               <Bar key={k} dataKey={k} stackId="s"
                    fill={colorMap[k] ?? '#9ca3af'} fillOpacity={0.9}
                    isAnimationActive={false} />
