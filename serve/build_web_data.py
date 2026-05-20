@@ -966,6 +966,27 @@ def build_users_json(con: duckdb.DuckDBPyConnection) -> dict:
         SELECT date::VARCHAR, active_wallets, new_wallets, cumulative_wallets, swaps, volume_usd
         FROM main_analytics.user_growth_daily ORDER BY date
     """).fetchall()
+    # Holders over time per leg (PT/YT/LP). Backfilled from tx history; see
+    # int_pt_holders_daily + int_yt_lp_holders_daily for caveats. `source`
+    # is 'snapshot' on dates we have a raw_holders/raw_positions snapshot,
+    # else 'reconstructed' from the tx-history derivation.
+    try:
+        h_rows = con.execute("""
+            SELECT date::VARCHAR, leg, n_holders, source
+            FROM main_analytics.holders_daily
+            ORDER BY date, leg
+        """).fetchall()
+    except Exception:
+        h_rows = []
+    h_dates = sorted({r[0] for r in h_rows})
+    h_idx = {d: i for i, d in enumerate(h_dates)}
+    h_series: dict[str, list[int]] = {"PT": [0] * len(h_dates), "YT": [0] * len(h_dates), "LP": [0] * len(h_dates)}
+    h_source: dict[str, list[str]] = {"PT": [""] * len(h_dates), "YT": [""] * len(h_dates), "LP": [""] * len(h_dates)}
+    for date, leg, n, src in h_rows:
+        if leg in h_series and date in h_idx:
+            i = h_idx[date]
+            h_series[leg][i] = int(n or 0)
+            h_source[leg][i] = src or ""
     top = con.execute("""
         SELECT signer, n_swaps, total_volume_usd, n_markets, n_tickers,
                first_seen::VARCHAR, last_seen::VARCHAR, active_span_days,
@@ -1017,6 +1038,14 @@ def build_users_json(con: duckdb.DuckDBPyConnection) -> dict:
             "cumulativeWallets": [int(r[3] or 0) for r in growth],
             "swaps":             [int(r[4] or 0) for r in growth],
             "volumeUsd":         [float(r[5] or 0) for r in growth],
+        },
+        "holdersGrowth": {
+            "dates":   h_dates,
+            "PT":      h_series["PT"],
+            "YT":      h_series["YT"],
+            "LP":      h_series["LP"],
+            # Per-day data quality flag; UI can dim 'reconstructed' segments.
+            "sources": {"PT": h_source["PT"], "YT": h_source["YT"], "LP": h_source["LP"]},
         },
         "topWallets": [
             {
@@ -1086,10 +1115,38 @@ def build_market_holders_json(con: duckdb.DuckDBPyConnection) -> dict:
         JOIN mint_legs ml USING (mint)
         GROUP BY ml.market_key
     """).fetchall())
+    # Per-market historical holders by leg, from int_holders_per_market_daily.
+    # Same active-market filter as the protocol-level chart — markets only
+    # contribute on dates while unmatured. Shape per market:
+    #   {dates: ["YYYY-MM-DD", ...], PT: [n, ...], YT: [...], LP: [...]}
+    try:
+        hist_rows = con.execute("""
+            SELECT market_key, date::VARCHAR, leg, n_holders
+            FROM main_intermediate.int_holders_per_market_daily
+            ORDER BY market_key, date, leg
+        """).fetchall()
+    except Exception:
+        hist_rows = []
+    hist: dict[str, dict] = {}
+    for mk, date, leg, n in hist_rows:
+        e = hist.setdefault(mk, {"datesSet": set(), "PT": {}, "YT": {}, "LP": {}})
+        e["datesSet"].add(date)
+        if leg in ("PT", "YT", "LP"):
+            e[leg][date] = int(n or 0)
+    history_out: dict[str, dict] = {}
+    for mk, e in hist.items():
+        dates = sorted(e["datesSet"])
+        history_out[mk] = {
+            "dates": dates,
+            "PT": [e["PT"].get(d, 0) for d in dates],
+            "YT": [e["YT"].get(d, 0) for d in dates],
+            "LP": [e["LP"].get(d, 0) for d in dates],
+        }
     return {
         "meta": {"generatedAt": datetime.now(timezone.utc).isoformat(), "markets": len(out)},
         "byMarketLeg": out,
         "holdersByMarket": {k: int(v) for k, v in unique_per_market.items()},
+        "historyByMarket": history_out,
     }
 
 

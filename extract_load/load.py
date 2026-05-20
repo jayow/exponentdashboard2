@@ -85,6 +85,25 @@ RAW_DDL = {
             PRIMARY KEY (snapshot_date, position_account)
         )
     """,
+    "raw_anchor_position_events": """
+        -- Anchor YT/LP position-mutating events parsed from raw_helius_tx logs.
+        -- One row per (signature, log_index) where instruction ∈ a closed
+        -- vocabulary of position-affecting Anchor instructions. leg ∈ {YT, LP},
+        -- action_sign ∈ {+1, -1, 0} (mint / burn / init-only).
+        -- Populated by extract_load/extract_anchor_events.py (full refresh).
+        CREATE TABLE IF NOT EXISTS raw_anchor_position_events (
+            signature        VARCHAR NOT NULL,
+            block_time       BIGINT  NOT NULL,
+            signer           VARCHAR,
+            log_index        INTEGER NOT NULL,
+            program_id       VARCHAR NOT NULL,
+            instruction_name VARCHAR NOT NULL,
+            leg              VARCHAR NOT NULL,
+            action_sign      INTEGER NOT NULL,
+            market_key       VARCHAR,
+            PRIMARY KEY (signature, log_index)
+        )
+    """,
     "raw_clmm_markets": """
         -- CLMM market accounts (disc f2f01a0f94bab9cd) under EXPONENT_CLMM_PROGRAM.
         -- Maps each clmm_market account to its pt_mint, so int_holders_current

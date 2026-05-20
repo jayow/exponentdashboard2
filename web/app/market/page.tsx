@@ -11,7 +11,11 @@ type Snapshot = {
   market: string; leg: string; holders: number;
   totalBalance: number; totalUsd: number; top: Holder[];
 };
-type MarketHoldersData = { meta: any; byMarketLeg: Record<string, Snapshot> };
+type MarketHoldersData = {
+  meta: any;
+  byMarketLeg: Record<string, Snapshot>;
+  historyByMarket?: Record<string, { dates: string[]; PT: number[]; YT: number[]; LP: number[] }>;
+};
 
 type TvlByMarket = Record<string, {
   ticker: string; tvlUsd: number[]; tvlUnderlying: number[]; principalUsd?: number[];
@@ -28,7 +32,7 @@ type Volume = { dates: string[]; byMarket?: Record<string, {
 }> };
 
 type Range = '30d' | '90d' | '1y' | 'all';
-type Metric = 'tvl' | 'breakdown' | 'positions' | 'volume';
+type Metric = 'tvl' | 'breakdown' | 'positions' | 'volume' | 'holders';
 type Leg = 'PT' | 'YT' | 'LP';
 
 const BREAKDOWN_COLOR = {
@@ -117,6 +121,16 @@ function MarketDetailView() {
         LP: tickerData.legs.LP?.byMarket?.[marketKey]?.[start + i] || 0,
       }));
     }
+    if (metric === 'holders' && holders?.historyByMarket?.[marketKey]) {
+      const h = holders.historyByMarket[marketKey];
+      const hstart = rangeStart(h.dates, range);
+      return h.dates.slice(hstart).map((d, i) => ({
+        date: d,
+        PT: h.PT[hstart + i] || 0,
+        YT: h.YT[hstart + i] || 0,
+        LP: h.LP[hstart + i] || 0,
+      }));
+    }
     if (metric === 'volume' && volume) {
       const vstart = rangeStart(volume.dates, range);
       const vdates = volume.dates.slice(vstart);
@@ -144,7 +158,7 @@ function MarketDetailView() {
       });
     }
     return [];
-  }, [tvl, positions, volume, metric, range, marketKey, ticker, tvlSeries, tickerData]);
+  }, [tvl, positions, volume, holders, metric, range, marketKey, ticker, tvlSeries, tickerData]);
 
   if (err) return <div className="mx-auto max-w-[1400px] px-4 py-10 text-red-400">Error: {err}</div>;
   if (!holders || !tvl || !positions) return <div className="mx-auto max-w-[1400px] px-4 py-10 text-white/50">Loading…</div>;
@@ -167,23 +181,24 @@ function MarketDetailView() {
       </div>
 
       {/* Stats row */}
-      <div className="mt-6 grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3 text-sm">
+      <div className="mt-6 grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3 text-sm">
         <Stat label="TVL" value={fmtUsd(currentTvl)} />
         <Stat label="PT supply" value={fmtCount(tickerData?.legs.PT?.byMarket?.[marketKey]?.slice(-1)[0] || 0, ticker)} />
         <Stat label="YT supply" value={fmtCount(tickerData?.legs.YT?.byMarket?.[marketKey]?.slice(-1)[0] || 0, ticker)} />
         <Stat label="LP supply" value={fmtCount(tickerData?.legs.LP?.byMarket?.[marketKey]?.slice(-1)[0] || 0, ticker)} />
         <Stat label="PT holders" value={ptSnap ? ptSnap.holders.toLocaleString() : '–'} />
         <Stat label="YT holders" value={ytSnap ? ytSnap.holders.toLocaleString() : '–'} />
+        <Stat label="LP holders" value={lpSnap ? lpSnap.holders.toLocaleString() : '–'} />
       </div>
 
       {/* Chart */}
       <div className="mt-8">
         <div className="flex items-center justify-between mb-3 flex-wrap gap-3">
           <div className="flex items-center gap-1">
-            {(['tvl', 'breakdown', 'positions', 'volume'] as Metric[]).map(m => (
+            {(['tvl', 'breakdown', 'positions', 'volume', 'holders'] as Metric[]).map(m => (
               <button key={m} onClick={() => setMetric(m)}
                 className={`text-xs px-3 py-1 rounded-lg border ${metric === m ? 'border-white/30 bg-white/10 text-white' : 'border-white/10 text-white/40'}`}>
-                {m === 'tvl' ? 'TVL' : m === 'breakdown' ? 'Breakdown' : m === 'positions' ? 'Positions' : 'Volume'}
+                {m === 'tvl' ? 'TVL' : m === 'breakdown' ? 'Breakdown' : m === 'positions' ? 'Positions' : m === 'volume' ? 'Volume' : 'Holders'}
               </button>
             ))}
           </div>
@@ -218,6 +233,15 @@ function MarketDetailView() {
                 <Area type="monotone" dataKey="YT" stroke="#38bdf8" fill="#38bdf866" />
                 <Area type="monotone" dataKey="LP" stroke="#4ade80" fill="#4ade8066" />
               </AreaChart>
+            ) : metric === 'holders' ? (
+              <ComposedChart data={chartData as any} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+                <XAxis dataKey="date" tick={{ fill: '#888', fontSize: 11 }} />
+                <YAxis tick={{ fill: '#888', fontSize: 11 }} tickFormatter={n => n.toLocaleString()} />
+                <Tooltip contentStyle={{ background: '#0a0a0a', border: '1px solid rgba(255,255,255,0.15)', fontSize: 11 }} formatter={(v: any) => Number(v).toLocaleString()} />
+                <Line type="monotone" dataKey="PT" stroke="#a78bfa" strokeWidth={1.5} dot={false} isAnimationActive={false} />
+                <Line type="monotone" dataKey="YT" stroke="#38bdf8" strokeWidth={1.5} dot={false} isAnimationActive={false} />
+                <Line type="monotone" dataKey="LP" stroke="#4ade80" strokeWidth={1.5} dot={false} isAnimationActive={false} />
+              </ComposedChart>
             ) : metric === 'breakdown' ? (
               <BarChart data={chartData as any} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
                 <XAxis dataKey="date" tick={{ fill: '#888', fontSize: 11 }} />

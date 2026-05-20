@@ -61,6 +61,23 @@ sources:
           - name: clmm_market
             tests: [not_null]
 
+      - name: raw_anchor_position_events
+        description: Anchor YT/LP position-mutating events parsed from raw_helius_tx logMessages. See extract_load/extract_anchor_events.py.
+        columns:
+          - name: signature
+            tests: [not_null]
+          - name: log_index
+            tests: [not_null]
+          - name: program_id
+            tests: [not_null]
+          - name: instruction_name
+            tests: [not_null]
+          - name: leg
+            tests:
+              - not_null
+              - accepted_values:
+                  values: ['YT', 'LP']
+
       - name: raw_tvl_snapshots
         description: Daily on-chain TVL — underlying balance held by each market PDA.
         columns:

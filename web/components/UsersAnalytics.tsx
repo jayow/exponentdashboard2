@@ -26,10 +26,15 @@ type UsersData = {
     activeWallets: number[]; newWallets: number[]; cumulativeWallets: number[];
     swaps: number[]; volumeUsd: number[];
   };
+  holdersGrowth?: {
+    dates: string[];
+    PT: number[]; YT: number[]; LP: number[];
+    sources: { PT: string[]; YT: string[]; LP: string[] };
+  };
   topWallets: TopWallet[];
 };
 type Range = '30d' | '90d' | '1y' | 'all';
-type Metric = 'cumulative' | 'newDaily' | 'active';
+type Metric = 'cumulative' | 'newDaily' | 'active' | 'holders';
 
 function fmt(n: number) {
   if (Math.abs(n) >= 1e9) return `${(n / 1e9).toFixed(2)}B`;
@@ -60,6 +65,16 @@ export function UsersAnalytics() {
 
   const chartData = useMemo(() => {
     if (!data) return [];
+    if (metric === 'holders' && data.holdersGrowth) {
+      const hg = data.holdersGrowth;
+      const start = rangeStartIdx(hg.dates, range);
+      return hg.dates.slice(start).map((d, i) => ({
+        date: d,
+        PT: hg.PT[start + i] || 0,
+        YT: hg.YT[start + i] || 0,
+        LP: hg.LP[start + i] || 0,
+      }));
+    }
     const start = rangeStartIdx(data.growth.dates, range);
     return data.growth.dates.slice(start).map((d, i) => ({
       date: d,
@@ -67,7 +82,7 @@ export function UsersAnalytics() {
       NewWallets: data.growth.newWallets[start + i],
       ActiveWallets: data.growth.activeWallets[start + i],
     }));
-  }, [data, range]);
+  }, [data, range, metric]);
 
   if (err) return <div className="text-red-400 text-sm p-4">Failed to load users.json: {err}</div>;
   if (!data) return <div className="text-white/40 text-sm p-4">Loading users…</div>;
@@ -85,10 +100,10 @@ export function UsersAnalytics() {
           </p>
         </div>
         <div className="flex items-center gap-1 flex-wrap">
-          {(['cumulative', 'newDaily', 'active'] as Metric[]).map(m => (
+          {(['cumulative', 'newDaily', 'active', 'holders'] as Metric[]).map(m => (
             <button key={m} onClick={() => setMetric(m)}
               className={`text-xs px-3 py-1 rounded-lg border ${metric === m ? 'border-white/30 bg-white/10' : 'border-white/10 text-white/40'}`}>
-              {m === 'cumulative' ? 'Cumulative' : m === 'newDaily' ? 'New daily' : 'Daily active'}
+              {m === 'cumulative' ? 'Cumulative' : m === 'newDaily' ? 'New daily' : m === 'active' ? 'Daily active' : 'PT/YT/LP holders'}
             </button>
           ))}
           <span className="w-2" />
@@ -121,14 +136,23 @@ export function UsersAnalytics() {
       {/* Growth chart */}
       <ResponsiveContainer width="100%" height={240}>
         {metric === 'cumulative' ? (
-          <AreaChart data={chartData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+          <AreaChart data={chartData as any} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
             <XAxis dataKey="date" tick={{ fill: '#888', fontSize: 11 }} />
             <YAxis tick={{ fill: '#888', fontSize: 11 }} tickFormatter={n => fmt(n)} />
             <Tooltip contentStyle={{ background: '#0a0a0a', border: '1px solid rgba(255,255,255,0.15)', fontSize: 11 }} formatter={(v: any) => fmt(Number(v))} />
             <Area type="monotone" dataKey="Cumulative" stroke="#a78bfa" fill="#a78bfa66" />
           </AreaChart>
+        ) : metric === 'holders' ? (
+          <ComposedChart data={chartData as any} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+            <XAxis dataKey="date" tick={{ fill: '#888', fontSize: 11 }} />
+            <YAxis tick={{ fill: '#888', fontSize: 11 }} tickFormatter={n => fmt(n)} />
+            <Tooltip contentStyle={{ background: '#0a0a0a', border: '1px solid rgba(255,255,255,0.15)', fontSize: 11 }} formatter={(v: any) => fmt(Number(v))} />
+            <Line type="monotone" dataKey="PT" stroke="#a78bfa" strokeWidth={1.5} dot={false} isAnimationActive={false} />
+            <Line type="monotone" dataKey="YT" stroke="#38bdf8" strokeWidth={1.5} dot={false} isAnimationActive={false} />
+            <Line type="monotone" dataKey="LP" stroke="#4ade80" strokeWidth={1.5} dot={false} isAnimationActive={false} />
+          </ComposedChart>
         ) : (
-          <BarChart data={chartData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+          <BarChart data={chartData as any} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
             <XAxis dataKey="date" tick={{ fill: '#888', fontSize: 11 }} />
             <YAxis tick={{ fill: '#888', fontSize: 11 }} tickFormatter={n => fmt(n)} />
             <Tooltip contentStyle={{ background: '#0a0a0a', border: '1px solid rgba(255,255,255,0.15)', fontSize: 11 }} formatter={(v: any) => fmt(Number(v))} />
@@ -136,6 +160,11 @@ export function UsersAnalytics() {
           </BarChart>
         )}
       </ResponsiveContainer>
+      {metric === 'holders' && (
+        <div className="text-[10px] text-white/30 mt-1">
+          PT reconstructed from SPL transfers (may overcount due to uncrawled wallet→wallet transfers); YT/LP reconstructed from Anchor instruction logs. Today's value anchored to on-chain snapshot.
+        </div>
+      )}
 
       {/* Top wallets leaderboard */}
       <div className="mt-4">

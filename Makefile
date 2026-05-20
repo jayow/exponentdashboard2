@@ -26,6 +26,7 @@ extract:
 	python3 -m extract_load.extract_positions
 	python3 -m extract_load.extract_pool_state
 	python3 -m extract_load.extract_holders
+	python3 -m extract_load.extract_anchor_events
 
 transform:
 	cd transform && DBT_PROFILES_DIR=. dbt build
