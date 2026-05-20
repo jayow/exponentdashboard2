@@ -3,7 +3,7 @@ import { Suspense, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import {
-  AreaChart, Area, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
+  AreaChart, Area, BarChart, Bar, ComposedChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer,
 } from 'recharts';
 
 type Holder = { owner: string; balance: number; usd: number; sharePct: number };
@@ -72,6 +72,8 @@ function MarketDetailView() {
   const [tab, setTab] = useState<Leg>('PT');
   const [metric, setMetric] = useState<Metric>('tvl');
   const [range, setRange] = useState<Range>('90d');
+  // Volume tab — toggle bars between absolute USD and per-day share %.
+  const [volumeShare, setVolumeShare] = useState<boolean>(false);
   const [search, setSearch] = useState('');
 
   useEffect(() => {
@@ -123,13 +125,37 @@ function MarketDetailView() {
       const ptSell = m?.ptSellUsd ?? [];
       const ytBuy  = m?.ytBuyUsd  ?? [];
       const ytSell = m?.ytSellUsd ?? [];
-      return vdates.map((d, i) => ({
-        date: d,
-        'PT buy':  ptBuy[vstart + i]  || 0,
-        'PT sell': ptSell[vstart + i] || 0,
-        'YT buy':  ytBuy[vstart + i]  || 0,
-        'YT sell': ytSell[vstart + i] || 0,
-      }));
+      const totals = m?.totalUsd  ?? [];
+      // Cumulative over the FULL series, then sub-slice to the visible window
+      // so the line is correct up to each visible date even when zoomed in.
+      let run = 0;
+      const cumulativeFull = totals.map(v => (run += v || 0));
+      return vdates.map((d, i) => {
+        const idx = vstart + i;
+        const pb = ptBuy[idx]  || 0;
+        const ps = ptSell[idx] || 0;
+        const yb = ytBuy[idx]  || 0;
+        const ys = ytSell[idx] || 0;
+        const sum = pb + ps + yb + ys;
+        if (volumeShare && sum > 0) {
+          return {
+            date: d,
+            'PT buy':  (pb / sum) * 100,
+            'PT sell': (ps / sum) * 100,
+            'YT buy':  (yb / sum) * 100,
+            'YT sell': (ys / sum) * 100,
+            Cumulative: cumulativeFull[idx] || 0,
+          };
+        }
+        return {
+          date: d,
+          'PT buy':  pb,
+          'PT sell': ps,
+          'YT buy':  yb,
+          'YT sell': ys,
+          Cumulative: cumulativeFull[idx] || 0,
+        };
+      });
     }
     return [];
   }, [tvl, positions, volume, metric, range, marketKey, ticker, tvlSeries, tickerData]);
@@ -176,6 +202,17 @@ function MarketDetailView() {
             ))}
           </div>
           <div className="flex items-center gap-1">
+            {metric === 'volume' && (
+              <button onClick={() => setVolumeShare(v => !v)}
+                className={`text-[11px] px-2.5 py-1 rounded-md border transition mr-1 ${
+                  volumeShare
+                    ? 'border-white/30 bg-white/10 text-white'
+                    : 'border-white/10 text-white/30 hover:text-white/60'
+                }`}
+                title="Toggle Share % stacked view">
+                Share %
+              </button>
+            )}
             {(['30d', '90d', '1y', 'all'] as Range[]).map(r => (
               <button key={r} onClick={() => setRange(r)}
                 className={`text-xs px-2.5 py-1 rounded-md ${range === r ? 'bg-white/10 text-white' : 'text-white/30 hover:text-white/60'}`}>
@@ -206,18 +243,30 @@ function MarketDetailView() {
                 <Bar dataKey="Idle"           stackId="b" fill={BREAKDOWN_COLOR['Idle']}           fillOpacity={0.9} isAnimationActive={false} />
               </BarChart>
             ) : metric === 'volume' ? (
-              <BarChart data={chartData as any} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+              // 4-bucket stacked bars + cumulative trajectory on a 2nd axis.
+              // Share % mode normalizes each day's stack to 100%; the
+              // cumulative line keeps its absolute USD scale on the right.
+              <ComposedChart data={chartData as any} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
                 <XAxis dataKey="date" tick={{ fill: '#888', fontSize: 11 }} />
-                <YAxis tick={{ fill: '#888', fontSize: 11 }} tickFormatter={fmtUsd} />
-                <Tooltip contentStyle={{ background: '#0a0a0a', border: '1px solid rgba(255,255,255,0.15)', fontSize: 11 }} formatter={(v: any) => fmtUsd(Number(v))} />
-                {/* 4-bucket volume stack: PT buys (violet), PT sells (rose),
-                    YT buys (emerald), YT sells (orange). Same direction colors
-                    used wherever buy/sell appear elsewhere on the dashboard. */}
-                <Bar dataKey="PT buy"  stackId="v" fill="#a78bfa" fillOpacity={0.9} isAnimationActive={false} />
-                <Bar dataKey="PT sell" stackId="v" fill="#f87171" fillOpacity={0.9} isAnimationActive={false} />
-                <Bar dataKey="YT buy"  stackId="v" fill="#4ade80" fillOpacity={0.9} isAnimationActive={false} />
-                <Bar dataKey="YT sell" stackId="v" fill="#fb923c" fillOpacity={0.9} isAnimationActive={false} />
-              </BarChart>
+                <YAxis yAxisId="bar"
+                       tick={{ fill: '#888', fontSize: 11 }}
+                       tickFormatter={volumeShare ? (v => `${v.toFixed(0)}%`) : fmtUsd}
+                       domain={volumeShare ? [0, 100] : ['auto', 'auto']} />
+                <YAxis yAxisId="line" orientation="right"
+                       tick={{ fill: '#fbbf24', fontSize: 11 }}
+                       tickFormatter={fmtUsd} width={70} />
+                <Tooltip contentStyle={{ background: '#0a0a0a', border: '1px solid rgba(255,255,255,0.15)', fontSize: 11 }}
+                         formatter={(v: any, name: any) => name === 'Cumulative'
+                           ? fmtUsd(Number(v))
+                           : (volumeShare ? `${Number(v).toFixed(1)}%` : fmtUsd(Number(v)))} />
+                <Bar yAxisId="bar" dataKey="PT buy"  stackId="v" fill="#a78bfa" fillOpacity={0.9} isAnimationActive={false} />
+                <Bar yAxisId="bar" dataKey="PT sell" stackId="v" fill="#f87171" fillOpacity={0.9} isAnimationActive={false} />
+                <Bar yAxisId="bar" dataKey="YT buy"  stackId="v" fill="#4ade80" fillOpacity={0.9} isAnimationActive={false} />
+                <Bar yAxisId="bar" dataKey="YT sell" stackId="v" fill="#fb923c" fillOpacity={0.9} isAnimationActive={false} />
+                <Line yAxisId="line" type="monotone" dataKey="Cumulative"
+                      stroke="#fbbf24" strokeWidth={1.5} strokeOpacity={0.6}
+                      dot={false} isAnimationActive={false} />
+              </ComposedChart>
             ) : (
               <BarChart data={chartData as any} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
                 <XAxis dataKey="date" tick={{ fill: '#888', fontSize: 11 }} />
