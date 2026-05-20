@@ -18,6 +18,11 @@ type Holders = {
   holdersByMarket?: Record<string, number>;
 };
 
+type VolumeData = {
+  dates: string[];
+  byMarket?: Record<string, { totalUsd?: number[] }>;
+};
+
 type StatusFilter = 'active' | 'all';
 
 function fmtUsd(n: number) {
@@ -50,12 +55,13 @@ function maturityMs(marketKey: string): number | null {
 
 type SortKey =
   | 'marketKey' | 'platform' | 'tvlUsd' | 'ptUsd' | 'ytUsd' | 'lpUsd' | 'idleUsd'
-  | 'liquidityUsd' | 'holders';
+  | 'liquidityUsd' | 'volume7dUsd' | 'holders';
 
 export function MarketsList() {
   const [tvl, setTvl] = useState<TvlData | null>(null);
   const [ap, setAp] = useState<ApData | null>(null);
   const [holders, setHolders] = useState<Holders | null>(null);
+  const [volume, setVolume] = useState<VolumeData | null>(null);
   const [sortKey, setSortKey] = useState<SortKey>('tvlUsd');
   const [sortDesc, setSortDesc] = useState<boolean>(true);
   const [status, setStatus] = useState<StatusFilter>('active');
@@ -64,6 +70,7 @@ export function MarketsList() {
     fetch('/tvl.json').then(r => r.json()).then(setTvl).catch(() => null);
     fetch('/active_positions.json').then(r => r.json()).then(setAp).catch(() => null);
     fetch('/market_holders.json').then(r => r.json()).then(setHolders).catch(() => null);
+    fetch('/volume.json').then(r => r.json()).then(setVolume).catch(() => null);
   }, []);
 
   const rows = useMemo(() => {
@@ -74,7 +81,7 @@ export function MarketsList() {
     // server-side `maturity_date >= current_date` logic in stg_markets.
     const now = new Date();
     const todayMs = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
-    const out: { marketKey: string; ticker: string; platform: string; tvlUsd: number; ptUsd: number; ytUsd: number; lpUsd: number; idleUsd: number; liquidityUsd: number; ptSupply: number; holders: number; isActive: boolean; isTest: boolean }[] = [];
+    const out: { marketKey: string; ticker: string; platform: string; tvlUsd: number; ptUsd: number; ytUsd: number; lpUsd: number; idleUsd: number; liquidityUsd: number; volume7dUsd: number; ptSupply: number; holders: number; isActive: boolean; isTest: boolean }[] = [];
     for (const [mk, m] of Object.entries(tvl.byMarket)) {
       const ticker = m.ticker;
       const platform = m.platform || 'Other';
@@ -91,10 +98,13 @@ export function MarketsList() {
       const ptSupply = t?.legs.PT?.byMarket?.[mk]?.slice(-1)[0] || 0;
       // Unique holders across PT + YT + LP for this market.
       const h = holders?.holdersByMarket?.[mk] ?? holders?.byMarketLeg?.[`${mk}:PT`]?.holders ?? 0;
+      // 7d trailing volume — sum last 7 days of totalUsd from volume.json.
+      const vArr = volume?.byMarket?.[mk]?.totalUsd ?? [];
+      const volume7dUsd = vArr.slice(-7).reduce((s, v) => s + (v || 0), 0);
       // Active = trailing DDMonYY in the market_key is on or after today.
       const mat = maturityMs(mk);
       const isActive = mat !== null ? mat >= todayMs : tvlUsd > 1 || ptSupply > 0;
-      out.push({ marketKey: mk, ticker, platform, tvlUsd, ptUsd, ytUsd, lpUsd, idleUsd, liquidityUsd, ptSupply, holders: h, isActive, isTest: !!m.isTest });
+      out.push({ marketKey: mk, ticker, platform, tvlUsd, ptUsd, ytUsd, lpUsd, idleUsd, liquidityUsd, volume7dUsd, ptSupply, holders: h, isActive, isTest: !!m.isTest });
     }
     const filtered = out.filter(r => status === 'all' || (r.isActive && !r.isTest));
     filtered.sort((a, b) => {
@@ -119,7 +129,7 @@ export function MarketsList() {
       return sortDesc ? -cmp : cmp;
     });
     return filtered;
-  }, [tvl, ap, holders, status, sortKey, sortDesc]);
+  }, [tvl, ap, holders, volume, status, sortKey, sortDesc]);
 
   function toggleSort(k: SortKey) {
     if (k === sortKey) setSortDesc(d => !d);
@@ -159,6 +169,7 @@ export function MarketsList() {
                 ['lpUsd',        'LP',        'right', 'LP value — user share of pool capital (LP supply × underlying USD, capped at remaining SY after PT+YT)'],
                 ['idleUsd',      'Idle',      'right', 'Idle SY — TVL not yet split into PT/YT and not in LP'],
                 ['liquidityUsd', 'Liquidity', 'right', "AMM pool TVL — matches Exponent UI 'Liquidity'. Formula: sy_balance × sy_rate + pt_balance / exp(last_ln_implied × years_remaining), decoded from the on-chain MarketTwo account."],
+                ['volume7dUsd',  'Volume 7d', 'right', 'Trailing 7-day total swap volume in USD across PT and YT for this market'],
                 ['holders',      'Holders',   'right', 'Unique wallets holding PT, YT, or LP — a wallet across multiple legs counts once'],
               ] as const).map(([key, label, align, tip]) => (
                 <th key={key} title={tip || undefined}
@@ -188,6 +199,7 @@ export function MarketsList() {
                 <td className="py-1.5 text-right tabular-nums text-white/70">{r.lpUsd > 0 ? fmtUsd(r.lpUsd) : '–'}</td>
                 <td className="py-1.5 text-right tabular-nums text-white/70">{r.idleUsd > 0 ? fmtUsd(r.idleUsd) : '–'}</td>
                 <td className="py-1.5 text-right tabular-nums text-white/70">{r.liquidityUsd > 0 ? fmtUsd(r.liquidityUsd) : '–'}</td>
+                <td className="py-1.5 text-right tabular-nums text-white/70">{r.volume7dUsd > 0 ? fmtUsd(r.volume7dUsd) : '–'}</td>
                 <td className="py-1.5 text-right tabular-nums text-white/70">{r.holders || '–'}</td>
               </tr>
             ))}
