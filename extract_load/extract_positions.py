@@ -45,7 +45,9 @@ YT_DISC = bytes.fromhex("e35c92311d55475e")
 LP_DISC = bytes.fromhex("69f125c8e002fc5a")
 CLMM_MARKET_DISC = bytes.fromhex("f2f01a0f94bab9cd")
 YT_SIZES = (124, 164, 204)
-LP_CORE_SIZES = (128, 168, 208)
+# Core LpPositions: scan by discriminator only, no dataSize filter.
+# Sizes seen in the wild include 88 (no trackers — common newer variant),
+# 128, 168, 208 (1+0 / 1+1 / 1+2 trackers). v1 missed size 88; we don't.
 # CLMM LP balance lives at offset 104 (past the two u128 fee_inside fields).
 
 
@@ -95,6 +97,31 @@ async def _fetch_core_by_size(client: SolanaRpcClient, disc: bytes, sizes: tuple
             owner, vault, amount = decoded
             out.append({"position_account": a["pubkey"], "owner": owner, "vault": vault, "amount_raw": amount})
         rprint(f"    size={size}: {len(accts)} accounts")
+    return out
+
+
+async def _fetch_core_lp_any_size(client: SolanaRpcClient) -> list[dict]:
+    """Core LpPositions, no dataSize filter — catches every size variant.
+    We expect 88 (newest, no trackers) plus 128 / 168 / 208 with trackers.
+    """
+    out: list[dict] = []
+    disc_b58 = base58.b58encode(LP_DISC).decode()
+    accts = await client.get_program_accounts(
+        EXPONENT_CORE_PROGRAM,
+        filters=[{"memcmp": {"offset": 0, "bytes": disc_b58}}],
+    )
+    sizes = Counter()
+    for a in accts:
+        data_field = a["account"]["data"]
+        data_b64 = data_field[0] if isinstance(data_field, list) else data_field
+        decoded = _decode_simple_position(data_b64)
+        if decoded is None:
+            continue
+        owner, vault, amount = decoded
+        sizes[len(base64.b64decode(data_b64))] += 1
+        out.append({"position_account": a["pubkey"], "owner": owner, "vault": vault, "amount_raw": amount})
+    for size, n in sorted(sizes.items()):
+        rprint(f"    size={size}: {n} accounts")
     return out
 
 
@@ -151,7 +178,7 @@ async def run() -> dict:
         yt = await _fetch_core_by_size(client, YT_DISC, YT_SIZES)
         rprint(f"  → {len(yt)} YT positions")
         rprint("  LpPosition (core AMM):")
-        lp_core = await _fetch_core_by_size(client, LP_DISC, LP_CORE_SIZES)
+        lp_core = await _fetch_core_lp_any_size(client)
         rprint(f"  → {len(lp_core)} core LP positions")
         rprint("  LpPosition (CLMM):")
         lp_clmm = await _fetch_clmm_lp(client)
