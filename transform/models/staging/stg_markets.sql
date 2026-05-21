@@ -97,7 +97,45 @@ pt_yt_derived_filtered as (
 -- the highest-priority layer that has it. This way an api active market
 -- gets api's pt/yt mints, but an expired market gets sy_mint from
 -- resolved_onchain AND pt_mint from pt_yt_derived.
+-- YT mint overrides — for markets where API doesn't expose ytMint AND
+-- no Metaplex metadata exists for the YT mint (so stg_pt_yt_markets can't
+-- derive it from name pattern). Currently the on-chain MarketThree decoder
+-- doesn't extract yt_mint either; the cleanest long-term fix is to add it
+-- to that decoder. Until then, this seed carries hand-discovered mappings
+-- (verified via YT-position tx introspection).
+yt_mint_overrides as (
+    select
+        market_key,
+        cast(null as varchar)                                  as source,
+        cast(null as varchar)                                  as sy_mint,
+        cast(null as varchar)                                  as vault,
+        cast(null as varchar)                                  as pt_mint,
+        yt_mint,
+        cast(null as varchar)                                  as lp_mint,
+        cast(null as varchar)                                  as amm_pool,
+        cast(null as varchar)                                  as clmm_orderbook,
+        cast(null as varchar)                                  as pool,
+        cast(null as varchar)                                  as underlying_mint,
+        cast(null as varchar)                                  as ticker,
+        cast(null as int)                                      as underlying_decimals,
+        cast(null as varchar)                                  as platform,
+        cast(null as bigint)                                   as maturity_ts,
+        cast(null as date)                                     as maturity_date,
+        cast(null as varchar)                                  as status,
+        cast(null as varchar)                                  as interface_type,
+        cast(current_timestamp as timestamp)                   as fetched_at
+    from {{ ref('yt_mint_overrides') }}
+),
 all_layers as (
+    -- Priority 0 (highest) — yt_mint overrides win for the yt_mint field.
+    -- Other fields are null in this layer so they don't override.
+    select 0 as priority, market_key, 'override' as source,
+           sy_mint, vault, pt_mint, yt_mint, lp_mint,
+           amm_pool, clmm_orderbook, pool, underlying_mint, ticker,
+           underlying_decimals, platform, maturity_ts, maturity_date,
+           status, interface_type, fetched_at
+    from yt_mint_overrides
+    union all
     select 1 as priority, * from api
     union all
     select 2 as priority, * from resolved_onchain
