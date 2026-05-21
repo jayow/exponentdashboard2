@@ -39,6 +39,11 @@ from pathlib import Path
 import duckdb
 from rich import print as rprint
 
+# Import the raw-table DDL so we can recreate raw tables WITH their
+# PRIMARY KEY / NOT NULL constraints. Plain CTAS-from-Parquet drops
+# constraints, which then breaks INSERT ... ON CONFLICT in extractors.
+from .load import RAW_DDL
+
 
 FULL_DB = Path("data/warehouse.duckdb")
 SLIM_DB = Path("data/warehouse_slim.duckdb")
@@ -114,13 +119,25 @@ PERSISTED_MODELS = [
 
 
 def _copy_via_parquet(src, slim, sch: str, tbl: str, tmpdir: str, where: str = "") -> int:
-    """Stream a table from src→Parquet→slim. WHERE clause optional."""
+    """Stream a table from src→Parquet→slim. WHERE clause optional.
+
+    For raw_* tables (sch == 'main'), creates the table from RAW_DDL FIRST
+    so PRIMARY KEY / NOT NULL constraints are preserved (required for
+    extractors that use INSERT ... ON CONFLICT). For non-raw tables (dbt
+    models), plain CTAS — those don't have explicit PKs.
+    """
     pq_path = Path(tmpdir) / f"{sch}_{tbl}.parquet"
     select = f'SELECT * FROM {sch}."{tbl}"'
     if where:
         select += f" WHERE {where}"
     src.execute(f"COPY ({select}) TO '{pq_path}' (FORMAT 'parquet')")
-    slim.execute(f'CREATE TABLE {sch}."{tbl}" AS SELECT * FROM read_parquet(\'{pq_path}\')')
+    if sch == "main" and tbl in RAW_DDL:
+        # Create with proper DDL (PRIMARY KEY etc), then INSERT.
+        slim.execute(RAW_DDL[tbl])
+        slim.execute(f"INSERT INTO {sch}.\"{tbl}\" SELECT * FROM read_parquet('{pq_path}')")
+    else:
+        # dbt-built model — schema captured via CTAS is fine.
+        slim.execute(f'CREATE TABLE {sch}."{tbl}" AS SELECT * FROM read_parquet(\'{pq_path}\')')
     n = slim.execute(f'SELECT COUNT(*) FROM {sch}."{tbl}"').fetchone()[0]
     pq_path.unlink()
     return n
@@ -158,6 +175,9 @@ def main() -> None:
         # tx (with fresh payloads), dbt incremental consumes them, payloads
         # are discarded at end of run. We only need signature/block_time/slot
         # in the slim so extract_transactions can dedupe.
+        # Create with full DDL so PRIMARY KEY is preserved (raw_helius_tx
+        # has PK(signature) — needed for INSERT ... ON CONFLICT in
+        # extract_transactions).
         rprint(f"  [dim]raw_helius_tx: payload column stripped (NULL'd)[/dim]")
         try:
             pq = Path(tmpdir) / "raw_helius_tx.parquet"
@@ -168,7 +188,8 @@ def main() -> None:
                     FROM main.raw_helius_tx
                 ) TO '{pq}' (FORMAT 'parquet')
             """)
-            slim.execute(f"CREATE TABLE main.raw_helius_tx AS SELECT * FROM read_parquet('{pq}')")
+            slim.execute(RAW_DDL["raw_helius_tx"])
+            slim.execute(f"INSERT INTO main.raw_helius_tx SELECT * FROM read_parquet('{pq}')")
             n = slim.execute("SELECT COUNT(*) FROM main.raw_helius_tx").fetchone()[0]
             total_rows += n
             pq.unlink()
