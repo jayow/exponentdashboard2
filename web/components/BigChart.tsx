@@ -77,10 +77,11 @@ const TOOLTIP_CAP = 15;  // show top N entries; sum the rest into a single row
 // per-day total at the bottom — otherwise e.g. a $500M cumulative line would
 // be summed into a $100K daily bar total.
 const OVERLAY_SERIES = new Set(['Cumulative']);
-function SortedTooltip({ active, payload, label, sharePct }: TooltipProps<number, string> & { sharePct?: boolean }) {
+function SortedTooltip(props: any) {
+  const { active, payload, label, sharePct } = props as { active?: boolean; payload?: any[]; label?: string; sharePct?: boolean };
   if (!active || !payload?.length) return null;
   const mapped = payload
-    .map(p => ({ name: String(p.name ?? p.dataKey ?? ''), value: typeof p.value === 'number' ? p.value : 0, color: p.color || (p as any).fill || '#888' }))
+    .map((p: any) => ({ name: String(p.name ?? p.dataKey ?? ''), value: typeof p.value === 'number' ? p.value : 0, color: p.color || p.fill || '#888' }))
     .filter(e => Math.abs(e.value) > 0.01);
   if (!mapped.length) return null;
   const overlays = mapped.filter(e => OVERLAY_SERIES.has(e.name));

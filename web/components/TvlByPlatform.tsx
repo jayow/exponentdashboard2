@@ -24,11 +24,12 @@ const CHART_HEIGHT = 280;  // both cards use the same chart height
 // Tooltip showing "Platform: $X (Y%)". For the horizontal bar chart we
 // can't rely on Recharts' default series-name (it would say "value")
 // because dataKey is "value" and nameKey isn't an honored option on Bar.
-function PlatformTooltip({ active, payload, total }: TooltipProps<number, string> & { total: number }) {
+function PlatformTooltip(props: any) {
+  const { active, payload, total } = props as { active?: boolean; payload?: any[]; total: number };
   if (!active || !payload?.length) return null;
   const p = payload[0];
   const value = typeof p.value === 'number' ? p.value : 0;
-  const platform = (p.payload as any)?.platform ?? p.name ?? '—';
+  const platform = p.payload?.platform ?? p.name ?? '—';
   return (
     <div className="bg-[#0a0a0a] border border-white/15 rounded-lg p-2 text-xs">
       <div className="flex items-center gap-2">
