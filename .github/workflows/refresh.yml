@@ -1,9 +1,9 @@
 name: Daily Dashboard Refresh
 
 on:
-  # Daily at 02:30 UTC — pick a time when Helius RPC load is low.
+  # Daily at 00:00 UTC.
   schedule:
-    - cron: '30 2 * * *'
+    - cron: '0 0 * * *'
   # Manual trigger from the Actions tab.
   workflow_dispatch:
 
