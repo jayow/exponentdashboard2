@@ -11,27 +11,6 @@ models:
       - name: block_time
         tests: [not_null]
 
-  - name: stg_inner_ix
-    description: >
-      One row per inner instruction across all txs. ~13.1M rows from 562K
-      txs (≈23 inner ix avg per tx). Materialized as a table — downstream
-      marts hit this often and UNNEST per query is expensive.
-    columns:
-      - name: signature
-        tests: [not_null]
-      - name: outer_ix_index
-        tests: [not_null]
-      - name: inner_ix_index
-        tests: [not_null]
-      - name: program_id
-        tests: [not_null]
-    tests:
-      - dbt_utils.unique_combination_of_columns:
-          combination_of_columns:
-            - signature
-            - outer_ix_index
-            - inner_ix_index
-
   - name: stg_token_changes
     description: >
       Per-tx, per-(account_index, mint, owner) token balance deltas.

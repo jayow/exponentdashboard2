@@ -1,5 +1,6 @@
 -- Typed projection of raw_helius_tx. No business logic.
--- Lifts hot fields out of payload JSON; inner instructions explode in stg_inner_ix.
+-- Lifts hot fields (account_keys, signer, log_messages, token_balances,
+-- inner_instructions, fee, err) out of payload JSON for downstream models.
 {{ config(materialized='view') }}
 
 select

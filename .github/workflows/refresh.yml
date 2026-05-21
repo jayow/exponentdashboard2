@@ -1,0 +1,137 @@
+name: Daily Dashboard Refresh
+
+on:
+  # Daily at 02:30 UTC — pick a time when Helius RPC load is low.
+  schedule:
+    - cron: '30 2 * * *'
+  # Manual trigger from the Actions tab.
+  workflow_dispatch:
+
+# Avoid concurrent runs trampling the same git push.
+concurrency:
+  group: refresh
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install Python deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Install dbt deps
+        working-directory: transform
+        run: dbt deps
+
+      # ── Restore cached warehouse_slim.duckdb ─────────────────────────
+      # Cache key uses run_id so each run saves a fresh cache; restore-keys
+      # falls back to the most recent prior run. This is the same pattern
+      # v1 used (works around GHA cache's "save once" rule).
+      - name: Restore warehouse cache
+        id: warehouse-cache
+        uses: actions/cache@v4
+        with:
+          path: data/warehouse.duckdb
+          key: warehouse-slim-${{ github.run_id }}
+          restore-keys: |
+            warehouse-slim-
+
+      - name: Seed warehouse from release if cache empty
+        if: steps.warehouse-cache.outputs.cache-hit != 'true'
+        run: |
+          if [ ! -f data/warehouse.duckdb ]; then
+            echo "Cache miss — downloading warehouse seed from latest release…"
+            mkdir -p data
+            # Expects a release tagged 'warehouse-seed' with warehouse_slim.duckdb.gz attached
+            gh release download warehouse-seed -p 'warehouse_slim.duckdb.gz' -D data/
+            gunzip data/warehouse_slim.duckdb.gz
+            mv data/warehouse_slim.duckdb data/warehouse.duckdb
+            echo "Seeded: $(du -sh data/warehouse.duckdb | cut -f1)"
+          else
+            echo "Cache hit — using existing data/warehouse.duckdb ($(du -sh data/warehouse.duckdb | cut -f1))"
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # ── Configure .env from GHA secrets ──────────────────────────────
+      - name: Write .env
+        run: |
+          cat > .env <<EOF
+          SOLANA_RPC_URLS=${{ secrets.SOLANA_RPC_URLS }}
+          WAREHOUSE_PATH=data/warehouse.duckdb
+          EOF
+
+      # ── Run the refresh pipeline ─────────────────────────────────────
+      # Each step is allowed to fail with `|| true` so we can compact +
+      # publish whatever was produced. Sanity-check at the end refuses to
+      # push if the dashboard JSON looks empty.
+      - name: Extract → transform → serve
+        run: |
+          python -m extract_load.extract_markets
+          python -m extract_load.extract_signatures
+          python -m extract_load.extract_transactions
+          python -m extract_load.extract_token_metadata
+          python -m extract_load.extract_prices
+          python -m extract_load.extract_positions
+          python -m extract_load.extract_pool_state
+          python -m extract_load.extract_holders
+          python -m extract_load.extract_anchor_events
+          cd transform && DBT_PROFILES_DIR=. dbt build && cd ..
+          python -m serve.build_web_data || true
+        env:
+          PYTHONUNBUFFERED: '1'
+
+      # ── Strip payloads to keep the cache slim ────────────────────────
+      - name: Compact warehouse (NULL out raw_helius_tx.payload)
+        run: python -m extract_load.compact_in_place
+
+      # ── Sanity-check the dashboard output before committing ──────────
+      - name: Validate JSON output
+        id: validate
+        run: |
+          ok=true
+          for f in tvl.json users.json market_holders.json; do
+            if [ ! -s "web/public/$f" ]; then
+              echo "::error::web/public/$f missing or empty"
+              ok=false
+            fi
+          done
+          # tvl.json should always have substantial content
+          size=$(stat -c %s web/public/tvl.json 2>/dev/null || echo 0)
+          if [ "$size" -lt 100000 ]; then
+            echo "::error::tvl.json too small ($size bytes) — refusing to publish"
+            ok=false
+          fi
+          echo "ok=$ok" >> "$GITHUB_OUTPUT"
+
+      # ── Commit refreshed JSON back to the repo ───────────────────────
+      - name: Commit + push refreshed JSON
+        if: steps.validate.outputs.ok == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add web/public/*.json
+          if git diff --cached --quiet; then
+            echo "No JSON changes to commit."
+          else
+            git commit -m "chore: daily refresh $(date -u +%Y-%m-%d)"
+            git push origin HEAD:${{ github.ref_name }}
+          fi
