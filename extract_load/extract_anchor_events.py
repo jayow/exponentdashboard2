@@ -15,8 +15,19 @@ markets that were unmatured at any given historical date.
 We do this in Python because the equivalent SQL (unnest + window) OOMs
 DuckDB on the full 695k-tx history (35M+ log lines blow past 6 GiB temp).
 Python streams batches and only retains ~150k matching rows.
+
+Modes:
+  - Default (incremental): only process tx whose block_time is greater
+    than the max already in raw_anchor_position_events. Required for
+    cloud / slim-DB scenario where most payloads are NULL.
+  - --full-refresh: wipe + re-parse everything. Local-only — needs the
+    full raw_helius_tx with all payloads present.
+
+Tx with payload IS NULL are always skipped (they're metadata-only rows
+in the slim DB; their payload is unavailable for parsing).
 """
 from __future__ import annotations
+import argparse
 import json
 import re
 from collections import namedtuple
@@ -90,13 +101,14 @@ def parse_logs(logs: list[str]) -> list[tuple[int, str, str]]:
     return out
 
 
-def run() -> dict:
-    rprint("[cyan]Extracting Anchor position events from raw_helius_tx…[/cyan]")
+def run(full_refresh: bool = False) -> dict:
+    mode = "FULL REFRESH" if full_refresh else "INCREMENTAL"
+    rprint(f"[cyan]Extracting Anchor position events from raw_helius_tx ({mode})…[/cyan]")
     n_in = 0
     rows: list[tuple] = []
     with warehouse() as con:
-        # Target table — schema now includes market_key. If the column is
-        # missing from a prior build, drop+recreate (cheap, fully derived).
+        # Target table — schema includes market_key. If the column is missing
+        # from a prior build, drop+recreate (cheap, fully derived).
         cols = {r[1] for r in con.execute("PRAGMA table_info('raw_anchor_position_events')").fetchall()}
         if cols and 'market_key' not in cols:
             con.execute("DROP TABLE raw_anchor_position_events")
@@ -114,12 +126,29 @@ def run() -> dict:
                 PRIMARY KEY (signature, log_index)
             )
         """)
-        # Full refresh — cheap (~150k rows max).
-        con.execute("DELETE FROM raw_anchor_position_events")
 
-        # Build pubkey -> market_key index from dim_markets. Each market has
-        # several identifying pubkeys; any of them appearing in a tx's
-        # accountKeys means the tx touched that market.
+        # Determine the incremental cutoff: max block_time already processed.
+        # In full-refresh mode we wipe the table; otherwise we only look at
+        # tx newer than what we've already parsed.
+        if full_refresh:
+            con.execute("DELETE FROM raw_anchor_position_events")
+            cutoff_block_time = 0
+            rprint("  full-refresh: wiped existing rows")
+        else:
+            r = con.execute(
+                "SELECT MAX(block_time) FROM raw_anchor_position_events"
+            ).fetchone()
+            cutoff_block_time = int(r[0] or 0)
+            if cutoff_block_time > 0:
+                from datetime import datetime, timezone
+                cutoff_iso = datetime.fromtimestamp(
+                    cutoff_block_time, tz=timezone.utc
+                ).isoformat()
+                rprint(f"  incremental: processing tx with block_time > {cutoff_block_time} ({cutoff_iso})")
+            else:
+                rprint("  incremental: no prior rows — first run")
+
+        # Build pubkey -> market_key index from dim_markets.
         rprint("  building market-pubkey index from dim_markets…")
         market_rows = con.execute("""
             SELECT market_key, vault, amm_pool, pt_mint, yt_mint, lp_mint, sy_mint, clmm_orderbook
@@ -130,7 +159,6 @@ def run() -> dict:
             for pk in (vault, amm, pt, yt, lp, sy, ob):
                 if pk and pk not in pubkey_to_market:
                     pubkey_to_market[pk] = mk
-        # Also map CLMM market account → pt_mint → market_key via raw_clmm_markets.
         for mkt_acct, pt_mint in con.execute("""
             SELECT clmm_market, pt_mint FROM raw_clmm_markets
             WHERE snapshot_date = (SELECT MAX(snapshot_date) FROM raw_clmm_markets)
@@ -139,9 +167,11 @@ def run() -> dict:
                 pubkey_to_market[mkt_acct] = pubkey_to_market[pt_mint]
         rprint(f"  indexed {len(pubkey_to_market)} pubkeys → {len(market_rows)} markets")
 
-        # Stream raw_helius_tx in chunks ordered by signature for stable progress.
-        # Filter to txs that involve at least one of the Exponent programs
-        # (via raw_signatures discovered_via). Cuts the input by ~half.
+        # Stream raw_helius_tx. Filter to Exponent-touching tx AND to:
+        #   - block_time > cutoff (incremental window)
+        #   - payload IS NOT NULL (slim-DB rows that lost their payload are
+        #     skipped — their events are already in raw_anchor_position_events
+        #     from when the local extract processed them)
         cur = con.execute("""
             SELECT t.signature, t.block_time, t.payload
             FROM raw_helius_tx t
@@ -149,13 +179,21 @@ def run() -> dict:
                 SELECT signature FROM raw_signatures
                 WHERE discovered_via IN ('core_program', 'clmm_program', 'pool', 'vault')
             )
-        """)
+              AND t.block_time > ?
+              AND t.payload IS NOT NULL
+        """, [cutoff_block_time])
+
+        n_payload_null_skipped = 0
         while True:
             batch = cur.fetchmany(5000)
             if not batch:
                 break
             for sig, bt, payload_json in batch:
                 n_in += 1
+                if payload_json is None:
+                    # Belt-and-suspenders — SQL filter should have caught this.
+                    n_payload_null_skipped += 1
+                    continue
                 try:
                     p = json.loads(payload_json)
                     meta = p.get("meta") or {}
@@ -183,29 +221,54 @@ def run() -> dict:
             if n_in % 50000 == 0:
                 rprint(f"  scanned {n_in} txs, {len(rows)} matching events")
 
-        rprint(f"[cyan]Parsed {n_in} txs → {len(rows)} matching events. Loading…[/cyan]")
+        rprint(f"[cyan]Parsed {n_in} new txs → {len(rows)} matching events. Loading…[/cyan]")
         if rows:
+            # UPSERT (not plain INSERT) so reruns within a window don't crash
+            # on duplicate (signature, log_index). With incremental we use a
+            # strict block_time > cutoff which should already prevent dupes,
+            # but ON CONFLICT keeps us safe if cutoff is misaligned.
             con.executemany(
-                "INSERT INTO raw_anchor_position_events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                """INSERT INTO raw_anchor_position_events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT (signature, log_index) DO UPDATE SET
+                     block_time = EXCLUDED.block_time,
+                     signer = EXCLUDED.signer,
+                     program_id = EXCLUDED.program_id,
+                     instruction_name = EXCLUDED.instruction_name,
+                     leg = EXCLUDED.leg,
+                     action_sign = EXCLUDED.action_sign,
+                     market_key = EXCLUDED.market_key""",
                 rows,
             )
-        # Action breakdown + market-attribution coverage
+        # Action breakdown + market-attribution coverage (entire table, not
+        # just this run's delta).
         n_attrib = con.execute(
             "SELECT COUNT(*), COUNT(market_key) FROM raw_anchor_position_events"
         ).fetchone()
-        rprint(f"  events with market_key: {n_attrib[1]}/{n_attrib[0]} ({100*n_attrib[1]/n_attrib[0]:.1f}%)")
-        counts = con.execute("""
-            SELECT instruction_name, leg, action_sign, COUNT(*) FROM raw_anchor_position_events
-            GROUP BY 1, 2, 3 ORDER BY 4 DESC
-        """).fetchall()
-        for ix, leg, sign, n in counts:
-            rprint(f"  {ix:35s} {leg} {sign:+d}  {n}")
+        rprint(
+            f"  table total: {n_attrib[0]:,} events  ({n_attrib[1]:,} w/ market_key, "
+            f"{100*n_attrib[1]/n_attrib[0]:.1f}%)"
+        )
+        if n_payload_null_skipped:
+            rprint(f"  skipped {n_payload_null_skipped} tx with NULL payload (slim DB)")
 
-    return {"n_txs_scanned": n_in, "n_events": len(rows)}
+    return {
+        "n_txs_scanned": n_in,
+        "n_events": len(rows),
+        "cutoff_block_time": cutoff_block_time,
+        "full_refresh": full_refresh,
+    }
 
 
 def main() -> None:
-    run()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--full-refresh",
+        action="store_true",
+        help="Wipe raw_anchor_position_events and re-parse every tx from scratch. "
+             "Requires the full raw_helius_tx (all payloads). Use locally only.",
+    )
+    args = parser.parse_args()
+    run(full_refresh=args.full_refresh)
 
 
 if __name__ == "__main__":
