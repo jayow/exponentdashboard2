@@ -1,5 +1,6 @@
 'use client';
 import { useEffect, useMemo, useState } from 'react';
+import { platformOfTicker } from '@/lib/colors';
 
 type Row = {
   marketKey: string;
@@ -12,6 +13,7 @@ type Row = {
   totalSupply: number;
   status: string | null;
   maturityDate: string | null;
+  isTest?: boolean;
 };
 type HoldersData = {
   meta: { generatedAt: string; snapshotDate: string; totalHolders: number; mintsCovered: number };
@@ -52,24 +54,21 @@ export function HoldersAnalytics() {
     if (!data) return [];
     return data.rows.filter(r =>
       (leg === 'ALL' || r.leg === leg) &&
-      (status === 'all' || (status === 'active' && r.status === 'active'))
+      (status === 'all' || (status === 'active' && r.status === 'active')) &&
+      // Always hide test/calibration deployments — they're never relevant
+      // alongside production markets.
+      !r.isTest
     );
   }, [data, leg, status]);
 
   if (err) return <div className="text-red-400 text-sm p-4">Failed to load holders.json: {err}</div>;
   if (!data) return <div className="text-white/40 text-sm p-4">Loading holders…</div>;
 
-  const totalHolders = rows.reduce((s, r) => s + r.nHolders, 0);
-
   return (
     <section className="rounded-2xl border border-white/10 bg-white/5 p-4 mb-6">
       <header className="flex items-baseline justify-between flex-wrap gap-2 mb-3">
         <div>
           <h2 className="text-sm uppercase tracking-wider text-white/60">Holders</h2>
-          <p className="text-xs text-white/40">
-            Snapshot {data.meta.snapshotDate} • {rows.length} mints • {fmt(totalHolders)} holder rows
-            <span className="text-white/30"> • via getProgramAccounts</span>
-          </p>
         </div>
         <div className="flex items-center gap-1 flex-wrap">
           {(['ALL', 'PT', 'YT', 'LP'] as LegFilter[]).map(l => (
@@ -93,6 +92,7 @@ export function HoldersAnalytics() {
           <thead className="text-white/40 border-b border-white/10">
             <tr>
               <th className="text-left py-2 font-normal">Market</th>
+              <th className="text-left py-2 font-normal">Platform</th>
               <th className="text-left py-2 font-normal">Leg</th>
               <th className="text-right py-2 font-normal">Holders</th>
               <th className="text-right py-2 font-normal">Top 1</th>
@@ -108,6 +108,7 @@ export function HoldersAnalytics() {
                   <a href={`/market/?key=${r.marketKey}`} className="hover:text-white">{r.marketKey}</a>
                   {r.status !== 'active' && <span className="ml-1 text-white/30">·exp</span>}
                 </td>
+                <td className="py-1.5 text-white/60">{platformOfTicker(r.ticker)}</td>
                 <td className="py-1.5 text-white/60">{r.leg}</td>
                 <td className="py-1.5 text-right tabular-nums text-white/85">{r.nHolders.toLocaleString()}</td>
                 <td className={`py-1.5 text-right tabular-nums ${concentrationColor(r.top1Pct)}`}>{r.top1Pct.toFixed(1)}%</td>

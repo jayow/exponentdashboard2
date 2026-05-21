@@ -923,10 +923,12 @@ def build_holders_json(con: duckdb.DuckDBPyConnection) -> dict:
         FROM main_analytics.holders_snapshot
     """).fetchone()
     rows = con.execute("""
-        SELECT market_key, ticker, leg, n_holders, top1_pct, top5_pct, top10_pct,
-               total_supply, status, maturity_date::VARCHAR
-        FROM main_analytics.holders_snapshot
-        ORDER BY n_holders DESC NULLS LAST
+        SELECT h.market_key, h.ticker, h.leg, h.n_holders, h.top1_pct, h.top5_pct, h.top10_pct,
+               h.total_supply, h.status, h.maturity_date::VARCHAR,
+               coalesce(m.is_test, false) AS is_test
+        FROM main_analytics.holders_snapshot h
+        LEFT JOIN main_core.dim_markets m ON m.market_key = h.market_key
+        ORDER BY h.n_holders DESC NULLS LAST
     """).fetchall()
     return {
         "meta": {
@@ -942,6 +944,7 @@ def build_holders_json(con: duckdb.DuckDBPyConnection) -> dict:
                 "top1Pct": float(r[4] or 0), "top5Pct": float(r[5] or 0), "top10Pct": float(r[6] or 0),
                 "totalSupply": float(r[7] or 0),
                 "status": r[8], "maturityDate": r[9],
+                "isTest": bool(r[10]),
             }
             for r in rows
         ],
@@ -1062,6 +1065,111 @@ def build_users_json(con: duckdb.DuckDBPyConnection) -> dict:
                 },
             }
             for r in top
+        ],
+        **_build_wallet_leaderboard_and_aux(con),
+    }
+
+
+# ─── Users tab v2 additions ──────────────────────────────────────────────
+# Wallet leaderboard (with current Active Holdings USD), cohort buckets,
+# weekly retention, whale-event feed. Powers v1-parity Users sub-views.
+def _build_wallet_leaderboard_and_aux(con: duckdb.DuckDBPyConnection) -> dict:
+    wallets = con.execute("""
+        SELECT wallet, total_holdings_usd, pt_usd, yt_usd, lp_usd,
+               active_markets_held, unclaimed_usd, n_claims,
+               n_swaps, total_volume_usd, lifetime_markets,
+               n_buy_yt, n_sell_yt, n_buy_pt, n_sell_pt,
+               first_seen::VARCHAR, last_seen::VARCHAR, active_span_days,
+               is_likely_pool
+        FROM main_analytics.wallet_summary
+        ORDER BY total_holdings_usd DESC NULLS LAST, total_volume_usd DESC NULLS LAST
+        LIMIT 2000
+    """).fetchall()
+    # Cohort thresholds matching v1: Whale ≥100K, Large ≥10K, Medium ≥1K, Small ≥100, Micro <100.
+    cohort = con.execute("""
+        WITH c AS (
+          SELECT
+            CASE WHEN total_holdings_usd >= 100000 THEN 'whale'
+                 WHEN total_holdings_usd >= 10000  THEN 'large'
+                 WHEN total_holdings_usd >= 1000   THEN 'medium'
+                 WHEN total_holdings_usd >= 100    THEN 'small'
+                 WHEN total_holdings_usd > 0       THEN 'micro'
+                 ELSE 'zero' END AS cohort,
+            total_holdings_usd, n_swaps, lifetime_markets, last_seen,
+            n_buy_yt + n_sell_yt + n_buy_pt + n_sell_pt AS trades
+          FROM main_analytics.wallet_summary
+        )
+        SELECT cohort,
+               COUNT(*)                                                                        AS n,
+               SUM(total_holdings_usd)                                                         AS total_holdings,
+               SUM(trades)                                                                     AS trades,
+               AVG(n_swaps)                                                                    AS avg_swaps,
+               AVG(lifetime_markets)                                                           AS avg_markets,
+               COUNT(*) FILTER (WHERE last_seen >= CURRENT_DATE - INTERVAL 30 DAY)             AS active_30d
+        FROM c GROUP BY cohort
+    """).fetchall()
+    retention = con.execute("""
+        SELECT week::VARCHAR, new_wallets, returning_wallets, total_active
+        FROM main_analytics.retention_weekly ORDER BY week
+    """).fetchall()
+    whales = con.execute("""
+        SELECT signature, date::VARCHAR, signer, market_key, ticker, platform,
+               action, direction, notional_usd
+        FROM main_analytics.whale_events
+        ORDER BY notional_usd DESC
+        LIMIT 200
+    """).fetchall()
+    return {
+        "wallets": [
+            {
+                "wallet": w[0],
+                "holdingUsd": float(w[1] or 0),
+                "ptUsd": float(w[2] or 0),
+                "ytUsd": float(w[3] or 0),
+                "lpUsd": float(w[4] or 0),
+                "activeMarkets": int(w[5] or 0),
+                "unclaimedUsd": float(w[6] or 0),
+                "nClaims": int(w[7] or 0),
+                "nSwaps": int(w[8] or 0),
+                "lifetimeVolumeUsd": float(w[9] or 0),
+                "lifetimeMarkets": int(w[10] or 0),
+                "actions": {
+                    "buyYt": int(w[11] or 0), "sellYt": int(w[12] or 0),
+                    "buyPt": int(w[13] or 0), "sellPt": int(w[14] or 0),
+                },
+                "firstSeen": w[15],
+                "lastSeen": w[16],
+                "activeSpanDays": int(w[17] or 0),
+                "isPool": bool(w[18]),
+            }
+            for w in wallets
+        ],
+        "cohorts": [
+            {
+                "cohort": c[0],
+                "count": int(c[1] or 0),
+                "totalHoldingsUsd": float(c[2] or 0),
+                "trades": int(c[3] or 0),
+                "avgSwaps": float(c[4] or 0),
+                "avgMarkets": float(c[5] or 0),
+                "active30d": int(c[6] or 0),
+            }
+            for c in cohort
+        ],
+        "retention": {
+            "weeks":     [r[0] for r in retention],
+            "new":       [int(r[1] or 0) for r in retention],
+            "returning": [int(r[2] or 0) for r in retention],
+            "active":    [int(r[3] or 0) for r in retention],
+        },
+        "whaleEvents": [
+            {
+                "signature": w[0], "date": w[1], "signer": w[2],
+                "market": w[3], "ticker": w[4], "platform": w[5],
+                "action": w[6], "direction": w[7],
+                "usd": float(w[8] or 0),
+            }
+            for w in whales
         ],
     }
 
