@@ -75,6 +75,9 @@ RAW_DDL = {
         --   LP_CLMM  — LpPosition, CLMM program. vault = CLMM market account
         --              (different struct, longer; balance at offset 104).
         -- Owner is always the user wallet at offset 8.
+        -- staged_raw: only populated for YT positions — the staged-yield
+        --   field at offset 112..120 in YieldTokenPosition.interest.staged.
+        --   Used to add unclaimed-but-accrued yield to YT USD value.
         CREATE TABLE IF NOT EXISTS raw_positions (
             snapshot_date    DATE NOT NULL,
             leg              VARCHAR NOT NULL,
@@ -82,6 +85,7 @@ RAW_DDL = {
             owner            VARCHAR NOT NULL,
             vault            VARCHAR NOT NULL,
             amount_raw       UBIGINT,
+            staged_raw       UBIGINT,
             PRIMARY KEY (snapshot_date, position_account)
         )
     """,
@@ -123,6 +127,35 @@ RAW_DDL = {
             underlying_balance DOUBLE,    -- raw token amount (UI decimals)
             fetched_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY (snapshot_date, market_key)
+        )
+    """,
+    "raw_market_two_pools": """
+        -- Every distinct MarketTwo account on-chain (no dedup by market_key).
+        -- Several markets have multiple MarketTwo pools (v1 + migrated v2);
+        -- LP holders attach to a SPECIFIC pool via their LpPosition.vault.
+        -- This table is the source-of-truth for per-pool reserves so the
+        -- LP wallet-value calc can match the user's actual pool.
+        --
+        -- mint_pt / mint_sy / vault are the same across sibling pools of a
+        -- market, but mint_lp DIFFERS (one LP mint per pool). lp_supply is
+        -- the SPL mint's total supply (atom units).
+        --
+        -- ptBalance / syBalance / lastLnImpliedRate are decoded straight from
+        -- MarketTwo.financials offsets (372, 380, 396).
+        CREATE TABLE IF NOT EXISTS raw_market_two_pools (
+            snapshot_date    DATE NOT NULL,
+            pool_account     VARCHAR NOT NULL,
+            mint_pt          VARCHAR,
+            mint_sy          VARCHAR,
+            mint_lp          VARCHAR,
+            vault            VARCHAR,
+            expiration_ts    BIGINT,
+            pt_balance_raw   UBIGINT,
+            sy_balance_raw   UBIGINT,
+            last_ln_implied_rate DOUBLE,
+            raw_size         INTEGER,
+            fetched_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (snapshot_date, pool_account)
         )
     """,
     "raw_pool_state": """
@@ -189,6 +222,7 @@ RAW_DDL = {
 # Each entry is (table, column, type_sql). Skipped if column already exists.
 COLUMN_MIGRATIONS: list[tuple[str, str, str]] = [
     ("raw_signatures", "discovered_via", "VARCHAR"),
+    ("raw_positions",  "staged_raw",     "UBIGINT"),
 ]
 
 # Tables that had breaking schema changes — drop + recreate (data loss is OK

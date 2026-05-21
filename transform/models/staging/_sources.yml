@@ -61,6 +61,14 @@ sources:
           - name: clmm_market
             tests: [not_null]
 
+      - name: raw_market_two_pools
+        description: Every MarketTwo account on-chain (no dedup), with decoded financials. Multiple pools per market when migrations exist.
+        columns:
+          - name: snapshot_date
+            tests: [not_null]
+          - name: pool_account
+            tests: [not_null]
+
       - name: raw_anchor_position_events
         description: Anchor YT/LP position-mutating events parsed from raw_helius_tx logMessages. See extract_load/extract_anchor_events.py.
         columns:

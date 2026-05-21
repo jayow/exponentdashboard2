@@ -65,6 +65,35 @@ def _decode_simple_position(data_b64: str) -> tuple[str, str, int] | None:
         return None
 
 
+def _decode_yt_position(data_b64: str) -> tuple[str, str, int, int] | None:
+    """YieldTokenPosition layout (per Exponent SDK
+    client/core/accounts/yieldTokenPosition.js):
+      [0..8)    discriminator
+      [8..40)   owner
+      [40..72)  vault
+      [72..80)  ytBalance (u64 LE)
+      [80..112) interest.lastSeenIndex (numberCodec = [u64; 4] = 256-bit)
+      [112..120) interest.staged (u64 LE)
+      [120..124) emissions array length (u32 LE)
+      [124..)   emissions: N × yieldTokenTracker (40 bytes each)
+
+    Returns (owner, vault, ytBalance, interestStaged). Skips the
+    lastSeenIndex high bits (256-bit number — needed for accurate
+    projection of unstaged interest, future enhancement).
+    """
+    try:
+        data = base64.b64decode(data_b64)
+        if len(data) < 120:
+            return None
+        owner    = base58.b58encode(data[8:40]).decode()
+        vault    = base58.b58encode(data[40:72]).decode()
+        yt_bal   = struct.unpack("<Q", data[72:80])[0]
+        staged   = struct.unpack("<Q", data[112:120])[0]
+        return owner, vault, yt_bal, staged
+    except Exception:
+        return None
+
+
 def _decode_clmm_lp_position(data_b64: str) -> tuple[str, str, int] | None:
     """CLMM LpPosition layout: balance at offset 104 (after 2× u128 fees)."""
     try:
@@ -80,7 +109,10 @@ def _decode_clmm_lp_position(data_b64: str) -> tuple[str, str, int] | None:
 
 
 async def _fetch_core_by_size(client: SolanaRpcClient, disc: bytes, sizes: tuple[int, ...]) -> list[dict]:
-    """Returns list of {'position_account','owner','vault','amount_raw'} for core program."""
+    """YT positions only — uses the extended decoder that also pulls staged
+    interest (offset 112..120) so wallet leaderboards can add unclaimed
+    yield to the holder's USD value. Returns dicts with keys:
+      position_account, owner, vault, amount_raw, staged_raw."""
     out: list[dict] = []
     disc_b58 = base58.b58encode(disc).decode()
     for size in sizes:
@@ -91,11 +123,14 @@ async def _fetch_core_by_size(client: SolanaRpcClient, disc: bytes, sizes: tuple
         for a in accts:
             data_field = a["account"]["data"]
             data_b64 = data_field[0] if isinstance(data_field, list) else data_field
-            decoded = _decode_simple_position(data_b64)
+            decoded = _decode_yt_position(data_b64)
             if decoded is None:
                 continue
-            owner, vault, amount = decoded
-            out.append({"position_account": a["pubkey"], "owner": owner, "vault": vault, "amount_raw": amount})
+            owner, vault, amount, staged = decoded
+            out.append({
+                "position_account": a["pubkey"], "owner": owner, "vault": vault,
+                "amount_raw": amount, "staged_raw": staged,
+            })
         rprint(f"    size={size}: {len(accts)} accounts")
     return out
 
@@ -189,19 +224,18 @@ async def run() -> dict:
 
     pos_rows: list[tuple] = []
     for p in yt:
-        pos_rows.append((snapshot_date, "YT", p["position_account"], p["owner"], p["vault"], p["amount_raw"]))
+        # YT carries staged_raw — accrued interest not yet claimed.
+        pos_rows.append((snapshot_date, "YT", p["position_account"], p["owner"], p["vault"], p["amount_raw"], p.get("staged_raw", 0)))
     for p in lp_core:
-        pos_rows.append((snapshot_date, "LP", p["position_account"], p["owner"], p["vault"], p["amount_raw"]))
+        pos_rows.append((snapshot_date, "LP", p["position_account"], p["owner"], p["vault"], p["amount_raw"], None))
     for p in lp_clmm:
-        # leg='LP_CLMM' so int_holders_current can route via the CLMM-market
-        # → pt_mint mapping instead of the AMM amm_pool join.
-        pos_rows.append((snapshot_date, "LP_CLMM", p["position_account"], p["owner"], p["vault"], p["amount_raw"]))
+        pos_rows.append((snapshot_date, "LP_CLMM", p["position_account"], p["owner"], p["vault"], p["amount_raw"], None))
 
     with warehouse() as con:
         con.execute("DELETE FROM raw_positions WHERE snapshot_date = ?", [snapshot_date])
         if pos_rows:
             con.executemany(
-                "INSERT INTO raw_positions (snapshot_date, leg, position_account, owner, vault, amount_raw) VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT INTO raw_positions (snapshot_date, leg, position_account, owner, vault, amount_raw, staged_raw) VALUES (?, ?, ?, ?, ?, ?, ?)",
                 pos_rows,
             )
         # raw_clmm_markets — discovered each run; used as a clmm_market → pt_mint

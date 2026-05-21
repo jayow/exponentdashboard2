@@ -250,6 +250,36 @@ async def run() -> dict:
 
     rprint(f"  parsed {len(onchain_rows)} unique market_keys on-chain")
 
+    # Also dump EVERY MarketTwo account (no dedup) into raw_market_two_pools.
+    # LP positions reference a specific pool_account via their .vault field;
+    # several markets have multiple sibling pools and we need per-pool
+    # financials to value LP holdings correctly. mintLp differs per pool.
+    import struct
+    snap = datetime.now(timezone.utc).date()
+    pool_rows: list[tuple] = []
+    for acct in onchain_raw:
+        try:
+            pubkey = acct["pubkey"]
+            data_field = acct["account"]["data"]
+            data_b64 = data_field[0] if isinstance(data_field, list) else data_field
+            data = base64.b64decode(data_b64)
+            if len(data) < 404:
+                continue
+            mint_pt = base58.b58encode(data[40:72]).decode()
+            mint_sy = base58.b58encode(data[72:104]).decode()
+            vault   = base58.b58encode(data[104:136]).decode()
+            mint_lp = base58.b58encode(data[136:168]).decode()
+            exp_ts  = struct.unpack("<Q", data[364:372])[0]
+            pt_bal  = struct.unpack("<Q", data[372:380])[0]
+            sy_bal  = struct.unpack("<Q", data[380:388])[0]
+            last_ln = struct.unpack("<d", data[396:404])[0]
+            pool_rows.append((
+                snap, pubkey, mint_pt, mint_sy, mint_lp, vault,
+                exp_ts, pt_bal, sy_bal, last_ln, len(data),
+            ))
+        except Exception:
+            pass
+
     api_count = 0
     onchain_count = 0
     with warehouse() as con:
@@ -259,12 +289,22 @@ async def run() -> dict:
         for key, payload in onchain_rows:
             upsert_market(con, key, "onchain", payload)
             onchain_count += 1
+        # Replace today's pool snapshot
+        con.execute("DELETE FROM raw_market_two_pools WHERE snapshot_date = ?", [snap])
+        if pool_rows:
+            con.executemany(
+                "INSERT INTO raw_market_two_pools "
+                "(snapshot_date, pool_account, mint_pt, mint_sy, mint_lp, vault, "
+                " expiration_ts, pt_balance_raw, sy_balance_raw, last_ln_implied_rate, raw_size) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                pool_rows,
+            )
 
     rprint(
         f"[green]Wrote raw_markets[/green]: "
-        f"{api_count} api + {onchain_count} onchain"
+        f"{api_count} api + {onchain_count} onchain + {len(pool_rows)} per-pool MarketTwo rows"
     )
-    return {"api": api_count, "onchain": onchain_count}
+    return {"api": api_count, "onchain": onchain_count, "pools": len(pool_rows)}
 
 
 def main() -> None:
