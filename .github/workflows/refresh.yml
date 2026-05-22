@@ -1,9 +1,10 @@
 name: Daily Dashboard Refresh
 
 on:
-  # Daily at 00:00 UTC.
+  # Daily at 00:17 UTC. Off-peak — :00 of the hour is the worst possible
+  # cron slot (millions of repos schedule there), routinely 30-90 min late.
   schedule:
-    - cron: '0 0 * * *'
+    - cron: '17 0 * * *'
   # Manual trigger from the Actions tab.
   workflow_dispatch:
 
