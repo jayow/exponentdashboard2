@@ -44,3 +44,4 @@ out/
 
 # Generated wallet event shards (~30K files, regenerable via serve.build_web_data)
 web/public/wallet/
+.vercel
