@@ -78,7 +78,10 @@ RAW_TABLES = [
 # Materialized dbt models that need to persist (so dbt incremental can
 # pick up where it left off rather than rebuilding from raw_helius_tx).
 PERSISTED_MODELS = [
-    # main_staging
+    # main_staging — both are incremental tables now (stg_helius_tx was a
+    # view but had to be persisted so its lifted scalar fields survive
+    # after raw_helius_tx.payload is stripped).
+    ("main_staging",      "stg_helius_tx"),
     ("main_staging",      "stg_token_changes"),
     # main_intermediate
     ("main_intermediate", "int_amm_swaps"),

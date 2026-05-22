@@ -7,7 +7,10 @@
 -- A `delta` of 0 means the account ended the tx with the same balance it
 -- started with — filtered out, no useful signal.
 --
--- INCREMENTAL: only process new sigs since last run.
+-- INCREMENTAL: only process new sigs since last run. Sources the heavy
+-- JSON token_balances DIRECTLY from raw_helius_tx (not stg_helius_tx) so
+-- it works even after stg_helius_tx is slimmed to scalar fields — payloads
+-- are present for the new tx being processed this run, that's enough.
 {{ config(
     materialized='incremental',
     unique_key=['signature', 'account_index', 'mint', 'owner'],
@@ -15,9 +18,19 @@
 ) }}
 
 with new_sigs as (
-    select signature from {{ ref('stg_helius_tx') }}
+    -- Process every tx whose payload is currently present, with the same
+    -- incremental window as before. Project the two relevant JSON fields
+    -- as named columns so downstream UNNEST has a clean target (same
+    -- shape that stg_helius_tx used to expose).
+    select
+        signature,
+        block_time,
+        payload->'$.meta.preTokenBalances'  as pre_token_balances,
+        payload->'$.meta.postTokenBalances' as post_token_balances
+    from {{ source('raw', 'raw_helius_tx') }}
+    where payload is not null
     {% if is_incremental() %}
-      where block_time >= coalesce(
+      and block_time >= coalesce(
             (select max(block_time) from {{ this }}) - 86400,
             0
           )
@@ -32,8 +45,7 @@ pre as (
         b.value->>'$.owner'                                  as owner,
         cast(b.value->'$.uiTokenAmount'->>'$.amount' as hugeint) as amount,
         cast(b.value->'$.uiTokenAmount'->>'$.decimals' as int)   as decimals
-    from {{ ref('stg_helius_tx') }} s
-    join new_sigs n using (signature),
+    from new_sigs s,
         unnest(cast(s.pre_token_balances as json[])) as b(value)
     where s.pre_token_balances is not null
 ),
@@ -46,8 +58,7 @@ post as (
         b.value->>'$.owner'                                  as owner,
         cast(b.value->'$.uiTokenAmount'->>'$.amount' as hugeint) as amount,
         cast(b.value->'$.uiTokenAmount'->>'$.decimals' as int)   as decimals
-    from {{ ref('stg_helius_tx') }} s
-    join new_sigs n using (signature),
+    from new_sigs s,
         unnest(cast(s.post_token_balances as json[])) as b(value)
     where s.post_token_balances is not null
 )

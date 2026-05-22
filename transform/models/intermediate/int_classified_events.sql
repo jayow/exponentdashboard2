@@ -15,21 +15,36 @@
 --   deposit, withdraw               — non-trade SY mint/burn
 --   admin                           — protocol admin / position init
 --   unknown                         — none of the above matched
-{{ config(materialized='table') }}
+--
+-- INCREMENTAL: log_messages comes directly from raw_helius_tx.payload
+-- (not stg_helius_tx, which no longer carries the JSON columns). On
+-- incremental runs only newly-fetched tx (payload still present) get
+-- classified; old rows preserved.
+{{ config(
+    materialized='incremental',
+    unique_key='signature',
+    incremental_strategy='delete+insert'
+) }}
 
 with raw_logs as (
     select
         signature,
         block_time,
         slot,
-        log_messages
-    from {{ ref('stg_helius_tx') }}
-    where log_messages is not null
+        payload->'$.meta.logMessages' as log_messages
+    from {{ source('raw', 'raw_helius_tx') }}
+    where payload is not null
+    {% if is_incremental() %}
+      and block_time >= coalesce(
+            (select max(block_time) from {{ this }}) - 86400,
+            0
+          )
+    {% endif %}
+),
+raw_logs_with_messages as (
+    select * from raw_logs where log_messages is not null
 ),
 ix_names as (
-    -- Per tx: distinct Exponent ix names that appear in logs.
-    -- We use list_distinct on a list of extracted matches to avoid the heavy
-    -- cross-join from UNNESTing every log line.
     select
         signature,
         block_time,
@@ -43,23 +58,21 @@ ix_names as (
                 name -> name is not null and name <> ''
             )
         ) as ix_names
-    from raw_logs
+    from raw_logs_with_messages
 )
 select
     signature,
     block_time,
     slot,
     ix_names,
-    -- Pick the headline action by priority. Order matters — trades first,
-    -- then LP, then strip/merge, then claims, then admin.
     case
         when list_contains(ix_names, 'BuyYt')           then 'buyYt'
         when list_contains(ix_names, 'SellYt')          then 'sellYt'
-        when list_contains(ix_names, 'TradePt')         then 'tradePt'  -- direction TBD from deltas
+        when list_contains(ix_names, 'TradePt')         then 'tradePt'
         when list_contains(ix_names, 'MarketDepositLp') then 'addLiq'
         when list_contains(ix_names, 'MarketWithdrawLp')then 'removeLiq'
         when list_contains(ix_names, 'InitLpPosition')  then 'addLiq'
-        when list_contains(ix_names, 'DepositYt')       then 'addLiq'   -- LP-via-YT
+        when list_contains(ix_names, 'DepositYt')       then 'addLiq'
         when list_contains(ix_names, 'WithdrawYt')      then 'removeLiq'
         when list_contains(ix_names, 'Strip')           then 'strip'
         when list_contains(ix_names, 'Merge')           then 'merge'
