@@ -1,11 +1,10 @@
 name: Daily Dashboard Refresh
 
 on:
-  # TEMP: 02:08 UTC for cron-fire diagnostic (set ~11 min ahead).
-  # Will revert to 00:17 UTC once we confirm the schedule actually fires.
-  schedule:
-    - cron: '8 2 * * *'
-  # Manual trigger from the Actions tab.
+  # Daily refresh is triggered by a launchd agent on Jake's Mac at 8 AM Manila
+  # (00:00 UTC) via `gh workflow run refresh.yml`. GHA's own `schedule:` was
+  # unreliable on this repo (never fired across 2 days of attempts), so we
+  # drive it externally and keep this workflow purely dispatch-based.
   workflow_dispatch:
 
 # Avoid concurrent runs trampling the same git push.
