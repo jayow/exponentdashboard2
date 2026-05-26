@@ -42,10 +42,23 @@ EXPONENT_TOKENS_URL = "https://api.exponent.finance/tokens"
 # ---------- Pass 1: /tokens ----------
 
 async def fetch_exponent_tokens(timeout: float = 30.0) -> list[dict]:
+    """Returns [] on 401/403 so pipeline survives upstream access changes.
+    Existing raw_exponent_tokens rows are preserved (UPSERT, not delete).
+    Pass 2 (DAS) runs regardless.
+    """
     async with httpx.AsyncClient(timeout=timeout) as c:
-        r = await c.get(EXPONENT_TOKENS_URL)
-        r.raise_for_status()
-        return r.json()
+        try:
+            r = await c.get(EXPONENT_TOKENS_URL)
+            r.raise_for_status()
+            return r.json()
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code in (401, 403):
+                rprint(
+                    f"[yellow]Exponent /tokens auth-gated "
+                    f"({e.response.status_code}) — keeping cached rows[/yellow]"
+                )
+                return []
+            raise
 
 
 def _upsert_exponent_token(con: duckdb.DuckDBPyConnection, t: dict) -> None:
