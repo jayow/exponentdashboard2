@@ -13,7 +13,9 @@ sources:
           - name: block_time
             tests: [not_null]
           - name: payload
-            tests: [not_null]
+            # No not_null test: compact_in_place NULLs payloads older than
+            # the dbt incremental window by design. The data is recoverable
+            # by re-fetching, but the row is kept so signatures stay unique.
 
       - name: raw_signatures
         description: Discovered tx signatures per Exponent-related address.
