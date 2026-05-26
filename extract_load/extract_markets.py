@@ -49,11 +49,24 @@ def format_market_key(ticker: str, maturity_ts: int) -> str:
 # ---------- API source ----------
 
 async def fetch_api_markets(timeout: float = 30.0) -> list[dict]:
-    """Hit api.exponent.finance/markets. Returns list of raw market dicts."""
+    """Hit api.exponent.finance/markets. Returns list of raw market dicts.
+
+    Returns [] on 401/403 so a temporary access change upstream doesn't
+    crash the pipeline — caller falls back to cached labels in raw_markets.
+    """
     async with httpx.AsyncClient(timeout=timeout) as client:
-        resp = await client.get(EXPONENT_API_URL)
-        resp.raise_for_status()
-        return resp.json()
+        try:
+            resp = await client.get(EXPONENT_API_URL)
+            resp.raise_for_status()
+            return resp.json()
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code in (401, 403):
+                rprint(
+                    f"[yellow]Exponent API auth-gated "
+                    f"({e.response.status_code}) — using cached labels[/yellow]"
+                )
+                return []
+            raise
 
 
 def api_market_to_row(m: dict) -> tuple[str, dict] | None:
@@ -190,6 +203,25 @@ async def run() -> dict:
         key, payload = row
         api_rows.append((key, payload))
         ticker_by_sy[payload["syMint"]] = payload["underlyingTicker"]
+
+    if not ticker_by_sy:
+        # API gated. Rebuild label map from last good API rows so on-chain
+        # market_keys stay stable (USX-15SEP26, not UNKNOWN-15SEP26).
+        with warehouse() as con:
+            cached = con.execute(
+                "SELECT payload FROM raw_markets WHERE source = 'api'"
+            ).fetchall()
+        for (payload_json,) in cached:
+            try:
+                p = json.loads(payload_json)
+                if p.get("syMint") and p.get("underlyingTicker"):
+                    ticker_by_sy[p["syMint"]] = p["underlyingTicker"]
+            except Exception:
+                pass
+        rprint(
+            f"  [yellow]rebuilt {len(ticker_by_sy)} tickers "
+            f"from cached api rows[/yellow]"
+        )
 
     rprint("[cyan]Fetching MarketThree accounts on-chain…[/cyan]")
     async with SolanaRpcClient(RPC_ENDPOINTS) as client:
