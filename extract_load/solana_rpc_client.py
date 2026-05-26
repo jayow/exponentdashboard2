@@ -39,7 +39,7 @@ class SolanaRpcClient:
     def __init__(
         self,
         endpoints: list[str],
-        concurrency_per_endpoint: int = 12,
+        concurrency_per_endpoint: int = 2,
         timeout: float = 30.0,
     ):
         if not endpoints:
