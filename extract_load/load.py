@@ -215,6 +215,56 @@ RAW_DDL = {
             PRIMARY KEY (scope, address)
         )
     """,
+    "raw_v2_markets": """
+        -- v2 (XPBook) market accounts — small accounts (disc 0e8bd6c1).
+        -- One row per market, refreshed when extract_v2_markets runs.
+        CREATE TABLE IF NOT EXISTS raw_v2_markets (
+            market_account     VARCHAR PRIMARY KEY,
+            book_account       VARCHAR NOT NULL,
+            sy_mint            VARCHAR,
+            pt_mint            VARCHAR,
+            yt_mint            VARCHAR,
+            underlying_ticker  VARCHAR,
+            maturity_ts        BIGINT,
+            market_key         VARCHAR,
+            payload            JSON NOT NULL,
+            fetched_at         TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """,
+    "raw_v2_book_snapshots": """
+        -- One row per (market, day). Header + aggregate counts only — the
+        -- per-order details go in raw_v2_orders_snapshots below.
+        CREATE TABLE IF NOT EXISTS raw_v2_book_snapshots (
+            snapshot_date  DATE        NOT NULL,
+            book_account   VARCHAR     NOT NULL,
+            fetched_at     TIMESTAMP   DEFAULT CURRENT_TIMESTAMP,
+            header_json    JSON        NOT NULL,
+            n_offers       INTEGER     NOT NULL,
+            n_price_nodes  INTEGER     NOT NULL,
+            n_escrows      INTEGER     NOT NULL,
+            PRIMARY KEY (snapshot_date, book_account)
+        )
+    """,
+    "raw_v2_orders_snapshots": """
+        -- Flattened per-order rows: one row per resting offer per snapshot.
+        -- Re-running extract_v2_books on the same date OVERWRITES that date's
+        -- rows (delete-then-insert pattern, see extract_v2_books.py).
+        CREATE TABLE IF NOT EXISTS raw_v2_orders_snapshots (
+            snapshot_date   DATE     NOT NULL,
+            book_account    VARCHAR  NOT NULL,
+            offer_idx       INTEGER  NOT NULL,
+            owner_wallet    VARCHAR  NOT NULL,
+            side            VARCHAR(3) NOT NULL,  -- 'bid' | 'ask' | '?'
+            apy_rate        DOUBLE   NOT NULL,    -- decimal, e.g. 0.1225
+            size_sy_atomic  HUGEINT  NOT NULL,    -- divide by 1e9 for SY units
+            expiry_at       INTEGER  NOT NULL,
+            created_at      INTEGER  NOT NULL,
+            type_flag       SMALLINT NOT NULL,
+            virtual_offer   SMALLINT NOT NULL,
+            fok             SMALLINT NOT NULL,
+            PRIMARY KEY (snapshot_date, book_account, offer_idx)
+        )
+    """,
 }
 
 

@@ -73,6 +73,10 @@ RAW_TABLES = [
     "raw_tvl_snapshots",
     "scan_state",
     "yt_mint_overrides",  # seed file
+    # v2 (XPBook) tables — daily snapshots, small (~15 KB/day each)
+    "raw_v2_markets",
+    "raw_v2_book_snapshots",
+    "raw_v2_orders_snapshots",
 ]
 
 # Materialized dbt models that need to persist (so dbt incremental can
