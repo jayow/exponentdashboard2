@@ -410,6 +410,8 @@ function fmtSy(n: number) {
   return n.toFixed(2);
 }
 
+type OrderbookSubview = 'ladder' | 'wallets';
+
 function OrderbookView({
   market, snapshotDate, activeBookIdx, setActiveBookIdx,
 }: {
@@ -418,6 +420,7 @@ function OrderbookView({
   activeBookIdx: number;
   setActiveBookIdx: (i: number) => void;
 }) {
+  const [subview, setSubview] = useState<OrderbookSubview>('ladder');
   const bookIdx = Math.min(activeBookIdx, market.books.length - 1);
   const book: V2Book | undefined = market.books[bookIdx];
   if (!book) return <div className="text-white/40 p-4">No book data.</div>;
@@ -428,7 +431,30 @@ function OrderbookView({
   const bestAsk = book.bestAskApy;
   const spreadBps = (bestBid !== null && bestAsk !== null) ? (bestAsk - bestBid) * 10000 : null;
 
-  // Build cumulative + pct-of-side for bars
+  // Per-wallet aggregation across both sides
+  type WalletAgg = {
+    wallet: string; nBids: number; nAsks: number; bidSy: number; askSy: number;
+    bestBidApy: number | null; bestAskApy: number | null;
+  };
+  const wallets = new Map<string, WalletAgg>();
+  for (const o of book.bids) {
+    const w = wallets.get(o.owner) ?? { wallet: o.owner, nBids: 0, nAsks: 0, bidSy: 0, askSy: 0, bestBidApy: null, bestAskApy: null };
+    w.nBids += 1; w.bidSy += o.sizeSy;
+    if (w.bestBidApy === null || o.apy > w.bestBidApy) w.bestBidApy = o.apy;
+    wallets.set(o.owner, w);
+  }
+  for (const o of book.asks) {
+    const w = wallets.get(o.owner) ?? { wallet: o.owner, nBids: 0, nAsks: 0, bidSy: 0, askSy: 0, bestBidApy: null, bestAskApy: null };
+    w.nAsks += 1; w.askSy += o.sizeSy;
+    if (w.bestAskApy === null || o.apy < w.bestAskApy) w.bestAskApy = o.apy;
+    wallets.set(o.owner, w);
+  }
+  const walletRows = Array.from(wallets.values()).sort((a, b) => (b.bidSy + b.askSy) - (a.bidSy + a.askSy));
+  const nBidOnly = walletRows.filter(w => w.nBids > 0 && w.nAsks === 0).length;
+  const nAskOnly = walletRows.filter(w => w.nBids === 0 && w.nAsks > 0).length;
+  const nBoth    = walletRows.filter(w => w.nBids > 0 && w.nAsks > 0).length;
+
+  // Build cumulative + pct-of-side for ladder bars
   let cumB = 0;
   const bidsView = book.bids.map(r => { cumB += r.sizeSy; return { ...r, cum: cumB, pct: bidTotal ? r.sizeSy / bidTotal : 0 }; });
   let cumA = 0;
@@ -439,14 +465,20 @@ function OrderbookView({
 
   return (
     <div>
-      {/* Header — book selector (multi-book) + snapshot info */}
+      {/* Header — book selector (multi-book) + subview toggle + snapshot info */}
       <div className="flex items-center justify-between gap-2 mb-3 flex-wrap">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           {market.books.length > 1 && market.books.map((b, i) => (
             <button key={b.bookAccount} onClick={() => setActiveBookIdx(i)}
               className={`text-[11px] px-2.5 py-1 rounded-md border ${bookIdx === i ? 'border-white/30 bg-white/10 text-white' : 'border-white/10 text-white/40 hover:text-white/70'}`}
               title={b.bookAccount}>
               Book {i + 1} <span className="text-white/40 ml-1">{shortAddr(b.bookAccount)}</span>
+            </button>
+          ))}
+          {(['ladder','wallets'] as OrderbookSubview[]).map(v => (
+            <button key={v} onClick={() => setSubview(v)}
+              className={`text-[11px] px-2.5 py-1 rounded-md border ${subview === v ? 'border-white/30 bg-white/10 text-white' : 'border-white/10 text-white/40 hover:text-white/70'}`}>
+              {v === 'ladder' ? 'Ladder' : `Wallets · ${walletRows.length}`}
             </button>
           ))}
         </div>
@@ -465,10 +497,76 @@ function OrderbookView({
         <Stat label="Orders" value={`${book.nBids} / ${book.nAsks}`} />
       </div>
 
-      {/* Two-column ladder */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <LadderTable side="bid"  rows={bidsView} totalSy={bidTotal} />
-        <LadderTable side="ask"  rows={asksView} totalSy={askTotal} />
+      {subview === 'ladder' ? (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <LadderTable side="bid"  rows={bidsView} totalSy={bidTotal} />
+          <LadderTable side="ask"  rows={asksView} totalSy={askTotal} />
+        </div>
+      ) : (
+        <WalletsTable rows={walletRows} nBidOnly={nBidOnly} nAskOnly={nAskOnly} nBoth={nBoth} />
+      )}
+    </div>
+  );
+}
+
+function WalletsTable({
+  rows, nBidOnly, nAskOnly, nBoth,
+}: {
+  rows: Array<{
+    wallet: string; nBids: number; nAsks: number; bidSy: number; askSy: number;
+    bestBidApy: number | null; bestAskApy: number | null;
+  }>;
+  nBidOnly: number; nAskOnly: number; nBoth: number;
+}) {
+  return (
+    <div className="rounded-lg border border-white/5 overflow-hidden">
+      <div className="px-3 py-2 text-xs text-white/50 border-b border-white/5 flex items-center justify-between flex-wrap gap-2">
+        <span>{rows.length} unique wallets in book</span>
+        <span className="text-[10px] text-white/40">
+          <span className="text-emerald-300/80">{nBidOnly} bid-only</span>
+          {' · '}
+          <span className="text-rose-300/80">{nAskOnly} ask-only</span>
+          {' · '}
+          <span className="text-amber-300/80">{nBoth} both sides</span>
+        </span>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-xs">
+          <thead className="text-white/40 text-[10px] uppercase tracking-wider">
+            <tr className="border-b border-white/5">
+              <th className="text-left  py-1.5 px-3 font-normal">Wallet</th>
+              <th className="text-center py-1.5 px-2 font-normal">Side</th>
+              <th className="text-right py-1.5 px-2 font-normal">Bids</th>
+              <th className="text-right py-1.5 px-2 font-normal">Bid Σ</th>
+              <th className="text-right py-1.5 px-2 font-normal">Best bid</th>
+              <th className="text-right py-1.5 px-2 font-normal">Asks</th>
+              <th className="text-right py-1.5 px-2 font-normal">Ask Σ</th>
+              <th className="text-right py-1.5 px-2 font-normal">Best ask</th>
+              <th className="text-right py-1.5 px-2 font-normal">Total SY</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map(w => {
+              const both = w.nBids > 0 && w.nAsks > 0;
+              const side = both ? 'B+A' : w.nBids > 0 ? 'B' : 'A';
+              const sideColor = both ? 'text-amber-300' : w.nBids > 0 ? 'text-emerald-300' : 'text-rose-300';
+              return (
+                <tr key={w.wallet} className="border-b border-white/5 hover:bg-white/5 cursor-pointer"
+                    onClick={() => window.location.href = `/wallet/?addr=${w.wallet}`}>
+                  <td className="py-1 px-3 font-mono text-[11px] text-white/70 whitespace-nowrap">{w.wallet}</td>
+                  <td className={`py-1 px-2 text-center text-[11px] font-medium ${sideColor}`}>{side}</td>
+                  <td className="py-1 px-2 text-right tabular-nums text-white/60">{w.nBids || '–'}</td>
+                  <td className="py-1 px-2 text-right tabular-nums text-emerald-200/80">{w.bidSy > 0 ? fmtSy(w.bidSy) : '–'}</td>
+                  <td className="py-1 px-2 text-right tabular-nums text-emerald-300/70">{w.bestBidApy !== null ? `${(w.bestBidApy * 100).toFixed(2)}%` : '–'}</td>
+                  <td className="py-1 px-2 text-right tabular-nums text-white/60">{w.nAsks || '–'}</td>
+                  <td className="py-1 px-2 text-right tabular-nums text-rose-200/80">{w.askSy > 0 ? fmtSy(w.askSy) : '–'}</td>
+                  <td className="py-1 px-2 text-right tabular-nums text-rose-300/70">{w.bestAskApy !== null ? `${(w.bestAskApy * 100).toFixed(2)}%` : '–'}</td>
+                  <td className="py-1 px-2 text-right tabular-nums text-white/85 font-medium">{fmtSy(w.bidSy + w.askSy)}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
       </div>
     </div>
   );
