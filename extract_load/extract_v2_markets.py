@@ -30,6 +30,63 @@ from .v2_book_decoder import (
 
 
 XPBOOK_PROGRAM = "XPBookgQTN2p8Yw1C2La35XkPMmZTCEYH77AdReVvK1"
+SPL_TOKEN_ACCOUNT_LEN = 165
+
+
+def _underlying_from_metadata(symbol: str, name: str | None) -> str:
+    """Recover the underlying ticker from an Exponent SY mint's metadata.
+
+    Name pattern is canonical ("Exponent Wrapped <TICKER>"); symbol is a
+    fallback. Falls back to the raw symbol for non-Exponent SY mints
+    (e.g. kUSDG which is a Kamino token used directly).
+    """
+    if name and "Wrapped " in name:
+        return name.split("Wrapped ", 1)[1].strip()
+    if symbol.startswith("ew"):
+        return symbol[2:]
+    if symbol.startswith("w") and len(symbol) > 1:
+        return symbol[1:]
+    return symbol
+
+
+async def _resolve_via_vault(con, pubkeys: list[str]) -> tuple[str, str | None]:
+    """Probe each header pubkey on-chain; for the SPL TokenAccount among them
+    (vault slot 5 in practice), read mint at bytes [0..32) and look up symbol.
+    Returns (ticker, sy_mint) or ("?", None) on failure.
+    """
+    url = RPC_ENDPOINTS[0]
+    # First pass: existing raw_token_metadata gives both name + symbol cheaply
+    meta_index = {
+        r[0]: (r[1], r[2]) for r in con.execute(
+            "SELECT mint, name, symbol FROM raw_token_metadata WHERE symbol IS NOT NULL"
+        ).fetchall()
+    }
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        for pk in pubkeys:
+            resp = await client.post(url, json={
+                "jsonrpc": "2.0", "id": 1, "method": "getAccountInfo",
+                "params": [pk, {"encoding": "base64"}]
+            })
+            val = resp.json().get("result", {}).get("value")
+            if not val:
+                continue
+            buf = base64.b64decode(val["data"][0])
+            if len(buf) != SPL_TOKEN_ACCOUNT_LEN:
+                continue
+            sy_mint = base58.b58encode(buf[:32]).decode()
+            name, sym = meta_index.get(sy_mint, (None, None))
+            if not sym:
+                asset_resp = await client.post(url, json={
+                    "jsonrpc": "2.0", "id": 1, "method": "getAsset",
+                    "params": {"id": sy_mint},
+                })
+                asset = asset_resp.json().get("result") or {}
+                meta = (asset.get("content") or {}).get("metadata") or {}
+                sym = meta.get("symbol")
+                name = meta.get("name")
+            if sym:
+                return _underlying_from_metadata(sym, name), sy_mint
+    return "?", None
 
 
 async def fetch_xpbook_accounts() -> list[dict]:
@@ -129,15 +186,18 @@ async def run() -> dict:
                 continue
             decoded = decode_book(book["raw"])
 
-            # Find ticker by scanning the book's embedded pubkeys + the market's
-            # bytes against the v1 index.
-            ticker = "?"
-            for pk in decoded.pubkeys:
-                if pk in ticker_by_pubkey:
-                    ticker = ticker_by_pubkey[pk]
-                    break
+            # Always probe vault[5] (SY-side SPL TokenAccount in book.pubkeys)
+            # → mint at bytes [0..32) → symbol via raw_token_metadata or DAS.
+            # Strip "w"/"ew" prefix → underlying ticker. Works for all markets,
+            # including v2-natives without v1 counterparts.
+            ticker, sy_mint = await _resolve_via_vault(con, decoded.pubkeys)
+            # If on-chain probe didn't yield a symbol, fall back to v1 index scan
             if ticker == "?":
-                # Also scan market account bytes (32-byte windows) against index.
+                for pk in decoded.pubkeys:
+                    if pk in ticker_by_pubkey:
+                        ticker = ticker_by_pubkey[pk]
+                        break
+            if ticker == "?":
                 for off in range(0, len(m["raw"]) - 31):
                     candidate = base58.b58encode(m["raw"][off:off+32]).decode()
                     if candidate in ticker_by_pubkey:
@@ -166,16 +226,17 @@ async def run() -> dict:
                     underlying_ticker, maturity_ts, market_key,
                     payload, fetched_at
                 )
-                VALUES (?, ?, NULL, NULL, NULL, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                VALUES (?, ?, ?, NULL, NULL, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                 ON CONFLICT (market_account) DO UPDATE SET
                     book_account      = excluded.book_account,
+                    sy_mint           = excluded.sy_mint,
                     underlying_ticker = excluded.underlying_ticker,
                     maturity_ts       = excluded.maturity_ts,
                     market_key        = excluded.market_key,
                     payload           = excluded.payload,
                     fetched_at        = excluded.fetched_at
             """, [
-                m["pubkey"], book["pubkey"],
+                m["pubkey"], book["pubkey"], sy_mint,
                 ticker, decoded.expiration_ts, market_key,
                 json.dumps(payload),
             ])
