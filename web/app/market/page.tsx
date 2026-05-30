@@ -5,6 +5,7 @@ import { useSearchParams } from 'next/navigation';
 import {
   AreaChart, Area, BarChart, Bar, ComposedChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer,
 } from 'recharts';
+import type { V2OrderbookData, V2MarketBook, V2Book, V2OrderRow } from '@/lib/types';
 
 type Holder = { owner: string; balance: number; usd: number; sharePct: number };
 type Snapshot = {
@@ -32,7 +33,7 @@ type Volume = { dates: string[]; byMarket?: Record<string, {
 }> };
 
 type Range = '30d' | '90d' | '1y' | 'all';
-type Metric = 'tvl' | 'breakdown' | 'positions' | 'volume' | 'holders';
+type Metric = 'tvl' | 'breakdown' | 'positions' | 'volume' | 'holders' | 'orderbook';
 type Leg = 'PT' | 'YT' | 'LP';
 
 const BREAKDOWN_COLOR = {
@@ -71,6 +72,8 @@ function MarketDetailView() {
   const [tvl, setTvl] = useState<{ dates: string[]; byMarket: TvlByMarket } | null>(null);
   const [positions, setPositions] = useState<{ dates: string[]; byTicker: Record<string, ApTicker> } | null>(null);
   const [volume, setVolume] = useState<Volume | null>(null);
+  const [v2, setV2] = useState<V2OrderbookData | null>(null);
+  const [activeBookIdx, setActiveBookIdx] = useState<number>(0);
   const [err, setErr] = useState<string | null>(null);
 
   const [tab, setTab] = useState<Leg>('PT');
@@ -86,12 +89,16 @@ function MarketDetailView() {
       fetch('/tvl.json').then(r => r.json()),
       fetch('/active_positions.json').then(r => r.json()),
       fetch('/volume.json').then(r => r.json()),
+      fetch('/v2_orderbook.json').then(r => r.json()).catch(() => null),
     ])
-      .then(([h, t, p, v]) => {
-        setHolders(h); setTvl(t); setPositions(p); setVolume(v);
+      .then(([h, t, p, v, ob]) => {
+        setHolders(h); setTvl(t); setPositions(p); setVolume(v); setV2(ob);
       })
       .catch(e => setErr(String(e)));
   }, []);
+
+  const v2Market: V2MarketBook | null = v2?.byMarket[marketKey] ?? null;
+  const v2SnapshotDate = v2?.meta.snapshotDate ?? null;
 
   const tvlSeries = tvl?.byMarket?.[marketKey]?.tvlUsd ?? [];
   const tickerData = positions?.byTicker?.[ticker];
@@ -195,12 +202,24 @@ function MarketDetailView() {
       <div className="mt-8">
         <div className="flex items-center justify-between mb-3 flex-wrap gap-3">
           <div className="flex items-center gap-1">
-            {(['tvl', 'breakdown', 'positions', 'volume', 'holders'] as Metric[]).map(m => (
-              <button key={m} onClick={() => setMetric(m)}
-                className={`text-xs px-3 py-1 rounded-lg border ${metric === m ? 'border-white/30 bg-white/10 text-white' : 'border-white/10 text-white/40'}`}>
-                {m === 'tvl' ? 'TVL' : m === 'breakdown' ? 'Breakdown' : m === 'positions' ? 'Positions' : m === 'volume' ? 'Volume' : 'Holders'}
-              </button>
-            ))}
+            {(['tvl', 'breakdown', 'positions', 'volume', 'holders', 'orderbook'] as Metric[]).map(m => {
+              if (m === 'orderbook' && !v2Market) return null;
+              const label = m === 'tvl' ? 'TVL'
+                : m === 'breakdown' ? 'Breakdown'
+                : m === 'positions' ? 'Positions'
+                : m === 'volume' ? 'Volume'
+                : m === 'holders' ? 'Holders'
+                : 'Orderbook';
+              return (
+                <button key={m} onClick={() => setMetric(m)}
+                  className={`text-xs px-3 py-1 rounded-lg border ${metric === m ? 'border-white/30 bg-white/10 text-white' : 'border-white/10 text-white/40'}`}>
+                  {label}
+                  {m === 'orderbook' && v2Market && (
+                    <span className="ml-1 text-emerald-300/70">·{v2Market.nOffers}</span>
+                  )}
+                </button>
+              );
+            })}
           </div>
           <div className="flex items-center gap-1">
             {metric === 'volume' && (
@@ -223,6 +242,14 @@ function MarketDetailView() {
           </div>
         </div>
         <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+          {metric === 'orderbook' && v2Market ? (
+            <OrderbookView
+              market={v2Market}
+              snapshotDate={v2SnapshotDate}
+              activeBookIdx={activeBookIdx}
+              setActiveBookIdx={setActiveBookIdx}
+            />
+          ) : (
           <ResponsiveContainer width="100%" height={300}>
             {metric === 'positions' ? (
               <AreaChart data={chartData as any} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
@@ -288,6 +315,7 @@ function MarketDetailView() {
               </BarChart>
             )}
           </ResponsiveContainer>
+          )}
         </div>
       </div>
 
@@ -369,6 +397,134 @@ function Stat({ label, value }: { label: string; value: string }) {
     <div className="rounded-xl border border-white/10 bg-white/5 px-3 py-2">
       <div className="text-[10px] uppercase tracking-wider text-white/40">{label}</div>
       <div className="mt-0.5 text-base font-semibold text-white tabular-nums">{value}</div>
+    </div>
+  );
+}
+
+function shortAddr(a: string) { return `${a.slice(0, 4)}…${a.slice(-4)}`; }
+
+function fmtSy(n: number) {
+  if (n >= 1e9) return `${(n / 1e9).toFixed(2)}B`;
+  if (n >= 1e6) return `${(n / 1e6).toFixed(2)}M`;
+  if (n >= 1e3) return `${(n / 1e3).toFixed(2)}K`;
+  return n.toFixed(2);
+}
+
+function OrderbookView({
+  market, snapshotDate, activeBookIdx, setActiveBookIdx,
+}: {
+  market: V2MarketBook;
+  snapshotDate: string | null;
+  activeBookIdx: number;
+  setActiveBookIdx: (i: number) => void;
+}) {
+  const bookIdx = Math.min(activeBookIdx, market.books.length - 1);
+  const book: V2Book | undefined = market.books[bookIdx];
+  if (!book) return <div className="text-white/40 p-4">No book data.</div>;
+
+  const bidTotal = book.bids.reduce((s, b) => s + b.sizeSy, 0);
+  const askTotal = book.asks.reduce((s, b) => s + b.sizeSy, 0);
+  const bestBid = book.bestBidApy;
+  const bestAsk = book.bestAskApy;
+  const spreadBps = (bestBid !== null && bestAsk !== null) ? (bestAsk - bestBid) * 10000 : null;
+
+  // Build cumulative + pct-of-side for bars
+  let cumB = 0;
+  const bidsView = book.bids.map(r => { cumB += r.sizeSy; return { ...r, cum: cumB, pct: bidTotal ? r.sizeSy / bidTotal : 0 }; });
+  let cumA = 0;
+  const asksView = book.asks.map(r => { cumA += r.sizeSy; return { ...r, cum: cumA, pct: askTotal ? r.sizeSy / askTotal : 0 }; });
+
+  const fmtApy = (n: number | null) => n === null ? '–' : `${(n * 100).toFixed(2)}%`;
+  const fmtSpread = (n: number | null) => n === null ? '–' : (n < 0 ? `crossed` : (n >= 1000 ? `${(n / 100).toFixed(2)}%` : `${n.toFixed(0)} bps`));
+
+  return (
+    <div>
+      {/* Header — book selector (multi-book) + snapshot info */}
+      <div className="flex items-center justify-between gap-2 mb-3 flex-wrap">
+        <div className="flex items-center gap-2">
+          {market.books.length > 1 && market.books.map((b, i) => (
+            <button key={b.bookAccount} onClick={() => setActiveBookIdx(i)}
+              className={`text-[11px] px-2.5 py-1 rounded-md border ${bookIdx === i ? 'border-white/30 bg-white/10 text-white' : 'border-white/10 text-white/40 hover:text-white/70'}`}
+              title={b.bookAccount}>
+              Book {i + 1} <span className="text-white/40 ml-1">{shortAddr(b.bookAccount)}</span>
+            </button>
+          ))}
+        </div>
+        <div className="text-[11px] text-white/40">
+          snapshot {snapshotDate ?? '—'} · book <span className="font-mono">{shortAddr(book.bookAccount)}</span>
+        </div>
+      </div>
+
+      {/* Stat strip */}
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2 mb-4">
+        <Stat label="Bid top" value={fmtApy(bestBid)} />
+        <Stat label="Ask top" value={fmtApy(bestAsk)} />
+        <Stat label="Spread"  value={fmtSpread(spreadBps)} />
+        <Stat label="Bids Σ" value={`${fmtSy(bidTotal)} SY`} />
+        <Stat label="Asks Σ" value={`${fmtSy(askTotal)} SY`} />
+        <Stat label="Orders" value={`${book.nBids} / ${book.nAsks}`} />
+      </div>
+
+      {/* Two-column ladder */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <LadderTable side="bid"  rows={bidsView} totalSy={bidTotal} />
+        <LadderTable side="ask"  rows={asksView} totalSy={askTotal} />
+      </div>
+    </div>
+  );
+}
+
+function LadderTable({
+  side, rows, totalSy,
+}: {
+  side: 'bid' | 'ask';
+  rows: (V2OrderRow & { cum: number; pct: number })[];
+  totalSy: number;
+}) {
+  const accent = side === 'bid' ? 'text-emerald-300' : 'text-rose-300';
+  const barBg = side === 'bid' ? 'bg-emerald-400/15' : 'bg-rose-400/15';
+  const label = side === 'bid' ? 'BIDS (Buy YT)' : 'ASKS (Sell YT)';
+  if (rows.length === 0) {
+    return (
+      <div className="rounded-lg border border-white/5 p-4 text-white/30 text-xs">
+        <div className="mb-2 text-white/40 uppercase tracking-wider text-[10px]">{label}</div>
+        no resting orders
+      </div>
+    );
+  }
+  return (
+    <div className="rounded-lg border border-white/5 overflow-hidden">
+      <div className={`px-3 py-1.5 text-[10px] uppercase tracking-wider ${accent} border-b border-white/5`}>
+        {label} · {rows.length} orders · Σ {fmtSy(totalSy)} SY
+      </div>
+      <table className="w-full text-xs">
+        <thead className="text-white/40 text-[10px] uppercase tracking-wider">
+          <tr className="border-b border-white/5">
+            <th className="text-right py-1.5 px-2 font-normal">APY</th>
+            <th className="text-right py-1.5 px-2 font-normal">Size</th>
+            <th className="text-right py-1.5 px-2 font-normal">Cum</th>
+            <th className="text-left  py-1.5 px-2 font-normal">Maker</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.slice(0, 30).map((r, i) => (
+            <tr key={`${r.owner}-${i}`} className="border-b border-white/5 relative">
+              <td className={`relative py-1 px-2 text-right tabular-nums ${accent} font-medium`}>
+                <div className={`absolute inset-y-0 right-0 ${barBg}`} style={{ width: `${Math.min(r.pct * 100 * 3, 100)}%` }} />
+                <span className="relative">{(r.apy * 100).toFixed(2)}%</span>
+              </td>
+              <td className="py-1 px-2 text-right tabular-nums text-white/75">{fmtSy(r.sizeSy)}</td>
+              <td className="py-1 px-2 text-right tabular-nums text-white/45">{fmtSy(r.cum)}</td>
+              <td className="py-1 px-2 text-left font-mono text-[11px] text-white/55">{shortAddr(r.owner)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {rows.length > 30 && (
+        <div className="text-[10px] text-white/30 text-center py-1.5 border-t border-white/5">
+          top 30 of {rows.length}
+        </div>
+      )}
     </div>
   );
 }

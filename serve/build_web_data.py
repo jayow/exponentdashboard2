@@ -1275,6 +1275,136 @@ def build_unclaimed_yield_json(con: duckdb.DuckDBPyConnection) -> dict:
     }
 
 
+def build_v2_orderbook_json(con: duckdb.DuckDBPyConnection) -> dict:
+    """v2 (XPBook) orderbook snapshot per market.
+
+    Schema:
+      meta: { generatedAt, snapshotDate }
+      byMarket: {
+        [market_key]: {
+          ticker, platform, maturityDate, syMint,
+          primaryBookAccount, bookCount,
+          nOffers, nBids, nAsks,
+          bestBidApy, bestAskApy, midApy, spreadBps,
+          totalBidSizeSy, totalAskSizeSy,
+          books: [{ bookAccount, nOffers, nBids, nAsks,
+                     bestBidApy, bestAskApy,
+                     bids:[...], asks:[...] }]
+        }
+      }
+    """
+    summary_rows = con.execute("""
+        SELECT
+            market_key, ticker, platform, sy_mint, snapshot_date,
+            primary_book_account, book_count,
+            n_offers, n_bids, n_asks,
+            best_bid_apy, best_ask_apy, mid_apy, spread_bps,
+            total_bid_size_sy, total_ask_size_sy
+        FROM main_analytics.v2_book_summary
+    """).fetchall()
+
+    ladder_rows = con.execute("""
+        SELECT
+            market_key, book_account, side, rk,
+            owner_wallet, apy_rate, size_sy, size_sy_atomic,
+            expiry_at, created_at, virtual_offer
+        FROM main_analytics.v2_orderbook_top
+        ORDER BY market_key, book_account, side, rk
+    """).fetchall()
+
+    market_dates = con.execute("""
+        SELECT
+            m.market_key,
+            cast(to_timestamp(m.maturity_ts) as date) as maturity_date
+        FROM main.raw_v2_markets m
+    """).fetchall()
+    maturity_by_market = {mk: str(d) for mk, d in market_dates}
+
+    # Per-book ladder index
+    per_book: dict[tuple[str, str], dict[str, list[dict]]] = {}
+    per_book_summary: dict[tuple[str, str], dict] = {}
+    for (mk, ba, side, rk, owner, apy, sz, sz_atom, expiry, created, virt) in ladder_rows:
+        key = (mk, ba)
+        per_book.setdefault(key, {"bids": [], "asks": []})
+        per_book_summary.setdefault(key, {
+            "bookAccount": ba, "nBids": 0, "nAsks": 0,
+            "bestBidApy": None, "bestAskApy": None,
+        })
+        row = {
+            "owner": owner,
+            "apy": float(apy),
+            "sizeSy": float(sz),
+            "sizeSyAtomic": str(sz_atom),
+            "createdAt": int(created or 0),
+            "expiryAt": int(expiry or 0),
+            "virtualOffer": int(virt or 0),
+        }
+        if side == "bid":
+            per_book[key]["bids"].append(row)
+            s = per_book_summary[key]
+            s["nBids"] += 1
+            if s["bestBidApy"] is None or row["apy"] > s["bestBidApy"]:
+                s["bestBidApy"] = row["apy"]
+        else:
+            per_book[key]["asks"].append(row)
+            s = per_book_summary[key]
+            s["nAsks"] += 1
+            if s["bestAskApy"] is None or row["apy"] < s["bestAskApy"]:
+                s["bestAskApy"] = row["apy"]
+
+    by_market: dict[str, dict] = {}
+    snapshot_date_iso = None
+    for (mk, ticker, platform, sy_mint, snap_date,
+         primary_book, book_count, n_offers, n_bids, n_asks,
+         bb, ba, mid, spread, bid_sz, ask_sz) in summary_rows:
+        snapshot_date_iso = str(snap_date) if snapshot_date_iso is None else snapshot_date_iso
+        books_list: list[dict] = []
+        # Find all books for this market
+        market_books = [k for k in per_book.keys() if k[0] == mk]
+        # Sort: primary first, then by descending bids
+        market_books.sort(key=lambda k: (k[1] != primary_book, -per_book_summary[k]["nBids"]))
+        for k in market_books:
+            ladder = per_book[k]
+            s = per_book_summary[k]
+            books_list.append({
+                "bookAccount": s["bookAccount"],
+                "nOffers": s["nBids"] + s["nAsks"],
+                "nBids": s["nBids"],
+                "nAsks": s["nAsks"],
+                "bestBidApy": s["bestBidApy"],
+                "bestAskApy": s["bestAskApy"],
+                "bids": ladder["bids"],
+                "asks": ladder["asks"],
+            })
+        by_market[mk] = {
+            "ticker": ticker,
+            "platform": platform or "",
+            "maturityDate": maturity_by_market.get(mk),
+            "syMint": sy_mint,
+            "primaryBookAccount": primary_book,
+            "bookCount": int(book_count or 1),
+            "nOffers": int(n_offers or 0),
+            "nBids": int(n_bids or 0),
+            "nAsks": int(n_asks or 0),
+            "bestBidApy": float(bb) if bb is not None else None,
+            "bestAskApy": float(ba) if ba is not None else None,
+            "midApy":     float(mid) if mid is not None else None,
+            "spreadBps":  float(spread) if spread is not None else None,
+            "totalBidSizeSy": float(bid_sz or 0),
+            "totalAskSizeSy": float(ask_sz or 0),
+            "books": books_list,
+        }
+
+    return {
+        "meta": {
+            "generatedAt": datetime.now(timezone.utc).isoformat(),
+            "snapshotDate": snapshot_date_iso,
+            "marketCount": len(by_market),
+        },
+        "byMarket": by_market,
+    }
+
+
 def build_wallet_shards(con: duckdb.DuckDBPyConnection) -> None:
     """Emit one JSON per wallet under web/public/wallet/{addr}.json.
 
@@ -1406,6 +1536,7 @@ def build() -> None:
             ("market_share.json", build_market_share_json),
             ("users.json", build_users_json),
             ("unclaimed_yield.json", build_unclaimed_yield_json),
+            ("v2_orderbook.json", build_v2_orderbook_json),
         ]:
             rprint(f"[cyan]Building {name}…[/cyan]")
             payload = builder(con)

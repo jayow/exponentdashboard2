@@ -125,3 +125,29 @@ sources:
         columns:
           - name: mint
             tests: [unique, not_null]
+
+      - name: raw_v2_markets
+        description: v2 (XPBook) market discovery — one row per market account.
+        columns:
+          - name: market_account
+            tests: [unique, not_null]
+          - name: book_account
+            tests: [not_null]
+
+      - name: raw_v2_book_snapshots
+        description: Daily snapshot of v2 book accounts. One row per (date, book).
+        columns:
+          - name: snapshot_date
+            tests: [not_null]
+          - name: book_account
+            tests: [not_null]
+
+      - name: raw_v2_orders_snapshots
+        description: Flattened per-order rows from v2 books. One row per resting offer per snapshot.
+        columns:
+          - name: snapshot_date
+            tests: [not_null]
+          - name: book_account
+            tests: [not_null]
+          - name: offer_idx
+            tests: [not_null]
