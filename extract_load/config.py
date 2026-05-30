@@ -25,8 +25,19 @@ EXTRACT_RETRY_MAX = int(os.getenv("EXTRACT_RETRY_MAX", "5"))
 EXPONENT_CORE_PROGRAM = "ExponentnaRg3CQbW6dqQNZKXp7gtZ9DGMp1cwC4HAS7"
 EXPONENT_CLMM_PROGRAM = "XPC1MM4dYACDfykNuXYZ5una2DsMDWL24CrYubCvarC"
 
-# Every Exponent-related tx invokes one of these — scanning both is exhaustive.
-EXPONENT_PROGRAMS = [EXPONENT_CORE_PROGRAM, EXPONENT_CLMM_PROGRAM]
+# v2 programs (orderbook-based limit orders), publicly released 2026-05-30:
+#   XPBook  — orderbook (PostOffer / CancelOffer / FillOffer)
+#   XP1BRL  — offer-share mint manager (Mint CPI'd from XPBook)
+EXPONENT_XPBOOK_PROGRAM  = "XPBookgQTN2p8Yw1C2La35XkPMmZTCEYH77AdReVvK1"
+EXPONENT_XP1BRL_PROGRAM  = "XP1BRLn8eCYSygrd8er5P4GKdzqKbC3DLoSsS5UYVZy"
+
+# Every Exponent-related tx invokes one of these — scanning all four is exhaustive.
+EXPONENT_PROGRAMS = [
+    EXPONENT_CORE_PROGRAM,
+    EXPONENT_CLMM_PROGRAM,
+    EXPONENT_XPBOOK_PROGRAM,
+    EXPONENT_XP1BRL_PROGRAM,
+]
 
 
 DATA_DIR.mkdir(parents=True, exist_ok=True)
