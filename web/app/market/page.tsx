@@ -525,8 +525,7 @@ function OrderbookView({
 }
 
 function UnifiedLadder({
-  askTicks, bidTicks, bidTotal, askTotal, spreadBps, aggMode,
-  bestBid, bestAsk,
+  askTicks, bidTicks, spreadBps, aggMode,
 }: {
   askTicks: Tick[];
   bidTicks: Tick[];
@@ -537,74 +536,102 @@ function UnifiedLadder({
   bestBid: number | null;
   bestAsk: number | null;
 }) {
-  const renderTickRow = (t: Tick) => {
-    const sideTotal = t.side === 'bid' ? bidTotal : askTotal;
-    const pct = sideTotal ? t.sizeSy / sideTotal : 0;
-    const apyColor = t.side === 'bid' ? 'text-emerald-300' : 'text-rose-300';
-    const barBg    = t.side === 'bid' ? 'bg-emerald-400/10' : 'bg-rose-400/10';
+  const spreadStr =
+    spreadBps === null ? '–'
+    : spreadBps < 0 ? 'crossed'
+    : spreadBps >= 1000 ? `${(spreadBps/100).toFixed(2)}%`
+    : `${spreadBps.toFixed(0)} bps`;
+
+  if (aggMode === 'aggregate') {
+    // Plain table: Side · APY · Orders · Wallets · Size SY (one row per tick)
     return (
-      <tr key={`${t.side}-${t.apy}`} className="border-b border-white/5 relative">
-        <td className={`relative py-1 px-3 text-right tabular-nums ${apyColor} font-medium`}>
-          <div className={`absolute inset-y-0 right-0 ${barBg}`} style={{ width: `${Math.min(pct * 100 * 2.5, 100)}%` }} />
-          <span className="relative">{(t.apy * 100).toFixed(2)}%</span>
-        </td>
-        <td className="py-1 px-3 text-right tabular-nums text-white/55">{t.nOrders}</td>
-        <td className="py-1 px-3 text-right tabular-nums text-white/55">{t.nWallets}</td>
-        <td className="py-1 px-3 text-right tabular-nums text-white/85">{fmtSy(t.sizeSy)}</td>
-      </tr>
+      <div className="overflow-x-auto">
+        <table className="w-full text-xs">
+          <thead className="text-white/40 border-b border-white/10">
+            <tr>
+              <th className="py-2 text-left  font-normal">Side</th>
+              <th className="py-2 text-right font-normal">APY</th>
+              <th className="py-2 text-right font-normal">Orders</th>
+              <th className="py-2 text-right font-normal">Wallets</th>
+              <th className="py-2 text-right font-normal">Size SY</th>
+            </tr>
+          </thead>
+          <tbody>
+            {askTicks.map(t => (
+              <tr key={`a-${t.apy}`} className="border-b border-white/5">
+                <td className="py-1.5 text-rose-300/90">ASK</td>
+                <td className="py-1.5 text-right tabular-nums text-white/85">{(t.apy * 100).toFixed(2)}%</td>
+                <td className="py-1.5 text-right tabular-nums text-white/70">{t.nOrders}</td>
+                <td className="py-1.5 text-right tabular-nums text-white/70">{t.nWallets}</td>
+                <td className="py-1.5 text-right tabular-nums text-white/85">{fmtSy(t.sizeSy)}</td>
+              </tr>
+            ))}
+            {bidTicks.length > 0 && askTicks.length > 0 && (
+              <tr className="border-b border-white/10">
+                <td colSpan={5} className="py-2 text-center text-[11px] text-white/40 tabular-nums">spread {spreadStr}</td>
+              </tr>
+            )}
+            {bidTicks.map(t => (
+              <tr key={`b-${t.apy}`} className="border-b border-white/5">
+                <td className="py-1.5 text-emerald-300/90">BID</td>
+                <td className="py-1.5 text-right tabular-nums text-white/85">{(t.apy * 100).toFixed(2)}%</td>
+                <td className="py-1.5 text-right tabular-nums text-white/70">{t.nOrders}</td>
+                <td className="py-1.5 text-right tabular-nums text-white/70">{t.nWallets}</td>
+                <td className="py-1.5 text-right tabular-nums text-white/85">{fmtSy(t.sizeSy)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     );
-  };
+  }
 
-  const renderWalletRows = (t: Tick) =>
-    t.orders.map((o, i) => (
-      <tr key={`${t.side}-${t.apy}-${o.owner}-${i}`}
-          className="hover:bg-white/[0.03] cursor-pointer"
-          onClick={() => window.location.href = `/wallet/?addr=${o.owner}`}>
-        <td className="py-0.5 px-3 pl-8 text-left font-mono text-[11px] text-white/40">
-          {shortAddr(o.owner)}
-        </td>
-        <td colSpan={2} className="py-0.5 px-3 text-right tabular-nums text-white/30 text-[11px]">
-          {fmtCreatedAt(o.createdAt)}
-        </td>
-        <td className="py-0.5 px-3 text-right tabular-nums text-white/50 text-[11px]">
-          {fmtSy(o.sizeSy)}
-        </td>
-      </tr>
-    ));
-
-  const renderTickBlock = (t: Tick) => {
-    if (aggMode === 'aggregate') return renderTickRow(t);
-    return (
-      <>
-        {renderTickRow(t)}
-        {renderWalletRows(t)}
-      </>
-    );
-  };
-
-  const spreadRow = (bidTicks.length > 0 && askTicks.length > 0) ? (
-    <tr key="spread">
-      <td colSpan={4} className="py-2 px-3 text-center text-[11px] tabular-nums text-white/40 border-y border-white/10">
-        spread {spreadBps === null ? '–' : spreadBps < 0 ? 'crossed' : spreadBps >= 1000 ? `${(spreadBps/100).toFixed(2)}%` : `${spreadBps.toFixed(0)} bps`}
-      </td>
-    </tr>
-  ) : null;
+  // Expanded mode: one row PER ORDER. Side · APY · Wallet · Size SY · Created
+  // Sorted: asks descending APY, then spread, then bids descending APY.
+  // Inside each tick, largest size first.
+  const askRows = askTicks.flatMap(t => t.orders.map(o => ({ ...o, side: 'ask' as const })));
+  const bidRows = bidTicks.flatMap(t => t.orders.map(o => ({ ...o, side: 'bid' as const })));
 
   return (
-    <div className="rounded-lg border border-white/10 overflow-hidden">
+    <div className="overflow-x-auto">
       <table className="w-full text-xs">
-        <thead className="text-white/30 text-[10px] uppercase tracking-wider">
-          <tr className="border-b border-white/5">
-            <th className="text-right py-1.5 px-3 font-normal">APY</th>
-            <th className="text-right py-1.5 px-3 font-normal">Orders</th>
-            <th className="text-right py-1.5 px-3 font-normal">Wallets</th>
-            <th className="text-right py-1.5 px-3 font-normal">Size SY</th>
+        <thead className="text-white/40 border-b border-white/10">
+          <tr>
+            <th className="py-2 text-left  font-normal">Side</th>
+            <th className="py-2 text-right font-normal">APY</th>
+            <th className="py-2 text-left  font-normal pl-4">Wallet</th>
+            <th className="py-2 text-right font-normal">Size SY</th>
+            <th className="py-2 text-right font-normal">Created</th>
           </tr>
         </thead>
         <tbody>
-          {askTicks.map(t => <Fragment key={`a-${t.apy}`}>{renderTickBlock(t)}</Fragment>)}
-          {spreadRow}
-          {bidTicks.map(t => <Fragment key={`b-${t.apy}`}>{renderTickBlock(t)}</Fragment>)}
+          {askRows.map((o, i) => (
+            <tr key={`a-${o.apy}-${o.owner}-${i}`}
+                className="border-b border-white/5 hover:bg-white/5 cursor-pointer"
+                onClick={() => window.location.href = `/wallet/?addr=${o.owner}`}>
+              <td className="py-1.5 text-rose-300/90">ASK</td>
+              <td className="py-1.5 text-right tabular-nums text-white/85">{(o.apy * 100).toFixed(2)}%</td>
+              <td className="py-1.5 text-left  font-mono text-[11px] text-white/60 pl-4">{shortAddr(o.owner)}</td>
+              <td className="py-1.5 text-right tabular-nums text-white/85">{fmtSy(o.sizeSy)}</td>
+              <td className="py-1.5 text-right tabular-nums text-white/40">{fmtCreatedAt(o.createdAt)}</td>
+            </tr>
+          ))}
+          {bidRows.length > 0 && askRows.length > 0 && (
+            <tr className="border-b border-white/10">
+              <td colSpan={5} className="py-2 text-center text-[11px] text-white/40 tabular-nums">spread {spreadStr}</td>
+            </tr>
+          )}
+          {bidRows.map((o, i) => (
+            <tr key={`b-${o.apy}-${o.owner}-${i}`}
+                className="border-b border-white/5 hover:bg-white/5 cursor-pointer"
+                onClick={() => window.location.href = `/wallet/?addr=${o.owner}`}>
+              <td className="py-1.5 text-emerald-300/90">BID</td>
+              <td className="py-1.5 text-right tabular-nums text-white/85">{(o.apy * 100).toFixed(2)}%</td>
+              <td className="py-1.5 text-left  font-mono text-[11px] text-white/60 pl-4">{shortAddr(o.owner)}</td>
+              <td className="py-1.5 text-right tabular-nums text-white/85">{fmtSy(o.sizeSy)}</td>
+              <td className="py-1.5 text-right tabular-nums text-white/40">{fmtCreatedAt(o.createdAt)}</td>
+            </tr>
+          ))}
         </tbody>
       </table>
     </div>
