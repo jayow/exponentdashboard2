@@ -49,10 +49,13 @@ def _underlying_from_metadata(symbol: str, name: str | None) -> str:
     return symbol
 
 
-async def _resolve_via_vault(con, pubkeys: list[str]) -> tuple[str, str | None]:
+async def _resolve_via_vault(
+    con, pubkeys: list[str]
+) -> tuple[str, str | None, int | None]:
     """Probe each header pubkey on-chain; for the SPL TokenAccount among them
     (vault slot 5 in practice), read mint at bytes [0..32) and look up symbol.
-    Returns (ticker, sy_mint) or ("?", None) on failure.
+    Also probes the mint account for decimals (byte 44 of SPL Mint layout).
+    Returns (ticker, sy_mint, sy_decimals) — any may be None on failure.
     """
     url = RPC_ENDPOINTS[0]
     # First pass: existing raw_token_metadata gives both name + symbol cheaply
@@ -85,8 +88,19 @@ async def _resolve_via_vault(con, pubkeys: list[str]) -> tuple[str, str | None]:
                 sym = meta.get("symbol")
                 name = meta.get("name")
             if sym:
-                return _underlying_from_metadata(sym, name), sy_mint
-    return "?", None
+                # Probe mint account for decimals (SPL Mint: bytes 44 = u8 decimals).
+                sy_decimals = None
+                mint_resp = await client.post(url, json={
+                    "jsonrpc": "2.0", "id": 1, "method": "getAccountInfo",
+                    "params": [sy_mint, {"encoding": "base64"}]
+                })
+                mint_val = mint_resp.json().get("result", {}).get("value")
+                if mint_val:
+                    mint_buf = base64.b64decode(mint_val["data"][0])
+                    if len(mint_buf) >= 45:
+                        sy_decimals = mint_buf[44]
+                return _underlying_from_metadata(sym, name), sy_mint, sy_decimals
+    return "?", None, None
 
 
 async def fetch_xpbook_accounts() -> list[dict]:
@@ -189,8 +203,9 @@ async def run() -> dict:
             # Always probe vault[5] (SY-side SPL TokenAccount in book.pubkeys)
             # → mint at bytes [0..32) → symbol via raw_token_metadata or DAS.
             # Strip "w"/"ew" prefix → underlying ticker. Works for all markets,
-            # including v2-natives without v1 counterparts.
-            ticker, sy_mint = await _resolve_via_vault(con, decoded.pubkeys)
+            # including v2-natives without v1 counterparts. Also fetches the
+            # SY mint decimals so downstream size conversion uses the right scale.
+            ticker, sy_mint, sy_decimals = await _resolve_via_vault(con, decoded.pubkeys)
             # If on-chain probe didn't yield a symbol, fall back to v1 index scan
             if ticker == "?":
                 for pk in decoded.pubkeys:
@@ -222,21 +237,22 @@ async def run() -> dict:
             con.execute("""
                 INSERT INTO raw_v2_markets (
                     market_account, book_account,
-                    sy_mint, pt_mint, yt_mint,
+                    sy_mint, sy_decimals, pt_mint, yt_mint,
                     underlying_ticker, maturity_ts, market_key,
                     payload, fetched_at
                 )
-                VALUES (?, ?, ?, NULL, NULL, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                VALUES (?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                 ON CONFLICT (market_account) DO UPDATE SET
                     book_account      = excluded.book_account,
                     sy_mint           = excluded.sy_mint,
+                    sy_decimals       = excluded.sy_decimals,
                     underlying_ticker = excluded.underlying_ticker,
                     maturity_ts       = excluded.maturity_ts,
                     market_key        = excluded.market_key,
                     payload           = excluded.payload,
                     fetched_at        = excluded.fetched_at
             """, [
-                m["pubkey"], book["pubkey"], sy_mint,
+                m["pubkey"], book["pubkey"], sy_mint, sy_decimals,
                 ticker, decoded.expiration_ts, market_key,
                 json.dumps(payload),
             ])

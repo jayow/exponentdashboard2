@@ -9,13 +9,14 @@ select
     m.underlying_ticker,
     m.platform,
     m.sy_mint,
+    coalesce(m.sy_decimals, 9) as sy_decimals,
     o.offer_idx,
     o.owner_wallet,
     o.side,                              -- 'bid' | 'ask' | '?'
     o.apy_rate,                          -- decimal e.g. 0.1225 = 12.25%
     o.size_sy_atomic,
-    -- SY tokens (Exponent wrapped tokens are consistently 9 decimals)
-    o.size_sy_atomic::double / 1e9 as size_sy,
+    -- SY tokens: decimals vary per market (6 for USX/stSLX/etc., 9 for SOL LSTs)
+    o.size_sy_atomic::double / pow(10, coalesce(m.sy_decimals, 9)) as size_sy,
     o.expiry_at,
     o.created_at,
     cast(to_timestamp(o.expiry_at)  as timestamp) as expiry_ts,

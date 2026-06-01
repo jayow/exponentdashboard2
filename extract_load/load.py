@@ -273,6 +273,7 @@ RAW_DDL = {
 COLUMN_MIGRATIONS: list[tuple[str, str, str]] = [
     ("raw_signatures", "discovered_via", "VARCHAR"),
     ("raw_positions",  "staged_raw",     "UBIGINT"),
+    ("raw_v2_markets", "sy_decimals",    "SMALLINT"),
 ]
 
 # Tables that had breaking schema changes — drop + recreate (data loss is OK
