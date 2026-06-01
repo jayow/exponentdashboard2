@@ -403,6 +403,36 @@ function Stat({ label, value }: { label: string; value: string }) {
 
 function shortAddr(a: string) { return `${a.slice(0, 4)}…${a.slice(-4)}`; }
 
+function CopyButton({ value }: { value: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      onClick={(e) => {
+        e.stopPropagation();
+        navigator.clipboard.writeText(value).then(() => {
+          setCopied(true);
+          setTimeout(() => setCopied(false), 1200);
+        });
+      }}
+      title={copied ? 'Copied!' : 'Copy address'}
+      className={`inline-flex items-center justify-center align-middle ml-1.5 w-4 h-4 rounded transition ${
+        copied ? 'text-emerald-300' : 'text-white/25 hover:text-white/70 hover:bg-white/5'
+      }`}
+    >
+      {copied ? (
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+          <polyline points="20 6 9 17 4 12" />
+        </svg>
+      ) : (
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+          <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+        </svg>
+      )}
+    </button>
+  );
+}
+
 function fmtSy(n: number) {
   if (n >= 1e9) return `${(n / 1e9).toFixed(2)}B`;
   if (n >= 1e6) return `${(n / 1e6).toFixed(2)}M`;
@@ -460,6 +490,7 @@ function OrderbookView({
   setActiveBookIdx: (i: number) => void;
 }) {
   const [aggMode, setAggMode] = useState<AggMode>('aggregate');
+  const [walletSearch, setWalletSearch] = useState('');
   const bookIdx = Math.min(activeBookIdx, market.books.length - 1);
   const book: V2Book | undefined = market.books[bookIdx];
   if (!book) return <div className="text-white/40 p-4">No book data.</div>;
@@ -510,6 +541,16 @@ function OrderbookView({
         <Stat label="Orders" value={`${book.nBids} / ${book.nAsks}`} />
       </div>
 
+      {/* Search */}
+      <div className="mb-3">
+        <input
+          value={walletSearch}
+          onChange={(e) => setWalletSearch(e.target.value)}
+          placeholder="Filter by wallet address…"
+          className="w-full max-w-md bg-[#0a0a0a]/80 border border-white/10 focus:border-white/30 focus:outline-none rounded-md px-3 py-2 text-xs placeholder-white/20 font-mono"
+        />
+      </div>
+
       <UnifiedLadder
         askTicks={askTicks}
         bidTicks={bidTicks}
@@ -519,13 +560,14 @@ function OrderbookView({
         aggMode={aggMode}
         bestBid={bestBid}
         bestAsk={bestAsk}
+        walletSearch={walletSearch}
       />
     </div>
   );
 }
 
 function UnifiedLadder({
-  askTicks, bidTicks, spreadBps, aggMode,
+  askTicks, bidTicks, spreadBps, aggMode, walletSearch,
 }: {
   askTicks: Tick[];
   bidTicks: Tick[];
@@ -535,7 +577,12 @@ function UnifiedLadder({
   aggMode: AggMode;
   bestBid: number | null;
   bestAsk: number | null;
+  walletSearch: string;
 }) {
+  const q = walletSearch.trim().toLowerCase();
+  const matchAddr = (a: string) => !q || a.toLowerCase().includes(q);
+  const tickMatches = (t: Tick) => !q || t.orders.some(o => matchAddr(o.owner));
+
   const spreadStr =
     spreadBps === null ? '–'
     : spreadBps < 0 ? 'crossed'
@@ -543,7 +590,8 @@ function UnifiedLadder({
     : `${spreadBps.toFixed(0)} bps`;
 
   if (aggMode === 'aggregate') {
-    // Plain table: Side · APY · Orders · Wallets · Size SY (one row per tick)
+    const askFiltered = askTicks.filter(tickMatches);
+    const bidFiltered = bidTicks.filter(tickMatches);
     return (
       <div className="overflow-x-auto">
         <table className="w-full text-xs">
@@ -557,7 +605,7 @@ function UnifiedLadder({
             </tr>
           </thead>
           <tbody>
-            {askTicks.map(t => (
+            {askFiltered.map(t => (
               <tr key={`a-${t.apy}`} className="border-b border-white/5">
                 <td className="py-1.5 text-rose-300/90">ASK</td>
                 <td className="py-1.5 text-right tabular-nums text-white/85">{(t.apy * 100).toFixed(2)}%</td>
@@ -566,12 +614,12 @@ function UnifiedLadder({
                 <td className="py-1.5 text-right tabular-nums text-white/85">{fmtSy(t.sizeSy)}</td>
               </tr>
             ))}
-            {bidTicks.length > 0 && askTicks.length > 0 && (
+            {bidFiltered.length > 0 && askFiltered.length > 0 && (
               <tr className="border-b border-white/10">
                 <td colSpan={5} className="py-2 text-center text-[11px] text-white/40 tabular-nums">spread {spreadStr}</td>
               </tr>
             )}
-            {bidTicks.map(t => (
+            {bidFiltered.map(t => (
               <tr key={`b-${t.apy}`} className="border-b border-white/5">
                 <td className="py-1.5 text-emerald-300/90">BID</td>
                 <td className="py-1.5 text-right tabular-nums text-white/85">{(t.apy * 100).toFixed(2)}%</td>
@@ -580,17 +628,18 @@ function UnifiedLadder({
                 <td className="py-1.5 text-right tabular-nums text-white/85">{fmtSy(t.sizeSy)}</td>
               </tr>
             ))}
+            {q && askFiltered.length + bidFiltered.length === 0 && (
+              <tr><td colSpan={5} className="py-4 text-center text-white/40 text-xs">No wallets match &quot;{walletSearch}&quot;.</td></tr>
+            )}
           </tbody>
         </table>
       </div>
     );
   }
 
-  // Expanded mode: one row PER ORDER. Side · APY · Wallet · Size SY · Created
-  // Sorted: asks descending APY, then spread, then bids descending APY.
-  // Inside each tick, largest size first.
-  const askRows = askTicks.flatMap(t => t.orders.map(o => ({ ...o, side: 'ask' as const })));
-  const bidRows = bidTicks.flatMap(t => t.orders.map(o => ({ ...o, side: 'bid' as const })));
+  // Expanded: one row per order
+  const askRows = askTicks.flatMap(t => t.orders.map(o => ({ ...o, side: 'ask' as const }))).filter(o => matchAddr(o.owner));
+  const bidRows = bidTicks.flatMap(t => t.orders.map(o => ({ ...o, side: 'bid' as const }))).filter(o => matchAddr(o.owner));
 
   return (
     <div className="overflow-x-auto">
@@ -611,7 +660,9 @@ function UnifiedLadder({
                 onClick={() => window.location.href = `/wallet/?addr=${o.owner}`}>
               <td className="py-1.5 text-rose-300/90">ASK</td>
               <td className="py-1.5 text-right tabular-nums text-white/85">{(o.apy * 100).toFixed(2)}%</td>
-              <td className="py-1.5 text-left  font-mono text-[11px] text-white/60 pl-4">{shortAddr(o.owner)}</td>
+              <td className="py-1.5 text-left font-mono text-[11px] text-white/70 pl-4 whitespace-nowrap">
+                {o.owner}<CopyButton value={o.owner} />
+              </td>
               <td className="py-1.5 text-right tabular-nums text-white/85">{fmtSy(o.sizeSy)}</td>
               <td className="py-1.5 text-right tabular-nums text-white/40">{fmtCreatedAt(o.createdAt)}</td>
             </tr>
@@ -627,11 +678,16 @@ function UnifiedLadder({
                 onClick={() => window.location.href = `/wallet/?addr=${o.owner}`}>
               <td className="py-1.5 text-emerald-300/90">BID</td>
               <td className="py-1.5 text-right tabular-nums text-white/85">{(o.apy * 100).toFixed(2)}%</td>
-              <td className="py-1.5 text-left  font-mono text-[11px] text-white/60 pl-4">{shortAddr(o.owner)}</td>
+              <td className="py-1.5 text-left font-mono text-[11px] text-white/70 pl-4 whitespace-nowrap">
+                {o.owner}<CopyButton value={o.owner} />
+              </td>
               <td className="py-1.5 text-right tabular-nums text-white/85">{fmtSy(o.sizeSy)}</td>
               <td className="py-1.5 text-right tabular-nums text-white/40">{fmtCreatedAt(o.createdAt)}</td>
             </tr>
           ))}
+          {q && askRows.length + bidRows.length === 0 && (
+            <tr><td colSpan={5} className="py-4 text-center text-white/40 text-xs">No wallets match &quot;{walletSearch}&quot;.</td></tr>
+          )}
         </tbody>
       </table>
     </div>
