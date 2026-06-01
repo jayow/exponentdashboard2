@@ -205,7 +205,7 @@ export function MarketsList() {
                 ['liquidityUsd', 'Liquidity', 'right', "AMM pool TVL — matches Exponent UI 'Liquidity'"],
                 ['volume7dUsd',  'Vol 7d',    'right', 'Trailing 7-day total swap volume in USD'],
                 ['holders',      'Holders',   'right', 'Unique wallets holding PT, YT, or LP'],
-                ['oiSy',         'v2 OI',     'right', 'Total resting-order notional in SY across both sides — v2 limit-order open interest (latest snapshot)'],
+                ['oiSy',         'LO OI',     'right', 'Limit Order Open Interest — total resting-order notional in SY across both sides on the v2 orderbook (latest snapshot). Tracked separately from TVL: LO escrow is maker capital waiting to be matched, not deployed-into-positions value. The SY already counts in TVL via SY supply — this column shows the subset currently sitting as resting orders.'],
               ] as const).map(([key, label, align, tip]) => (
                 <th key={key} title={tip || undefined}
                     className={`py-2 font-normal cursor-pointer select-none hover:text-white/70 ${align === 'left' ? 'text-left' : 'text-right'}`}
