@@ -319,7 +319,9 @@ function MarketDetailView() {
         </div>
       </div>
 
-      {/* Holders tabs */}
+      {/* Holders tabs — only on the Holders metric */}
+      {metric === 'holders' && (
+      <>
       <div className="mt-8 flex items-center gap-2 mb-3 flex-wrap">
         {(['PT', 'YT', 'LP'] as Leg[]).map(l => {
           const s = l === 'PT' ? ptSnap : l === 'YT' ? ytSnap : lpSnap;
@@ -387,6 +389,8 @@ function MarketDetailView() {
       </div>
       {cur && cur.holders > 500 && (
         <div className="text-xs text-white/30 mt-2 text-center">Showing top 500 of {cur.holders} holders</div>
+      )}
+      </>
       )}
     </main>
   );
