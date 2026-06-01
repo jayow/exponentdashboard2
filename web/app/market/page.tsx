@@ -567,7 +567,7 @@ function OrderbookView({
 }
 
 function UnifiedLadder({
-  askTicks, bidTicks, spreadBps, aggMode, walletSearch,
+  askTicks, bidTicks, bidTotal, askTotal, spreadBps, aggMode, walletSearch,
 }: {
   askTicks: Tick[];
   bidTicks: Tick[];
@@ -579,6 +579,17 @@ function UnifiedLadder({
   bestAsk: number | null;
   walletSearch: string;
 }) {
+  const sizeCell = (sz: number, side: 'bid' | 'ask') => {
+    const denom = side === 'bid' ? bidTotal : askTotal;
+    const pct = denom ? sz / denom : 0;
+    const bar = side === 'bid' ? 'bg-emerald-400/20' : 'bg-rose-400/20';
+    return (
+      <td className="relative py-1.5 px-3 text-right tabular-nums text-white/85">
+        <div className={`absolute inset-y-0 right-0 ${bar}`} style={{ width: `${Math.min(pct * 100 * 2.5, 100)}%` }} />
+        <span className="relative">{fmtSy(sz)}</span>
+      </td>
+    );
+  };
   const q = walletSearch.trim().toLowerCase();
   const matchAddr = (a: string) => !q || a.toLowerCase().includes(q);
   const tickMatches = (t: Tick) => !q || t.orders.some(o => matchAddr(o.owner));
@@ -611,7 +622,7 @@ function UnifiedLadder({
                 <td className="py-1.5 text-right tabular-nums text-white/85">{(t.apy * 100).toFixed(2)}%</td>
                 <td className="py-1.5 text-right tabular-nums text-white/70">{t.nOrders}</td>
                 <td className="py-1.5 text-right tabular-nums text-white/70">{t.nWallets}</td>
-                <td className="py-1.5 text-right tabular-nums text-white/85">{fmtSy(t.sizeSy)}</td>
+                {sizeCell(t.sizeSy, 'ask')}
               </tr>
             ))}
             {bidFiltered.length > 0 && askFiltered.length > 0 && (
@@ -625,7 +636,7 @@ function UnifiedLadder({
                 <td className="py-1.5 text-right tabular-nums text-white/85">{(t.apy * 100).toFixed(2)}%</td>
                 <td className="py-1.5 text-right tabular-nums text-white/70">{t.nOrders}</td>
                 <td className="py-1.5 text-right tabular-nums text-white/70">{t.nWallets}</td>
-                <td className="py-1.5 text-right tabular-nums text-white/85">{fmtSy(t.sizeSy)}</td>
+                {sizeCell(t.sizeSy, 'bid')}
               </tr>
             ))}
             {q && askFiltered.length + bidFiltered.length === 0 && (
@@ -663,7 +674,7 @@ function UnifiedLadder({
               <td className="py-1.5 text-left font-mono text-[11px] text-white/70 pl-4 whitespace-nowrap">
                 {o.owner}<CopyButton value={o.owner} />
               </td>
-              <td className="py-1.5 text-right tabular-nums text-white/85">{fmtSy(o.sizeSy)}</td>
+              {sizeCell(o.sizeSy, 'ask')}
               <td className="py-1.5 text-right tabular-nums text-white/40">{fmtCreatedAt(o.createdAt)}</td>
             </tr>
           ))}
@@ -681,7 +692,7 @@ function UnifiedLadder({
               <td className="py-1.5 text-left font-mono text-[11px] text-white/70 pl-4 whitespace-nowrap">
                 {o.owner}<CopyButton value={o.owner} />
               </td>
-              <td className="py-1.5 text-right tabular-nums text-white/85">{fmtSy(o.sizeSy)}</td>
+              {sizeCell(o.sizeSy, 'bid')}
               <td className="py-1.5 text-right tabular-nums text-white/40">{fmtCreatedAt(o.createdAt)}</td>
             </tr>
           ))}
