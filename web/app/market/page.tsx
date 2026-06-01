@@ -214,9 +214,6 @@ function MarketDetailView() {
                 <button key={m} onClick={() => setMetric(m)}
                   className={`text-xs px-3 py-1 rounded-lg border ${metric === m ? 'border-white/30 bg-white/10 text-white' : 'border-white/10 text-white/40'}`}>
                   {label}
-                  {m === 'orderbook' && v2Market && (
-                    <span className="ml-1 text-emerald-300/70">·{v2Market.nOffers}</span>
-                  )}
                 </button>
               );
             })}
