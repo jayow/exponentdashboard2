@@ -517,6 +517,8 @@ function OrderbookView({
         askTotal={askTotal}
         spreadBps={spreadBps}
         aggMode={aggMode}
+        bestBid={bestBid}
+        bestAsk={bestAsk}
       />
     </div>
   );
@@ -524,6 +526,7 @@ function OrderbookView({
 
 function UnifiedLadder({
   askTicks, bidTicks, bidTotal, askTotal, spreadBps, aggMode,
+  bestBid, bestAsk,
 }: {
   askTicks: Tick[];
   bidTicks: Tick[];
@@ -531,44 +534,62 @@ function UnifiedLadder({
   askTotal: number;
   spreadBps: number | null;
   aggMode: AggMode;
+  bestBid: number | null;
+  bestAsk: number | null;
 }) {
+  // tick row: bigger / bolder / depth bar; wallet rows underneath are
+  // indented with a colored left border so the grouping reads at a glance.
   const renderTickRow = (t: Tick) => {
     const sideTotal = t.side === 'bid' ? bidTotal : askTotal;
     const pct = sideTotal ? t.sizeSy / sideTotal : 0;
     const accent = t.side === 'bid' ? 'text-emerald-300' : 'text-rose-300';
-    const barBg = t.side === 'bid' ? 'bg-emerald-400/15' : 'bg-rose-400/15';
-    const badgeBg = t.side === 'bid' ? 'bg-emerald-400/15 text-emerald-300' : 'bg-rose-400/15 text-rose-300';
+    const barBg = t.side === 'bid' ? 'bg-emerald-400/20' : 'bg-rose-400/20';
+    const badgeBg = t.side === 'bid' ? 'bg-emerald-400/20 text-emerald-300 ring-1 ring-emerald-400/30' : 'bg-rose-400/20 text-rose-300 ring-1 ring-rose-400/30';
+    const sideTint = t.side === 'bid' ? 'bg-emerald-500/[0.025]' : 'bg-rose-500/[0.025]';
     return (
-      <tr key={`${t.side}-${t.apy}`} className="border-b border-white/5 relative">
-        <td className="py-1 px-2 text-left">
-          <span className={`inline-block text-[10px] font-medium px-1.5 py-0.5 rounded ${badgeBg}`}>
+      <tr key={`${t.side}-${t.apy}`} className={`border-b border-white/[0.06] relative group ${sideTint}`}>
+        <td className="py-1.5 px-3 text-left">
+          <span className={`inline-block text-[10px] font-semibold tracking-wider px-1.5 py-0.5 rounded ${badgeBg}`}>
             {t.side === 'bid' ? 'BID' : 'ASK'}
           </span>
         </td>
-        <td className={`relative py-1 px-2 text-right tabular-nums ${accent} font-medium`}>
-          <div className={`absolute inset-y-0 right-0 ${barBg}`} style={{ width: `${Math.min(pct * 100 * 3, 100)}%` }} />
-          <span className="relative">{(t.apy * 100).toFixed(4)}%</span>
+        <td className={`relative py-1.5 px-3 text-right tabular-nums ${accent} text-sm font-semibold`}>
+          <div className={`absolute inset-y-0 right-0 ${barBg} transition-all`} style={{ width: `${Math.min(pct * 100 * 3, 100)}%` }} />
+          <span className="relative">{(t.apy * 100).toFixed(2)}%</span>
         </td>
-        <td className="py-1 px-2 text-right tabular-nums text-white/60">{t.nOrders}</td>
-        <td className="py-1 px-2 text-right tabular-nums text-white/60">{t.nWallets}</td>
-        <td className="py-1 px-2 text-right tabular-nums text-white/85">{fmtSy(t.sizeSy)}</td>
+        <td className="py-1.5 px-3 text-right tabular-nums text-white/70 text-sm">{t.nOrders}</td>
+        <td className="py-1.5 px-3 text-right tabular-nums text-white/70 text-sm">{t.nWallets}</td>
+        <td className="py-1.5 px-3 text-right tabular-nums text-white text-sm font-medium">{fmtSy(t.sizeSy)}</td>
       </tr>
     );
   };
 
-  const renderWalletRows = (t: Tick) =>
-    t.orders.map((o, i) => (
-      <tr key={`${t.side}-${t.apy}-${o.owner}-${i}`}
-          className="border-b border-white/5 hover:bg-white/5 cursor-pointer"
-          onClick={() => window.location.href = `/wallet/?addr=${o.owner}`}>
-        <td className="py-1 px-2"></td>
-        <td className="py-1 px-2 pl-6 text-left font-mono text-[11px] text-white/55">{shortAddr(o.owner)}</td>
-        <td className="py-1 px-2 text-right tabular-nums text-white/50">{fmtSy(o.sizeSy)}</td>
-        <td colSpan={2} className="py-1 px-2 text-right tabular-nums text-white/40 text-[11px]">
-          {fmtCreatedAt(o.createdAt)}
-        </td>
-      </tr>
-    ));
+  // Wallet sub-row: smaller, lighter, with per-wallet bar showing % of THIS tick
+  const renderWalletRows = (t: Tick) => {
+    const borderColor = t.side === 'bid' ? 'border-l-emerald-400/40' : 'border-l-rose-400/40';
+    const sideTint    = t.side === 'bid' ? 'bg-emerald-500/[0.015]' : 'bg-rose-500/[0.015]';
+    const barColor    = t.side === 'bid' ? 'bg-emerald-400/25' : 'bg-rose-400/25';
+    return t.orders.map((o, i) => {
+      const pctInTick = t.sizeSy ? o.sizeSy / t.sizeSy : 0;
+      return (
+        <tr key={`${t.side}-${t.apy}-${o.owner}-${i}`}
+            className={`border-b border-white/[0.04] hover:bg-white/[0.04] cursor-pointer ${sideTint}`}
+            onClick={() => window.location.href = `/wallet/?addr=${o.owner}`}>
+          <td className={`py-0.5 px-3 border-l-2 ${borderColor}`}></td>
+          <td className="py-0.5 px-3 text-left font-mono text-[10.5px] text-white/55">
+            <span className="inline-block w-3 text-white/25 mr-1">↳</span>{shortAddr(o.owner)}
+          </td>
+          <td colSpan={2} className="py-0.5 px-3 text-right tabular-nums text-white/35 text-[10.5px]">
+            {fmtCreatedAt(o.createdAt)}
+          </td>
+          <td className="relative py-0.5 px-3 text-right tabular-nums text-white/65 text-[11px]">
+            <div className={`absolute inset-y-0 right-0 ${barColor}`} style={{ width: `${Math.min(pctInTick * 100, 100)}%` }} />
+            <span className="relative">{fmtSy(o.sizeSy)}</span>
+          </td>
+        </tr>
+      );
+    });
+  };
 
   const renderTickBlock = (t: Tick) => {
     if (aggMode === 'aggregate') return renderTickRow(t);
@@ -580,25 +601,41 @@ function UnifiedLadder({
     );
   };
 
+  // Prominent centered spread divider with best-bid / best-ask call-outs
   const spreadRow = (bidTicks.length > 0 && askTicks.length > 0) ? (
-    <tr key="spread" className="border-b border-white/5">
-      <td colSpan={5} className="py-1.5 px-2 text-center text-[11px] text-white/40 tabular-nums">
-        — spread {spreadBps === null ? '–' : `${spreadBps.toFixed(0)} bps`} —
+    <tr key="spread" className="bg-white/[0.04]">
+      <td colSpan={5} className="py-2 px-3">
+        <div className="flex items-center justify-center gap-3 text-[11px] tabular-nums">
+          <span className="text-rose-300 font-medium">
+            ASK {bestAsk !== null ? `${(bestAsk * 100).toFixed(2)}%` : '–'}
+          </span>
+          <span className="text-white/30">·</span>
+          <span className={`px-2 py-0.5 rounded text-[10px] uppercase tracking-wider ${
+            spreadBps === null ? 'bg-white/5 text-white/50' :
+            spreadBps < 0 ? 'bg-rose-500/20 text-rose-300 ring-1 ring-rose-400/30' :
+            'bg-white/10 text-white/70'}`}>
+            {spreadBps === null ? '–' : spreadBps < 0 ? 'crossed' : spreadBps >= 1000 ? `${(spreadBps/100).toFixed(2)}%` : `${spreadBps.toFixed(0)} bps`}
+          </span>
+          <span className="text-white/30">·</span>
+          <span className="text-emerald-300 font-medium">
+            BID {bestBid !== null ? `${(bestBid * 100).toFixed(2)}%` : '–'}
+          </span>
+        </div>
       </td>
     </tr>
   ) : null;
 
   return (
-    <div className="rounded-lg border border-white/5 overflow-hidden">
+    <div className="rounded-lg border border-white/10 overflow-hidden">
       <div className="overflow-x-auto">
         <table className="w-full text-xs">
-          <thead className="text-white/40 text-[10px] uppercase tracking-wider">
-            <tr className="border-b border-white/5">
-              <th className="text-left py-1.5 px-2 font-normal">Side</th>
-              <th className="text-right py-1.5 px-2 font-normal">APY</th>
-              <th className="text-right py-1.5 px-2 font-normal">Orders</th>
-              <th className="text-right py-1.5 px-2 font-normal">Wallets</th>
-              <th className="text-right py-1.5 px-2 font-normal">Size SY</th>
+          <thead className="text-white/40 text-[10px] uppercase tracking-wider bg-white/[0.02]">
+            <tr className="border-b border-white/10">
+              <th className="text-left  py-2 px-3 font-normal">Side</th>
+              <th className="text-right py-2 px-3 font-normal">APY</th>
+              <th className="text-right py-2 px-3 font-normal">Orders</th>
+              <th className="text-right py-2 px-3 font-normal">Wallets</th>
+              <th className="text-right py-2 px-3 font-normal">Size SY</th>
             </tr>
           </thead>
           <tbody>
