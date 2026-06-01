@@ -1,5 +1,5 @@
 'use client';
-import { Suspense, useEffect, useMemo, useState } from 'react';
+import { Fragment, Suspense, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import {
@@ -410,7 +410,46 @@ function fmtSy(n: number) {
   return n.toFixed(2);
 }
 
-type OrderbookSubview = 'ladder' | 'wallets';
+type AggMode = 'aggregate' | 'expanded';
+
+type Tick = {
+  side: 'bid' | 'ask';
+  apy: number;
+  nOrders: number;
+  nWallets: number;
+  sizeSy: number;
+  orders: V2OrderRow[];
+};
+
+function fmtCreatedAt(unixSec: number): string {
+  const d = new Date(unixSec * 1000);
+  const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(d.getUTCDate()).padStart(2, '0');
+  const hh = String(d.getUTCHours()).padStart(2, '0');
+  const mi = String(d.getUTCMinutes()).padStart(2, '0');
+  return `${mm}-${dd} ${hh}:${mi} UTC`;
+}
+
+function aggregateTicks(rows: V2OrderRow[], side: 'bid' | 'ask'): Tick[] {
+  const byApy = new Map<number, Tick>();
+  for (const r of rows) {
+    let t = byApy.get(r.apy);
+    if (!t) {
+      t = { side, apy: r.apy, nOrders: 0, nWallets: 0, sizeSy: 0, orders: [] };
+      byApy.set(r.apy, t);
+    }
+    t.nOrders += 1;
+    t.sizeSy += r.sizeSy;
+    t.orders.push(r);
+  }
+  for (const t of byApy.values()) {
+    t.nWallets = new Set(t.orders.map(o => o.owner)).size;
+    // largest first within a tick (expanded view ordering)
+    t.orders.sort((a, b) => b.sizeSy - a.sizeSy);
+  }
+  // both sides sorted by APY DESC per spec
+  return Array.from(byApy.values()).sort((a, b) => b.apy - a.apy);
+}
 
 function OrderbookView({
   market, snapshotDate, activeBookIdx, setActiveBookIdx,
@@ -420,7 +459,7 @@ function OrderbookView({
   activeBookIdx: number;
   setActiveBookIdx: (i: number) => void;
 }) {
-  const [subview, setSubview] = useState<OrderbookSubview>('ladder');
+  const [aggMode, setAggMode] = useState<AggMode>('aggregate');
   const bookIdx = Math.min(activeBookIdx, market.books.length - 1);
   const book: V2Book | undefined = market.books[bookIdx];
   if (!book) return <div className="text-white/40 p-4">No book data.</div>;
@@ -431,41 +470,15 @@ function OrderbookView({
   const bestAsk = book.bestAskApy;
   const spreadBps = (bestBid !== null && bestAsk !== null) ? (bestAsk - bestBid) * 10000 : null;
 
-  // Per-wallet aggregation across both sides
-  type WalletAgg = {
-    wallet: string; nBids: number; nAsks: number; bidSy: number; askSy: number;
-    bestBidApy: number | null; bestAskApy: number | null;
-  };
-  const wallets = new Map<string, WalletAgg>();
-  for (const o of book.bids) {
-    const w = wallets.get(o.owner) ?? { wallet: o.owner, nBids: 0, nAsks: 0, bidSy: 0, askSy: 0, bestBidApy: null, bestAskApy: null };
-    w.nBids += 1; w.bidSy += o.sizeSy;
-    if (w.bestBidApy === null || o.apy > w.bestBidApy) w.bestBidApy = o.apy;
-    wallets.set(o.owner, w);
-  }
-  for (const o of book.asks) {
-    const w = wallets.get(o.owner) ?? { wallet: o.owner, nBids: 0, nAsks: 0, bidSy: 0, askSy: 0, bestBidApy: null, bestAskApy: null };
-    w.nAsks += 1; w.askSy += o.sizeSy;
-    if (w.bestAskApy === null || o.apy < w.bestAskApy) w.bestAskApy = o.apy;
-    wallets.set(o.owner, w);
-  }
-  const walletRows = Array.from(wallets.values()).sort((a, b) => (b.bidSy + b.askSy) - (a.bidSy + a.askSy));
-  const nBidOnly = walletRows.filter(w => w.nBids > 0 && w.nAsks === 0).length;
-  const nAskOnly = walletRows.filter(w => w.nBids === 0 && w.nAsks > 0).length;
-  const nBoth    = walletRows.filter(w => w.nBids > 0 && w.nAsks > 0).length;
-
-  // Build cumulative + pct-of-side for ladder bars
-  let cumB = 0;
-  const bidsView = book.bids.map(r => { cumB += r.sizeSy; return { ...r, cum: cumB, pct: bidTotal ? r.sizeSy / bidTotal : 0 }; });
-  let cumA = 0;
-  const asksView = book.asks.map(r => { cumA += r.sizeSy; return { ...r, cum: cumA, pct: askTotal ? r.sizeSy / askTotal : 0 }; });
+  const askTicks = aggregateTicks(book.asks, 'ask');
+  const bidTicks = aggregateTicks(book.bids, 'bid');
 
   const fmtApy = (n: number | null) => n === null ? '–' : `${(n * 100).toFixed(2)}%`;
   const fmtSpread = (n: number | null) => n === null ? '–' : (n < 0 ? `crossed` : (n >= 1000 ? `${(n / 100).toFixed(2)}%` : `${n.toFixed(0)} bps`));
 
   return (
     <div>
-      {/* Header — book selector (multi-book) + subview toggle + snapshot info */}
+      {/* Header — book selector (multi-book) + agg toggle + snapshot info */}
       <div className="flex items-center justify-between gap-2 mb-3 flex-wrap">
         <div className="flex items-center gap-2 flex-wrap">
           {market.books.length > 1 && market.books.map((b, i) => (
@@ -475,10 +488,10 @@ function OrderbookView({
               Book {i + 1} <span className="text-white/40 ml-1">{shortAddr(b.bookAccount)}</span>
             </button>
           ))}
-          {(['ladder','wallets'] as OrderbookSubview[]).map(v => (
-            <button key={v} onClick={() => setSubview(v)}
-              className={`text-[11px] px-2.5 py-1 rounded-md border ${subview === v ? 'border-white/30 bg-white/10 text-white' : 'border-white/10 text-white/40 hover:text-white/70'}`}>
-              {v === 'ladder' ? 'Ladder' : `Wallets · ${walletRows.length}`}
+          {(['aggregate','expanded'] as AggMode[]).map(v => (
+            <button key={v} onClick={() => setAggMode(v)}
+              className={`text-[11px] px-2.5 py-1 rounded-md border ${aggMode === v ? 'border-white/30 bg-white/10 text-white' : 'border-white/10 text-white/40 hover:text-white/70'}`}>
+              {v === 'aggregate' ? 'Aggregate' : 'Expanded'}
             </button>
           ))}
         </div>
@@ -497,132 +510,104 @@ function OrderbookView({
         <Stat label="Orders" value={`${book.nBids} / ${book.nAsks}`} />
       </div>
 
-      {subview === 'ladder' ? (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <LadderTable side="bid"  rows={bidsView} totalSy={bidTotal} />
-          <LadderTable side="ask"  rows={asksView} totalSy={askTotal} />
-        </div>
-      ) : (
-        <WalletsTable rows={walletRows} nBidOnly={nBidOnly} nAskOnly={nAskOnly} nBoth={nBoth} />
-      )}
+      <UnifiedLadder
+        askTicks={askTicks}
+        bidTicks={bidTicks}
+        bidTotal={bidTotal}
+        askTotal={askTotal}
+        spreadBps={spreadBps}
+        aggMode={aggMode}
+      />
     </div>
   );
 }
 
-function WalletsTable({
-  rows, nBidOnly, nAskOnly, nBoth,
+function UnifiedLadder({
+  askTicks, bidTicks, bidTotal, askTotal, spreadBps, aggMode,
 }: {
-  rows: Array<{
-    wallet: string; nBids: number; nAsks: number; bidSy: number; askSy: number;
-    bestBidApy: number | null; bestAskApy: number | null;
-  }>;
-  nBidOnly: number; nAskOnly: number; nBoth: number;
+  askTicks: Tick[];
+  bidTicks: Tick[];
+  bidTotal: number;
+  askTotal: number;
+  spreadBps: number | null;
+  aggMode: AggMode;
 }) {
+  const renderTickRow = (t: Tick) => {
+    const sideTotal = t.side === 'bid' ? bidTotal : askTotal;
+    const pct = sideTotal ? t.sizeSy / sideTotal : 0;
+    const accent = t.side === 'bid' ? 'text-emerald-300' : 'text-rose-300';
+    const barBg = t.side === 'bid' ? 'bg-emerald-400/15' : 'bg-rose-400/15';
+    const badgeBg = t.side === 'bid' ? 'bg-emerald-400/15 text-emerald-300' : 'bg-rose-400/15 text-rose-300';
+    return (
+      <tr key={`${t.side}-${t.apy}`} className="border-b border-white/5 relative">
+        <td className="py-1 px-2 text-left">
+          <span className={`inline-block text-[10px] font-medium px-1.5 py-0.5 rounded ${badgeBg}`}>
+            {t.side === 'bid' ? 'BID' : 'ASK'}
+          </span>
+        </td>
+        <td className={`relative py-1 px-2 text-right tabular-nums ${accent} font-medium`}>
+          <div className={`absolute inset-y-0 right-0 ${barBg}`} style={{ width: `${Math.min(pct * 100 * 3, 100)}%` }} />
+          <span className="relative">{(t.apy * 100).toFixed(4)}%</span>
+        </td>
+        <td className="py-1 px-2 text-right tabular-nums text-white/60">{t.nOrders}</td>
+        <td className="py-1 px-2 text-right tabular-nums text-white/60">{t.nWallets}</td>
+        <td className="py-1 px-2 text-right tabular-nums text-white/85">{fmtSy(t.sizeSy)}</td>
+      </tr>
+    );
+  };
+
+  const renderWalletRows = (t: Tick) =>
+    t.orders.map((o, i) => (
+      <tr key={`${t.side}-${t.apy}-${o.owner}-${i}`}
+          className="border-b border-white/5 hover:bg-white/5 cursor-pointer"
+          onClick={() => window.location.href = `/wallet/?addr=${o.owner}`}>
+        <td className="py-1 px-2"></td>
+        <td className="py-1 px-2 pl-6 text-left font-mono text-[11px] text-white/55">{shortAddr(o.owner)}</td>
+        <td className="py-1 px-2 text-right tabular-nums text-white/50">{fmtSy(o.sizeSy)}</td>
+        <td colSpan={2} className="py-1 px-2 text-right tabular-nums text-white/40 text-[11px]">
+          {fmtCreatedAt(o.createdAt)}
+        </td>
+      </tr>
+    ));
+
+  const renderTickBlock = (t: Tick) => {
+    if (aggMode === 'aggregate') return renderTickRow(t);
+    return (
+      <>
+        {renderTickRow(t)}
+        {renderWalletRows(t)}
+      </>
+    );
+  };
+
+  const spreadRow = (bidTicks.length > 0 && askTicks.length > 0) ? (
+    <tr key="spread" className="border-b border-white/5">
+      <td colSpan={5} className="py-1.5 px-2 text-center text-[11px] text-white/40 tabular-nums">
+        — spread {spreadBps === null ? '–' : `${spreadBps.toFixed(0)} bps`} —
+      </td>
+    </tr>
+  ) : null;
+
   return (
     <div className="rounded-lg border border-white/5 overflow-hidden">
-      <div className="px-3 py-2 text-xs text-white/50 border-b border-white/5 flex items-center justify-between flex-wrap gap-2">
-        <span>{rows.length} unique wallets in book</span>
-        <span className="text-[10px] text-white/40">
-          <span className="text-emerald-300/80">{nBidOnly} bid-only</span>
-          {' · '}
-          <span className="text-rose-300/80">{nAskOnly} ask-only</span>
-          {' · '}
-          <span className="text-amber-300/80">{nBoth} both sides</span>
-        </span>
-      </div>
       <div className="overflow-x-auto">
         <table className="w-full text-xs">
           <thead className="text-white/40 text-[10px] uppercase tracking-wider">
             <tr className="border-b border-white/5">
-              <th className="text-left  py-1.5 px-3 font-normal">Wallet</th>
-              <th className="text-center py-1.5 px-2 font-normal">Side</th>
-              <th className="text-right py-1.5 px-2 font-normal">Bids</th>
-              <th className="text-right py-1.5 px-2 font-normal">Bid Σ</th>
-              <th className="text-right py-1.5 px-2 font-normal">Best bid</th>
-              <th className="text-right py-1.5 px-2 font-normal">Asks</th>
-              <th className="text-right py-1.5 px-2 font-normal">Ask Σ</th>
-              <th className="text-right py-1.5 px-2 font-normal">Best ask</th>
-              <th className="text-right py-1.5 px-2 font-normal">Total SY</th>
+              <th className="text-left py-1.5 px-2 font-normal">Side</th>
+              <th className="text-right py-1.5 px-2 font-normal">APY</th>
+              <th className="text-right py-1.5 px-2 font-normal">Orders</th>
+              <th className="text-right py-1.5 px-2 font-normal">Wallets</th>
+              <th className="text-right py-1.5 px-2 font-normal">Size SY</th>
             </tr>
           </thead>
           <tbody>
-            {rows.map(w => {
-              const both = w.nBids > 0 && w.nAsks > 0;
-              const side = both ? 'B+A' : w.nBids > 0 ? 'B' : 'A';
-              const sideColor = both ? 'text-amber-300' : w.nBids > 0 ? 'text-emerald-300' : 'text-rose-300';
-              return (
-                <tr key={w.wallet} className="border-b border-white/5 hover:bg-white/5 cursor-pointer"
-                    onClick={() => window.location.href = `/wallet/?addr=${w.wallet}`}>
-                  <td className="py-1 px-3 font-mono text-[11px] text-white/70 whitespace-nowrap">{w.wallet}</td>
-                  <td className={`py-1 px-2 text-center text-[11px] font-medium ${sideColor}`}>{side}</td>
-                  <td className="py-1 px-2 text-right tabular-nums text-white/60">{w.nBids || '–'}</td>
-                  <td className="py-1 px-2 text-right tabular-nums text-emerald-200/80">{w.bidSy > 0 ? fmtSy(w.bidSy) : '–'}</td>
-                  <td className="py-1 px-2 text-right tabular-nums text-emerald-300/70">{w.bestBidApy !== null ? `${(w.bestBidApy * 100).toFixed(2)}%` : '–'}</td>
-                  <td className="py-1 px-2 text-right tabular-nums text-white/60">{w.nAsks || '–'}</td>
-                  <td className="py-1 px-2 text-right tabular-nums text-rose-200/80">{w.askSy > 0 ? fmtSy(w.askSy) : '–'}</td>
-                  <td className="py-1 px-2 text-right tabular-nums text-rose-300/70">{w.bestAskApy !== null ? `${(w.bestAskApy * 100).toFixed(2)}%` : '–'}</td>
-                  <td className="py-1 px-2 text-right tabular-nums text-white/85 font-medium">{fmtSy(w.bidSy + w.askSy)}</td>
-                </tr>
-              );
-            })}
+            {askTicks.map(t => <Fragment key={`a-${t.apy}`}>{renderTickBlock(t)}</Fragment>)}
+            {spreadRow}
+            {bidTicks.map(t => <Fragment key={`b-${t.apy}`}>{renderTickBlock(t)}</Fragment>)}
           </tbody>
         </table>
       </div>
-    </div>
-  );
-}
-
-function LadderTable({
-  side, rows, totalSy,
-}: {
-  side: 'bid' | 'ask';
-  rows: (V2OrderRow & { cum: number; pct: number })[];
-  totalSy: number;
-}) {
-  const accent = side === 'bid' ? 'text-emerald-300' : 'text-rose-300';
-  const barBg = side === 'bid' ? 'bg-emerald-400/15' : 'bg-rose-400/15';
-  const label = side === 'bid' ? 'BIDS (Buy YT)' : 'ASKS (Sell YT)';
-  if (rows.length === 0) {
-    return (
-      <div className="rounded-lg border border-white/5 p-4 text-white/30 text-xs">
-        <div className="mb-2 text-white/40 uppercase tracking-wider text-[10px]">{label}</div>
-        no resting orders
-      </div>
-    );
-  }
-  return (
-    <div className="rounded-lg border border-white/5 overflow-hidden">
-      <div className={`px-3 py-1.5 text-[10px] uppercase tracking-wider ${accent} border-b border-white/5`}>
-        {label} · {rows.length} orders · Σ {fmtSy(totalSy)} SY
-      </div>
-      <table className="w-full text-xs">
-        <thead className="text-white/40 text-[10px] uppercase tracking-wider">
-          <tr className="border-b border-white/5">
-            <th className="text-right py-1.5 px-2 font-normal">APY</th>
-            <th className="text-right py-1.5 px-2 font-normal">Size</th>
-            <th className="text-right py-1.5 px-2 font-normal">Cum</th>
-            <th className="text-left  py-1.5 px-2 font-normal">Maker</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.slice(0, 30).map((r, i) => (
-            <tr key={`${r.owner}-${i}`} className="border-b border-white/5 relative">
-              <td className={`relative py-1 px-2 text-right tabular-nums ${accent} font-medium`}>
-                <div className={`absolute inset-y-0 right-0 ${barBg}`} style={{ width: `${Math.min(r.pct * 100 * 3, 100)}%` }} />
-                <span className="relative">{(r.apy * 100).toFixed(2)}%</span>
-              </td>
-              <td className="py-1 px-2 text-right tabular-nums text-white/75">{fmtSy(r.sizeSy)}</td>
-              <td className="py-1 px-2 text-right tabular-nums text-white/45">{fmtSy(r.cum)}</td>
-              <td className="py-1 px-2 text-left font-mono text-[11px] text-white/55">{shortAddr(r.owner)}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      {rows.length > 30 && (
-        <div className="text-[10px] text-white/30 text-center py-1.5 border-t border-white/5">
-          top 30 of {rows.length}
-        </div>
-      )}
     </div>
   );
 }

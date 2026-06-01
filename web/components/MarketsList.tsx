@@ -34,17 +34,12 @@ function fmtUsd(n: number) {
   return `$${n.toFixed(2)}`;
 }
 
-function fmtApyPair(bid: number | null, ask: number | null) {
-  const b = bid !== null ? `${(bid * 100).toFixed(2)}%` : '–';
-  const a = ask !== null ? `${(ask * 100).toFixed(2)}%` : '–';
-  return `${b} / ${a}`;
-}
-
-function fmtSpread(bps: number | null) {
-  if (bps === null) return '–';
-  if (bps < 0) return 'crossed';
-  if (bps >= 1000) return `${(bps / 100).toFixed(2)}%`;
-  return `${bps.toFixed(0)} bps`;
+function fmtSy(n: number | null) {
+  if (!n) return '–';
+  if (n >= 1e9) return `${(n / 1e9).toFixed(2)}B SY`;
+  if (n >= 1e6) return `${(n / 1e6).toFixed(2)}M SY`;
+  if (n >= 1e3) return `${(n / 1e3).toFixed(1)}K SY`;
+  return `${n.toFixed(0)} SY`;
 }
 
 const MONTH_ABBR_TO_NUM: Record<string, number> = {
@@ -62,10 +57,7 @@ function maturityMs(marketKey: string): number | null {
 type SortKey =
   | 'marketKey' | 'platform' | 'tvlUsd' | 'ptUsd' | 'ytUsd' | 'lpUsd' | 'idleUsd'
   | 'liquidityUsd' | 'volume7dUsd' | 'holders'
-  | 'midApy' | 'spreadBps' | 'nOffers';
-
-// Spread should start ascending (tightest first); APY/Offers stay desc-first.
-const SORT_ASC_FIRST: ReadonlySet<SortKey> = new Set<SortKey>(['spreadBps']);
+  | 'oiSy';
 
 export function MarketsList() {
   const [tvl, setTvl] = useState<TvlData | null>(null);
@@ -96,8 +88,7 @@ export function MarketsList() {
       isActive: boolean; isTest: boolean;
       // v2 fields
       hasV2: boolean; bookCount: number;
-      bestBidApy: number | null; bestAskApy: number | null;
-      midApy: number | null; spreadBps: number | null; nOffers: number;
+      oiSy: number;
     };
     const out: Row[] = [];
     const seenV2: Set<string> = new Set();
@@ -125,9 +116,7 @@ export function MarketsList() {
         tvlUsd, ptUsd, ytUsd, lpUsd, idleUsd, liquidityUsd, volume7dUsd, ptSupply, holders: h,
         isActive, isTest: !!m.isTest,
         hasV2: !!v2m, bookCount: v2m?.bookCount ?? 0,
-        bestBidApy: v2m?.bestBidApy ?? null, bestAskApy: v2m?.bestAskApy ?? null,
-        midApy: v2m?.midApy ?? null, spreadBps: v2m?.spreadBps ?? null,
-        nOffers: v2m?.nOffers ?? 0,
+        oiSy: (v2m?.totalBidSizeSy ?? 0) + (v2m?.totalAskSizeSy ?? 0),
       });
     }
     // Synthetic rows for v2-only markets (no v1 entry in tvl.byMarket).
@@ -142,8 +131,7 @@ export function MarketsList() {
           liquidityUsd: 0, volume7dUsd: 0, ptSupply: 0, holders: 0,
           isActive, isTest: false,
           hasV2: true, bookCount: v2m.bookCount,
-          bestBidApy: v2m.bestBidApy, bestAskApy: v2m.bestAskApy,
-          midApy: v2m.midApy, spreadBps: v2m.spreadBps, nOffers: v2m.nOffers,
+          oiSy: (v2m.totalBidSizeSy ?? 0) + (v2m.totalAskSizeSy ?? 0),
         });
       }
     }
@@ -166,11 +154,7 @@ export function MarketsList() {
       } else {
         const av = (a as any)[sortKey];
         const bv = (b as any)[sortKey];
-        // nulls sort last regardless of direction
-        if (av === null && bv === null) cmp = 0;
-        else if (av === null) return 1;
-        else if (bv === null) return -1;
-        else cmp = (Number(av) || 0) - (Number(bv) || 0);
+        cmp = (Number(av) || 0) - (Number(bv) || 0);
       }
       return sortDesc ? -cmp : cmp;
     });
@@ -179,7 +163,7 @@ export function MarketsList() {
 
   function toggleSort(k: SortKey) {
     if (k === sortKey) setSortDesc(d => !d);
-    else { setSortKey(k); setSortDesc(!SORT_ASC_FIRST.has(k)); }
+    else { setSortKey(k); setSortDesc(true); }
   }
   const arrow = (k: SortKey) => k === sortKey ? (sortDesc ? '↓' : '↑') : '';
 
@@ -221,9 +205,7 @@ export function MarketsList() {
                 ['liquidityUsd', 'Liquidity', 'right', "AMM pool TVL — matches Exponent UI 'Liquidity'"],
                 ['volume7dUsd',  'Vol 7d',    'right', 'Trailing 7-day total swap volume in USD'],
                 ['holders',      'Holders',   'right', 'Unique wallets holding PT, YT, or LP'],
-                ['midApy',       'v2 Bid/Ask','right', "v2 resting-order best bid / best ask APY (today's snapshot). Sorts by mid APY."],
-                ['spreadBps',    'Spread',    'right', 'best ask − best bid in bps. Sort default = ascending (tightest first).'],
-                ['nOffers',      'Offers',    'right', 'Active resting orders on v2 book(s) — latest snapshot'],
+                ['oiSy',         'v2 OI',     'right', 'Total resting-order notional in SY across both sides — v2 limit-order open interest (latest snapshot)'],
               ] as const).map(([key, label, align, tip]) => (
                 <th key={key} title={tip || undefined}
                     className={`py-2 font-normal cursor-pointer select-none hover:text-white/70 ${align === 'left' ? 'text-left' : 'text-right'}`}
@@ -236,7 +218,6 @@ export function MarketsList() {
           <tbody>
             {rows.slice(0, 100).map(r => {
               const v2Badge = r.hasV2 ? (r.bookCount > 1 ? 'v2²' : (r.tvlUsd > 0 ? 'v2' : 'v2*')) : null;
-              const crossed = r.spreadBps !== null && r.spreadBps < 0;
               return (
                 <tr key={r.marketKey} className="border-b border-white/5 hover:bg-white/5 cursor-pointer"
                     onClick={() => window.location.href = `/market/?key=${r.marketKey}`}>
@@ -264,15 +245,9 @@ export function MarketsList() {
                   <td className="py-1.5 text-right tabular-nums text-white/70">{r.liquidityUsd > 0 ? fmtUsd(r.liquidityUsd) : '–'}</td>
                   <td className="py-1.5 text-right tabular-nums text-white/70">{r.volume7dUsd > 0 ? fmtUsd(r.volume7dUsd) : '–'}</td>
                   <td className="py-1.5 text-right tabular-nums text-white/70">{r.holders || '–'}</td>
-                  <td className="py-1.5 text-right tabular-nums text-white/80 whitespace-nowrap">
-                    {r.hasV2 && (r.bestBidApy !== null || r.bestAskApy !== null)
-                      ? fmtApyPair(r.bestBidApy, r.bestAskApy)
-                      : '–'}
+                  <td className="py-1.5 text-right tabular-nums text-white/70 whitespace-nowrap">
+                    {r.hasV2 && r.oiSy > 0 ? fmtSy(r.oiSy) : '–'}
                   </td>
-                  <td className={`py-1.5 text-right tabular-nums whitespace-nowrap ${crossed ? 'text-rose-300' : 'text-white/70'}`}>
-                    {r.hasV2 ? fmtSpread(r.spreadBps) : '–'}
-                  </td>
-                  <td className="py-1.5 text-right tabular-nums text-white/70">{r.hasV2 ? r.nOffers : '–'}</td>
                 </tr>
               );
             })}
