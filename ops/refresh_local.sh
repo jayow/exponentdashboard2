@@ -62,14 +62,26 @@ if [ ! -f data/warehouse.duckdb ] && command -v gh >/dev/null 2>&1; then
     && echo "Seeded: $(du -sh data/warehouse.duckdb | cut -f1)"
 fi
 
-# Railway-only: configure git identity + credential helper so commits can be
-# made + pushed. GH_TOKEN env var grants repo push perms.
-if [ -n "${RAILWAY_PROJECT_ID:-}" ]; then
+# Railway-only: bootstrap git from scratch — Railway's build context strips
+# the .git/ directory before sending to Docker (regardless of .dockerignore),
+# so the image has the working tree but no history. We re-init here and point
+# at origin/main as the parent commit so `git diff --cached` only sees the
+# regenerated web/public/*.json files, and `git push origin HEAD:main` works.
+if [ -n "${RAILWAY_PROJECT_ID:-}" ] && [ ! -d .git ]; then
+  echo "Bootstrapping git in /app (Railway strips .git from the image)"
+  git init -q -b main
   git config user.name  "${GIT_COMMITTER_NAME:-railway-bot}"
   git config user.email "${GIT_COMMITTER_EMAIL:-railway-bot@users.noreply.github.com}"
   if [ -n "${GH_TOKEN:-}" ]; then
-    git config credential.helper '!f() { echo "username=x-access-token"; echo "password=${GH_TOKEN}"; }; f'
+    git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/jayow/exponentdashboard2.git"
+  else
+    git remote add origin "https://github.com/jayow/exponentdashboard2.git"
   fi
+  # Fetch origin's main branch and align HEAD with it without touching files
+  # (the working tree IS the commit Railway built from; --mixed only updates
+  # HEAD + index). After this, the only diffs are our regenerated JSON.
+  git fetch -q origin main 2>&1 | head -3 || echo "  (initial fetch failed — push will probably also fail)"
+  git reset -q --mixed FETCH_HEAD 2>&1 | head -3 || echo "  (reset failed)"
 fi
 
 # Pull any commits the GHA bot (or another local run) made in the meantime so
