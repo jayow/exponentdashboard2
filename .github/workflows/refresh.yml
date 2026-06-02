@@ -85,17 +85,43 @@ jobs:
       # push if the dashboard JSON looks empty.
       - name: Extract → transform → serve
         run: |
-          python -m extract_load.extract_markets
-          python -m extract_load.extract_signatures
-          python -m extract_load.extract_transactions
-          python -m extract_load.extract_token_metadata
-          python -m extract_load.extract_prices
-          python -m extract_load.extract_positions
-          python -m extract_load.extract_pool_state
-          python -m extract_load.extract_holders
-          python -m extract_load.extract_anchor_events
-          python -m extract_load.extract_v2_markets
-          python -m extract_load.extract_v2_books
+          # Per-extractor failure isolation: one extractor blowing up (e.g.
+          # transient Helius 429 burst that exhausts retry budget) should NOT
+          # take down the whole refresh. dbt + serve still run on whatever
+          # advanced; the failed extractor catches up tomorrow or via a
+          # manual `gh workflow run`. Failures surface as ::warning:: lines.
+          set +e
+          failed=0
+          run() {
+            name="$1"; shift
+            echo "::group::$name"
+            "$@"
+            rc=$?
+            echo "::endgroup::"
+            if [ $rc -ne 0 ]; then
+              echo "::warning::$name exited $rc — continuing with remaining steps"
+              failed=$((failed + 1))
+            fi
+          }
+          run extract_markets         python -m extract_load.extract_markets
+          run extract_signatures      python -m extract_load.extract_signatures
+          run extract_transactions    python -m extract_load.extract_transactions
+          run extract_token_metadata  python -m extract_load.extract_token_metadata
+          run extract_prices          python -m extract_load.extract_prices
+          run extract_positions       python -m extract_load.extract_positions
+          run extract_pool_state      python -m extract_load.extract_pool_state
+          run extract_holders         python -m extract_load.extract_holders
+          run extract_anchor_events   python -m extract_load.extract_anchor_events
+          run extract_lst_rates       python -m extract_load.extract_lst_rates
+          run extract_v2_markets      python -m extract_load.extract_v2_markets
+          run extract_v2_books        python -m extract_load.extract_v2_books
+          if [ $failed -gt 0 ]; then
+            echo "::warning::$failed extractor(s) failed — dbt + serve will run on partial data"
+          fi
+          # dbt + serve must still run so partial-fresh data ships. If dbt
+          # itself fails (model bug, schema drift), that IS fatal — re-enable
+          # set -e for these.
+          set -e
           cd transform && DBT_PROFILES_DIR=. dbt build && cd ..
           python -m serve.build_web_data || true
         env:

@@ -81,8 +81,12 @@ class SolanaRpcClient:
             sem.release()
 
     @retry(
-        stop=stop_after_attempt(5),
-        wait=wait_exponential(multiplier=1, min=1, max=30),
+        # 8 attempts with backoff up to 60s gives ~3 min of total wait
+        # (1+2+4+8+16+32+60+60). Sized to ride out Helius's worst midnight
+        # throttle bursts. Was 5×30s; the 2026-06-02 00:00 UTC daily refresh
+        # cascaded to failure when 5 retries exhausted in ~30s.
+        stop=stop_after_attempt(8),
+        wait=wait_exponential(multiplier=1, min=1, max=60),
         retry=retry_if_exception_type((TransientHTTPError, httpx.RequestError)),
         reraise=True,
     )
