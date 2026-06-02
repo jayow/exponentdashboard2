@@ -40,8 +40,13 @@ select
     p.source                                         as price_source,
     r.n_events                                       as rate_n_events
 from sy_supply s
+-- coalesce(underlying_mint, sy_mint): for LST-style markets where the SY
+-- IS the underlying (kUSDG, kUSDC, syrupUSDC, etc.), the dim_markets row
+-- has underlying_mint=null while the price flows through stg_prices keyed
+-- by sy_mint (via int_lst_prices or jupiter). Falling back to sy_mint here
+-- prevents these markets from being priced as $0.
 left join {{ ref('stg_prices') }} p
-    on p.mint = s.underlying_mint and p.date = s.date
+    on p.mint = coalesce(s.underlying_mint, s.sy_mint) and p.date = s.date
 left join {{ ref('stg_sy_exchange_rates') }} r
     on r.sy_mint = s.sy_mint and r.date = s.date
 where s.sy_supply_ui > 0

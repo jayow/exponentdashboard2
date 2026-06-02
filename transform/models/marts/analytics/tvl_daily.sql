@@ -16,7 +16,7 @@
 -- side column for comparison.
 {{ config(materialized='table') }}
 
-with mkt_supply as (
+with mkt_supply_ptyt as (
     -- PT and YT supply per market per date (and underlying mint)
     select
         market_key, ticker, platform, underlying_mint, date,
@@ -28,7 +28,34 @@ with mkt_supply as (
 ),
 mkt_to_sy as (
     -- Each market_key → its sy_mint
-    select market_key, sy_mint from {{ ref('stg_markets') }} where sy_mint is not null
+    select market_key, sy_mint, interface_type, ticker, platform, underlying_mint
+    from {{ ref('stg_markets') }} where sy_mint is not null
+),
+-- v2-only markets (e.g. kUSDG-10AUG26, BulkSOL-31OCT26): the XPBook
+-- architecture doesn't mint PT/YT — orderbook offers ARE the position
+-- representation. They have SY supply but ptyt_supply=0 forever, so without
+-- this branch they'd be silently dropped at the mkt_supply ∩ mkt_to_sy join
+-- and never appear in tvl_daily. Synthesize a row per (v2_market, date) at
+-- 0 ptyt_supply so they survive the join; the final case statement assigns
+-- them an even-split share of SY-TVL when their family has no PT/YT siblings.
+v2_only_supply as (
+    select
+        m.market_key,
+        m.ticker,
+        m.platform,
+        m.underlying_mint,
+        s.date,
+        0.0 as pt_supply,
+        0.0 as yt_supply
+    from mkt_to_sy m
+    join {{ ref('int_sy_tvl_daily') }} s on s.sy_mint = m.sy_mint
+    where m.interface_type = 'v2_xpbook'
+      and m.market_key not in (select distinct market_key from mkt_supply_ptyt)
+),
+mkt_supply as (
+    select * from mkt_supply_ptyt
+    union all
+    select * from v2_only_supply
 ),
 mkt_supply_sy as (
     select s.*, m.sy_mint, s.pt_supply + s.yt_supply as ptyt_supply
@@ -63,12 +90,19 @@ select
     case
         when f.family_ptyt > 0 and m.ptyt_supply > 0 then
             sy.tvl_usd * (m.ptyt_supply / f.family_ptyt)
+        when f.family_ptyt = 0 and f.family_markets > 0 then
+            -- v2-only family (no PT/YT splits exist in this SY vault). Distribute
+            -- SY-TVL evenly across the v2 markets that share this vault. Coarse
+            -- approximation; can be refined to v2-book OI weighting later.
+            sy.tvl_usd / f.family_markets
         else
             0
     end                                              as tvl_usd,
     case
         when f.family_ptyt > 0 and m.ptyt_supply > 0 then
             sy.sy_supply * (m.ptyt_supply / f.family_ptyt)
+        when f.family_ptyt = 0 and f.family_markets > 0 then
+            sy.sy_supply / f.family_markets
         else
             0
     end                                              as tvl_underlying,

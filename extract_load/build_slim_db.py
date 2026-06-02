@@ -67,7 +67,7 @@ RAW_TABLES = [
     "raw_positions",
     "raw_anchor_position_events",
     "raw_prices",
-    "raw_lst_rates",
+    "raw_lst_rates",   # populated by extract_lst_rates
     "raw_token_metadata",
     "raw_exponent_tokens",
     "raw_tvl_snapshots",

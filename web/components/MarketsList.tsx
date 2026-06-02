@@ -197,12 +197,12 @@ export function MarketsList() {
               {([
                 ['marketKey',    'Market',    'left',  ''],
                 ['platform',     'Platform',  'left',  ''],
-                ['tvlUsd',       'TVL',       'right', ''],
-                ['ptUsd',        'PT',        'right', 'Principal — market-priced PT value'],
-                ['ytUsd',        'YT',        'right', 'Farm — market-priced YT value'],
-                ['lpUsd',        'LP',        'right', 'LP value — user share of pool capital'],
-                ['idleUsd',      'Idle',      'right', 'Idle SY — TVL not yet split into PT/YT and not in LP'],
-                ['liquidityUsd', 'Liquidity', 'right', "AMM pool TVL — matches Exponent UI 'Liquidity'"],
+                ['tvlUsd',       'TVL',       'right', 'Total capital in the market\'s SY vault, USD. Counts unredeemed post-maturity capital too — matches DefiLlama methodology.'],
+                ['ptUsd',        'PT',        'right', 'PT supply × market-implied PT price, USD. Independent of LP — pool-side PT is counted here AND in LP (intentional overlap, matches Exponent\'s convention).'],
+                ['ytUsd',        'YT',        'right', 'YT supply × market-implied YT price, USD. Goes to 0 at maturity (yield strip exhausted).'],
+                ['lpUsd',        'LP',        'right', 'AMM pool reserves valued at current prices (= SY in pool + PT in pool × discount). Same formula Exponent uses for "Liquidity". Overlaps PT by the pool-PT amount on markets with deep pools — that\'s correct, not double-counting.'],
+                ['idleUsd',      'Idle',      'right', 'Vault SY not currently in user PT/YT positions or in the AMM pool — typically the post-maturity unredeemed bucket.'],
+                ['liquidityUsd', 'Liquidity', 'right', "Same as LP. Kept as a separate column to mirror Exponent's UI label."],
                 ['volume7dUsd',  'Vol 7d',    'right', 'Trailing 7-day total swap volume in USD'],
                 ['holders',      'Holders',   'right', 'Unique wallets holding PT, YT, or LP'],
                 ['oiSy',         'LO OI',     'right', 'Limit Order Open Interest — total resting-order notional in SY across both sides on the v2 orderbook (latest snapshot). Tracked separately from TVL: LO escrow is maker capital waiting to be matched, not deployed-into-positions value. The SY already counts in TVL via SY supply — this column shows the subset currently sitting as resting orders.'],
@@ -233,6 +233,12 @@ export function MarketsList() {
                       <span className="ml-2 text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded border border-amber-400/30 bg-amber-400/10 text-amber-300"
                             title="Test/calibration deployment">
                         test
+                      </span>
+                    )}
+                    {!r.isActive && (
+                      <span className="ml-2 text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded border border-white/20 bg-white/5 text-white/50"
+                            title="Past maturity — PT redeemable 1:1 for underlying, YT has 0 yield-claim. Capital in vault until holders redeem.">
+                        expired
                       </span>
                     )}
                   </td>

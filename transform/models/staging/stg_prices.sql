@@ -17,14 +17,29 @@
 -- backfill any period where a mint had on-chain activity but no price yet.
 {{ config(materialized='view') }}
 
-with ranked as (
+with all_prices as (
+    select mint, date, close_usd, open_usd, high_usd, low_usd, volume_usd, source
+    from {{ source('raw', 'raw_prices') }}
+    union all
+    -- LST prices derived on-chain from raw_lst_rates × base price.
+    -- Lower priority than direct Jupiter/Pyth (source='lst_rate').
+    select mint, date, close_usd, open_usd, high_usd, low_usd, volume_usd, source
+    from {{ ref('int_lst_prices') }}
+    where close_usd is not null
+),
+ranked as (
     select
         mint, date, close_usd, open_usd, high_usd, low_usd, volume_usd, source,
         row_number() over (
             partition by mint, date
-            order by case source when 'pyth' then 0 when 'jupiter' then 1 when 'stable' then 2 else 3 end
+            order by case source
+                       when 'pyth'     then 0
+                       when 'jupiter'  then 1
+                       when 'stable'   then 2
+                       when 'lst_rate' then 3
+                       else 4 end
         ) as rk
-    from {{ source('raw', 'raw_prices') }}
+    from all_prices
 ),
 canonical as (
     select mint, date, close_usd as price_usd, open_usd, high_usd, low_usd, volume_usd, source

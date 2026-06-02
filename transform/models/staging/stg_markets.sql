@@ -28,6 +28,46 @@ with api as (
     from {{ source('raw', 'raw_markets') }}
     where source = 'api'
 ),
+-- v2 XPBook on-chain discovery (raw_v2_markets). One row per (market_key)
+-- carrying the SY mint and book account. v2 markets do NOT issue separate
+-- PT/YT/LP tokens — limit orders live in the book account itself — so those
+-- fields stay null. We still want SY surfaced so int_sy_tvl_daily and the
+-- price extractor know the market exists. Without this, v2-only markets
+-- (rkuSOL-31OCT26 today) show up with NULL sy_mint downstream and TVL=0.
+v2_onchain as (
+    select
+        v.market_key                                           as market_key,
+        'v2_onchain'                                           as source,
+        v.sy_mint                                              as sy_mint,
+        cast(null as varchar)                                  as vault,
+        cast(null as varchar)                                  as pt_mint,
+        cast(null as varchar)                                  as yt_mint,
+        cast(null as varchar)                                  as lp_mint,
+        cast(null as varchar)                                  as amm_pool,
+        v.book_account                                         as clmm_orderbook,
+        v.market_account                                       as pool,
+        cast(null as varchar)                                  as underlying_mint,
+        v.underlying_ticker                                    as ticker,
+        v.sy_decimals                                          as underlying_decimals,
+        cast(null as varchar)                                  as platform,
+        v.maturity_ts                                          as maturity_ts,
+        to_timestamp(v.maturity_ts)::date                      as maturity_date,
+        case when to_timestamp(v.maturity_ts)::date >= current_date
+             then 'active' else 'expired' end                  as status,
+        'v2_xpbook'                                            as interface_type,
+        v.fetched_at                                           as fetched_at
+    from {{ source('raw', 'raw_v2_markets') }} v
+    where v.market_key is not null
+      -- Defensive: extract_v2_markets._resolve_via_vault occasionally picks the
+      -- wrong pubkey from a book header and writes a phantom sy_mint that has
+      -- no on-chain existence (observed for rkuSOL-31OCT26, mint
+      -- 84nsuBADtk… which doesn't exist on-chain). Only trust sy_mints we've
+      -- actually seen in real transfers indexed into stg_token_changes —
+      -- guarantees the mint is genuine.
+      and v.sy_mint in (
+          select distinct mint from {{ ref('stg_token_changes') }}
+      )
+),
 pt_yt_derived as (
     select
         market_key,
@@ -140,7 +180,10 @@ all_layers as (
     union all
     select 2 as priority, * from resolved_onchain
     union all
-    select 3 as priority, * from pt_yt_derived_filtered
+    -- v2 XPBook on-chain markets — supplies SY mint that pt_yt_derived can't.
+    select 3 as priority, * from v2_onchain
+    union all
+    select 4 as priority, * from pt_yt_derived_filtered
 ),
 final as (
     select

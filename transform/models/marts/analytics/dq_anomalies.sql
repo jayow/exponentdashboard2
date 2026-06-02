@@ -55,11 +55,18 @@ orphan_tvl as (
     select
         'tvl_orphan' as category,
         'high' as severity,
-        date as anomaly_date,
-        market_key as entity,
-        'PT_supply=0 but tvl_usd=$' || round(tvl_usd, 0) as detail
-    from {{ ref('tvl_daily') }}
-    where tvl_usd > 1 and (pt_supply is null or pt_supply = 0)
+        t.date as anomaly_date,
+        t.market_key as entity,
+        'PT_supply=0 but tvl_usd=$' || round(t.tvl_usd, 0) as detail
+    from {{ ref('tvl_daily') }} t
+    left join {{ ref('dim_markets') }} m using (market_key)
+    where t.tvl_usd > 1
+      and (t.pt_supply is null or t.pt_supply = 0)
+      -- v2_xpbook markets legitimately have no PT supply: orderbook offers ARE
+      -- the position representation, so PT_supply=0 + tvl>0 is correct, not a
+      -- bug. Excluding them avoids false-positive orphans for kUSDG-10AUG26,
+      -- BulkSOL-31OCT26, and future pure-v2 markets.
+      and coalesce(m.interface_type, '') != 'v2_xpbook'
 ),
 price_gaps as (
     -- A mint had supply > 0 on a date but stg_prices didn't return a row

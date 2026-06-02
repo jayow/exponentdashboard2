@@ -319,9 +319,14 @@ def build_tvl_json(con: duckdb.DuckDBPyConnection) -> dict:
     # USD price comes from Jupiter/Pyth via stg_prices.
     # Verified against API legacyLiquidity for USX-01JUN26: derived
     # 26,113,411 USX vs API 26,113,405 USX (4-unit slot drift).
+    # Several markets have multiple pool_accounts (deprecated v1 pool + live v2
+    # pool sharing the same market_key). Sum across pools so the LP column
+    # reflects total pool reserves, not just whichever pool was last seen.
     liquidity_by_market: dict[str, float] = {
         mk: float(v or 0) for mk, v in con.execute(
-            "SELECT market_key, liquidity_usd FROM main_intermediate.int_pool_reserves_daily"
+            """SELECT market_key, SUM(liquidity_usd)
+               FROM main_intermediate.int_pool_reserves_daily
+               GROUP BY market_key"""
         ).fetchall()
     }
     # LP USD per (market, date) — keyed for fast lookup in per-market breakdown
@@ -357,30 +362,40 @@ def build_tvl_json(con: duckdb.DuckDBPyConnection) -> dict:
         yt_arr_m: list[float] = []
         lp_arr_m: list[float] = []
         idle_arr_m: list[float] = []
+        # LP uses pool-reserves USD (= "Liquidity"), not active_positions_daily.
+        # The latter has spotty coverage and gets squeezed to $0 by the
+        # scope-budget cap whenever PT face saturates scope (USX-16SEP26 case).
+        # Pool reserves are derivable on-chain for every market with an AMM,
+        # so we get a true LP figure even when face-value buckets overlap it.
+        lp_pool_usd = liquidity_by_market.get(mk, 0.0)
         for i, d in enumerate(dates):
             scope_tvl = usd[i]
             pt_raw = pt_raw_m[i]
             yt_raw = yt_raw_m[i]
-            lp_face = lp_per_market.get((mk, d), 0.0)
-            # If PT+YT face exceeds the market's attributed TVL (happens when
-            # the pool has flash-minted PT to facilitate YT-buy trades — the
-            # extra PT lives in pool reserves, not user wallets), scale PT
-            # and YT proportionally so the breakdown sums to scope exactly.
+            # If PT+YT face exceeds scope_tvl (flash-minted pool PT inflates
+            # the face count), scale them so the principal columns stay
+            # interpretable. LP and Idle are reported independently.
             ptyt_total = pt_raw + yt_raw
             if ptyt_total > scope_tvl and ptyt_total > 0:
                 scale = scope_tvl / ptyt_total
                 pt_v = pt_raw * scale
                 yt_v = yt_raw * scale
-                remaining_m = 0.0
             else:
                 pt_v = pt_raw
                 yt_v = yt_raw
-                remaining_m = max(0.0, scope_tvl - pt_v - yt_v)
-            lp_cap = min(lp_face, remaining_m)
+            # LP = current pool reserves (constant across dates — we don't
+            # have a daily pool-reserves history yet, only "latest"). Use
+            # today's value as a single point at the latest date so the
+            # chart doesn't draw a phantom line.
+            lp_v = lp_pool_usd if i == len(dates) - 1 else 0.0
+            # Idle = vault SY allocation that's neither in user PT/YT nor in
+            # the pool. Can be 0 for healthy markets where the pool absorbs
+            # everything; positive when the vault has unsplit/unparked SY.
+            idle_v = max(0.0, scope_tvl - pt_v - yt_v - lp_v)
             pt_arr_m.append(pt_v)
             yt_arr_m.append(yt_v)
-            lp_arr_m.append(lp_cap)
-            idle_arr_m.append(max(0.0, remaining_m - lp_cap))
+            lp_arr_m.append(lp_v)
+            idle_arr_m.append(idle_v)
         by_market_out[mk] = {
             "ticker": e["ticker"],
             "platform": e["platform"],

@@ -106,14 +106,6 @@ sources:
           - name: sy_mint
             tests: [not_null]
 
-      - name: raw_lst_rates
-        description: Daily LST→base exchange rates from on-chain stake pool accounts.
-        columns:
-          - name: snapshot_date
-            tests: [not_null]
-          - name: lst_mint
-            tests: [not_null]
-
       - name: raw_token_metadata
         description: Helius DAS Metaplex token metadata, keyed by mint.
         columns:
@@ -150,4 +142,19 @@ sources:
           - name: book_account
             tests: [not_null]
           - name: offer_idx
+            tests: [not_null]
+
+      - name: raw_lst_rates
+        description: |
+          Daily LST → base exchange rates pulled directly from on-chain state
+          (Solstice GLAM vault, Kamino reserve, Sanctum SPL stake pool, …).
+          lst_per_base = LST tokens per 1 base token; so lst_usd = base_usd / lst_per_base.
+        columns:
+          - name: snapshot_date
+            tests: [not_null]
+          - name: lst_mint
+            tests: [not_null]
+          - name: base_mint
+            tests: [not_null]
+          - name: lst_per_base
             tests: [not_null]

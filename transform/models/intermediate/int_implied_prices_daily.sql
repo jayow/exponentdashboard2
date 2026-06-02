@@ -147,12 +147,24 @@ bfilled as (
         ffl.n_trades
     from ffilled ffl
 )
+-- Post-maturity clamp: at and after maturity_date, PT redeems 1:1 for
+-- underlying (par) and YT has zero remaining yield-claim. Without this,
+-- the forward-fill carries the last live trade's ratios forward forever,
+-- producing fake YT capital on settled markets (e.g. an Aug-matured
+-- market still attributing ~5% of supply to YT in December).
 select
-    market_key,
-    date,
-    pt_price_ratio,
-    1.0 - pt_price_ratio as yt_price_ratio,
-    n_trades,
-    underlying_price_usd
-from bfilled
-where pt_price_ratio is not null
+    b.market_key,
+    b.date,
+    case
+        when m.maturity_date is not null and b.date >= m.maturity_date then 1.0
+        else b.pt_price_ratio
+    end as pt_price_ratio,
+    case
+        when m.maturity_date is not null and b.date >= m.maturity_date then 0.0
+        else 1.0 - b.pt_price_ratio
+    end as yt_price_ratio,
+    b.n_trades,
+    b.underlying_price_usd
+from bfilled b
+left join {{ ref('dim_markets') }} m using (market_key)
+where b.pt_price_ratio is not null

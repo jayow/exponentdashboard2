@@ -180,18 +180,35 @@ def _flush_rows(
 def _enumerate_targets(con: duckdb.DuckDBPyConnection) -> list[tuple[str, str | None]]:
     """Enumerate distinct (mint, symbol_hint) pairs we need pricing for.
 
-    Source: dim_markets.underlying_mint (the only mint that matters for
-    trading-volume notionals). Symbol comes from dim_markets.ticker or
-    raw_token_metadata.symbol — we use symbol_hint only for routing to
-    Pyth vs Jupiter (and the PEGGED_USD_SYMBOLS fallback).
+    Sources:
+      - dim_markets.underlying_mint — v1 markets' underlying tokens
+      - raw_lst_rates.base_mint     — base tokens that LST rates derive from
+        (e.g. SLX is needed to price stSLX, USDG for kUSDG). These don't
+        always show up as a market underlying directly.
+
+    Symbol comes from dim_markets.ticker or raw_token_metadata.symbol — used
+    only for routing to Pyth vs Jupiter (and the PEGGED_USD_SYMBOLS fallback).
     """
     rows = con.execute(
         """
-        SELECT DISTINCT m.underlying_mint, COALESCE(m.ticker, tm.symbol, et.symbol) AS sym
-        FROM main_core.dim_markets m
-        LEFT JOIN raw_token_metadata tm ON tm.mint = m.underlying_mint
-        LEFT JOIN raw_exponent_tokens et ON et.mint = m.underlying_mint
-        WHERE m.underlying_mint IS NOT NULL
+        SELECT DISTINCT mint, sym FROM (
+          SELECT m.underlying_mint AS mint,
+                 COALESCE(m.ticker, tm.symbol, et.symbol) AS sym
+          FROM main_core.dim_markets m
+          LEFT JOIN raw_token_metadata tm ON tm.mint = m.underlying_mint
+          LEFT JOIN raw_exponent_tokens et ON et.mint = m.underlying_mint
+          WHERE m.underlying_mint IS NOT NULL
+
+          UNION ALL
+
+          -- Base mints needed to compute LST USD prices via raw_lst_rates.
+          -- If we don't price these, stSLX/kUSDG/etc. stay $0 because
+          -- int_lst_prices joins on base_mint.
+          SELECT l.base_mint AS mint, tm.symbol AS sym
+          FROM raw_lst_rates l
+          LEFT JOIN raw_token_metadata tm ON tm.mint = l.base_mint
+        )
+        WHERE mint IS NOT NULL
         ORDER BY 1
         """
     ).fetchall()
