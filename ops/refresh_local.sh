@@ -85,8 +85,13 @@ if [ -n "${RAILWAY_PROJECT_ID:-}" ] && [ ! -d .git ]; then
 fi
 
 # Pull any commits the GHA bot (or another local run) made in the meantime so
-# we don't push a fast-forward conflict.
-git pull --rebase --quiet origin main || echo "  (git pull skipped — non-fatal)"
+# we don't push a fast-forward conflict. Skip on Railway — the bootstrap above
+# already fetched + reset to origin/main, and pip-install side-effects
+# (*.egg-info/, __pycache__) leave the working tree with unstaged noise that
+# would block `pull --rebase`.
+if [ -z "${RAILWAY_PROJECT_ID:-}" ]; then
+  git pull --rebase --quiet origin main || echo "  (git pull skipped — non-fatal)"
+fi
 
 # Per-extractor failure isolation: one extractor blowing up (Helius 429, etc.)
 # logs a warning and the loop continues. dbt + serve still ship partial data.
