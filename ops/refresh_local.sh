@@ -56,6 +56,9 @@ fi
 # empty file behind, which then made extract_transactions try to
 # backfill 777K sigs from scratch and stall).
 if command -v gh >/dev/null 2>&1; then
+  # Disk space sanity print so future failures are obvious from logs.
+  echo "  volume usage: $(df -h data 2>/dev/null | tail -1)"
+
   needs_seed=0
   if [ ! -f data/warehouse.duckdb ]; then
     needs_seed=1
@@ -65,15 +68,21 @@ if command -v gh >/dev/null 2>&1; then
     # extract_transactions try to backfill all 700K+ historical sigs and
     # blow out the volume. Trust the seed only if it has tx history.
     tx_count=$("$PY" -c "import duckdb; con=duckdb.connect('data/warehouse.duckdb', read_only=True); print(con.execute('SELECT COUNT(*) FROM raw_helius_tx').fetchone()[0])" 2>/dev/null || echo 0)
+    echo "  raw_helius_tx row count: $tx_count"
     if [ "$tx_count" -lt 1000 ]; then
       needs_seed=1
-      echo "  warehouse exists but raw_helius_tx has only $tx_count rows — re-seeding from GH release"
-      rm -f data/warehouse.duckdb data/warehouse.duckdb.wal data/warehouse_slim.duckdb*
+      echo "  warehouse has $tx_count raw_helius_tx rows — needs re-seed"
     fi
   fi
   if [ "$needs_seed" = 1 ]; then
-    echo "Seeding warehouse.duckdb from GH release warehouse-seed…"
+    echo "Wiping data/ (volume may be full from a prior failed run) and re-seeding…"
+    # rm -rf data/* clears ANY leftover from prior runs — broken warehouse,
+    # incomplete .gz downloads, etc. Required because a 5 GB volume that's
+    # full from a previous backfill attempt won't fit a new 1.3 GB seed
+    # download otherwise.
+    rm -rf data/*
     mkdir -p data
+    echo "  after wipe: $(df -h data 2>/dev/null | tail -1)"
     gh release download warehouse-seed -p 'warehouse_slim.duckdb.gz' -D data/ \
       && gunzip data/warehouse_slim.duckdb.gz \
       && mv data/warehouse_slim.duckdb data/warehouse.duckdb \
@@ -158,6 +167,16 @@ echo "--- dbt build ---"
 echo ""
 echo "--- serve.build_web_data ---"
 "$PY" -m serve.build_web_data || echo "WARN: serve.build_web_data failed (continuing)"
+
+# Railway: NULL out old raw_helius_tx.payload to keep the 5 GB volume from
+# filling up over time. Same logic the GHA workflow runs after each
+# refresh. Mac doesn't need this (40 GB+ disk, no constraint).
+if [ -n "${RAILWAY_PROJECT_ID:-}" ]; then
+  echo ""
+  echo "--- compact warehouse (strip old payloads) ---"
+  "$PY" -m extract_load.compact_in_place || echo "WARN: compact failed (continuing)"
+  echo "  volume after compact: $(df -h data 2>/dev/null | tail -1)"
+fi
 
 echo ""
 echo "--- commit + push ---"
