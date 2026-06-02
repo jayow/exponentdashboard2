@@ -60,11 +60,14 @@ if command -v gh >/dev/null 2>&1; then
   if [ ! -f data/warehouse.duckdb ]; then
     needs_seed=1
   else
-    # Anything under 100 MB is suspicious — slim warehouse is ~3 GB.
-    sz=$(stat -c%s data/warehouse.duckdb 2>/dev/null || stat -f%z data/warehouse.duckdb 2>/dev/null || echo 0)
-    if [ "$sz" -lt 104857600 ]; then
+    # Check actual data freshness, not file size — a failed run can leave a
+    # warehouse with metadata but no raw_helius_tx, which then makes
+    # extract_transactions try to backfill all 700K+ historical sigs and
+    # blow out the volume. Trust the seed only if it has tx history.
+    tx_count=$("$PY" -c "import duckdb; con=duckdb.connect('data/warehouse.duckdb', read_only=True); print(con.execute('SELECT COUNT(*) FROM raw_helius_tx').fetchone()[0])" 2>/dev/null || echo 0)
+    if [ "$tx_count" -lt 1000 ]; then
       needs_seed=1
-      echo "  warehouse.duckdb is $(du -h data/warehouse.duckdb | cut -f1) (< 100 MB, probably empty from a failed run) — re-seeding"
+      echo "  warehouse exists but raw_helius_tx has only $tx_count rows — re-seeding from GH release"
       rm -f data/warehouse.duckdb data/warehouse.duckdb.wal data/warehouse_slim.duckdb*
     fi
   fi
@@ -140,6 +143,12 @@ run extract_v2_books        "$PY" -m extract_load.extract_v2_books
 if [ $failed -gt 0 ]; then
   echo ""
   echo "WARN: $failed extractor(s) failed — dbt + serve will run on partial data"
+fi
+
+echo ""
+echo "--- dbt deps (install packages from packages.yml if missing) ---"
+if [ ! -d transform/dbt_packages ]; then
+  (cd transform && DBT_PROFILES_DIR=. "$DBT" deps) || echo "WARN: dbt deps failed (will try build anyway)"
 fi
 
 echo ""
