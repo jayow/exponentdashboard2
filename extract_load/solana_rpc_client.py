@@ -9,13 +9,25 @@ Features:
   - JSON-RPC batching for getTransaction (one HTTP, N results)
   - Sig pagination helper
   - Tenacity retries on 429/5xx/network errors with exponential backoff
+  - Client-side rate limiters: token buckets for the global RPS cap AND
+    a separate, much tighter bucket for getProgramAccounts (per Helius's
+    documented "additional rate limiting beyond standard RPS" for it).
 
 All methods return parsed JSON. Permanent 4xx (e.g. 400) raises immediately;
 transient errors retry with backoff.
+
+Why rate limits live in the client, not just the plan:
+  Our Mac runs the extractors successfully because residential RTT (~100ms
+  to Helius edge) naturally paces our asyncio code under the cap. Cloud
+  hosts (GHA, Railway) have sub-15ms RTT — the same code bursts 100+ RPS
+  and trips Helius's 429s even though we're nowhere near our daily CU
+  budget. The buckets below replicate the natural pacing of slow networks
+  for fast networks.
 """
 from __future__ import annotations
 import asyncio
 import itertools
+import time
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator
 
@@ -23,16 +35,93 @@ import httpx
 from tenacity import (
     retry,
     stop_after_attempt,
-    wait_exponential,
     retry_if_exception_type,
 )
 
 
 TRANSIENT_STATUS = {408, 429, 500, 502, 503, 504}
 
+# Helius Developer plan caps: 50 RPS RPC total, plus an undocumented
+# per-method cap on getProgramAccounts that's far lower. Set the global
+# bucket below the headline cap (jitter, batched calls counted as N).
+# Override with env vars HELIUS_RPS_CAP / HELIUS_GPA_RPS_CAP if you
+# upgrade to a paid plan with more headroom.
+import os
+_RPC_RPS_CAP = float(os.environ.get("HELIUS_RPS_CAP", "40"))
+_GPA_RPS_CAP = float(os.environ.get("HELIUS_GPA_RPS_CAP", "2"))
+
+
+class TokenBucket:
+    """asyncio-friendly token bucket for rate limiting.
+
+    Each `acquire()` consumes 1 token. Tokens refill continuously at `rate`
+    tokens/sec up to `capacity`. If no tokens available, blocks until one
+    refills. Many concurrent acquirers share the same bucket cleanly.
+
+    Implementation: lock-protected refill arithmetic, sleep outside the
+    lock so other waiters can race for the next-available token.
+    """
+    __slots__ = ("rate", "capacity", "tokens", "last_refill", "_lock")
+
+    def __init__(self, rate: float, capacity: float | None = None) -> None:
+        self.rate = rate
+        self.capacity = capacity if capacity is not None else rate
+        self.tokens = self.capacity
+        self.last_refill: float | None = None
+        self._lock = asyncio.Lock()
+
+    async def acquire(self) -> None:
+        while True:
+            async with self._lock:
+                now = time.monotonic()
+                if self.last_refill is None:
+                    self.last_refill = now
+                elapsed = now - self.last_refill
+                self.tokens = min(self.capacity, self.tokens + elapsed * self.rate)
+                self.last_refill = now
+                if self.tokens >= 1.0:
+                    self.tokens -= 1.0
+                    return
+                wait_time = (1.0 - self.tokens) / self.rate
+            await asyncio.sleep(wait_time)
+
+
+# Module-level buckets, shared across all SolanaRpcClient instances in
+# this process. The asyncio.Lock inside each bucket is bound to whatever
+# event loop first acquires it; in practice extractors run a single
+# asyncio.run(main()) so this is fine.
+_RPC_BUCKET = TokenBucket(rate=_RPC_RPS_CAP)
+_GPA_BUCKET = TokenBucket(rate=_GPA_RPS_CAP)
+
+
+def _is_gpa_body(body: Any) -> bool:
+    """Detect getProgramAccounts calls in either a dict or list body."""
+    if isinstance(body, dict):
+        return body.get("method") == "getProgramAccounts"
+    if isinstance(body, list):
+        return any(b.get("method") == "getProgramAccounts" for b in body if isinstance(b, dict))
+    return False
+
 
 class TransientHTTPError(Exception):
-    """Raised on retryable HTTP statuses so tenacity sees a specific type."""
+    """Raised on retryable HTTP statuses so tenacity sees a specific type.
+
+    Carries the Retry-After header value (seconds) if present, so the
+    retry wait callback can honor it instead of pure exponential backoff.
+    """
+    def __init__(self, message: str, retry_after: float | None = None) -> None:
+        super().__init__(message)
+        self.retry_after = retry_after
+
+
+def _wait_with_retry_after(retry_state: Any) -> float:
+    """tenacity wait callback. If the last 429 came with a Retry-After
+    header, honor that value (Helius told us exactly when to retry).
+    Else fall back to capped exponential backoff: 1, 2, 4, 8, 16, 32, 60, 60."""
+    exc = retry_state.outcome.exception() if retry_state.outcome else None
+    if isinstance(exc, TransientHTTPError) and exc.retry_after is not None:
+        return min(exc.retry_after, 60.0)
+    return min(60.0, 2 ** (retry_state.attempt_number - 1))
 
 
 class SolanaRpcClient:
@@ -82,19 +171,37 @@ class SolanaRpcClient:
 
     @retry(
         # 8 attempts with backoff up to 60s gives ~3 min of total wait
-        # (1+2+4+8+16+32+60+60). Sized to ride out Helius's worst midnight
-        # throttle bursts. Was 5×30s; the 2026-06-02 00:00 UTC daily refresh
-        # cascaded to failure when 5 retries exhausted in ~30s.
+        # (1+2+4+8+16+32+60+60). Sized to ride out Helius's worst bursts.
+        # Wait strategy below honors Retry-After header when present.
         stop=stop_after_attempt(8),
-        wait=wait_exponential(multiplier=1, min=1, max=60),
+        wait=_wait_with_retry_after,
         retry=retry_if_exception_type((TransientHTTPError, httpx.RequestError)),
         reraise=True,
     )
     async def _post(self, body: Any) -> Any:
+        # Client-side rate-limit BEFORE issuing the request. Two buckets:
+        # global RPC and getProgramAccounts-specific. Cloud hosts burst
+        # past Helius's caps without this; residential networks pace
+        # themselves naturally by RTT and don't need it.
+        await _RPC_BUCKET.acquire()
+        if _is_gpa_body(body):
+            await _GPA_BUCKET.acquire()
         async with self._acquire() as url:
             resp = await self.client.post(url, json=body)
             if resp.status_code in TRANSIENT_STATUS:
-                raise TransientHTTPError(f"{resp.status_code} from {url}")
+                # Capture Retry-After header (RFC 7231 §7.1.3) so the retry
+                # wait callback can use it instead of exponential guessing.
+                ra_raw = resp.headers.get("retry-after")
+                retry_after: float | None = None
+                if ra_raw:
+                    try:
+                        retry_after = float(ra_raw)
+                    except ValueError:
+                        # HTTP-date form; we ignore and fall back to exponential.
+                        pass
+                raise TransientHTTPError(
+                    f"{resp.status_code} from {url}", retry_after=retry_after
+                )
             resp.raise_for_status()
             return resp.json()
 
