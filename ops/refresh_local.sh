@@ -63,15 +63,26 @@ if command -v gh >/dev/null 2>&1; then
   if [ ! -f data/warehouse.duckdb ]; then
     needs_seed=1
   else
-    # Check actual data freshness, not file size — a failed run can leave a
-    # warehouse with metadata but no raw_helius_tx, which then makes
-    # extract_transactions try to backfill all 700K+ historical sigs and
-    # blow out the volume. Trust the seed only if it has tx history.
-    tx_count=$("$PY" -c "import duckdb; con=duckdb.connect('data/warehouse.duckdb', read_only=True); print(con.execute('SELECT COUNT(*) FROM raw_helius_tx').fetchone()[0])" 2>/dev/null || echo 0)
-    echo "  raw_helius_tx row count: $tx_count"
-    if [ "$tx_count" -lt 1000 ]; then
+    # ALSO check available disk space — a failed run can fill the volume
+    # with partial tx payloads (raw_helius_tx may show plenty of rows but
+    # DuckDB still can't write a checkpoint because there's nowhere to
+    # put it). df reports in 1K blocks. Force re-seed if <500 MB free.
+    disk_free_kb=$(df data 2>/dev/null | tail -1 | awk '{print $4}')
+    echo "  disk free: ${disk_free_kb:-?} KB ($(( ${disk_free_kb:-0} / 1024 )) MB)"
+    if [ "${disk_free_kb:-0}" -lt 524288 ]; then
       needs_seed=1
-      echo "  warehouse has $tx_count raw_helius_tx rows — needs re-seed"
+      echo "  volume nearly full (< 500 MB free) — forcing wipe + re-seed"
+    else
+      # Otherwise check actual data freshness — a failed run can leave a
+      # warehouse with metadata but no raw_helius_tx, which then makes
+      # extract_transactions try to backfill all 700K+ historical sigs.
+      # Trust the seed only if it has tx history.
+      tx_count=$("$PY" -c "import duckdb; con=duckdb.connect('data/warehouse.duckdb', read_only=True); print(con.execute('SELECT COUNT(*) FROM raw_helius_tx').fetchone()[0])" 2>/dev/null || echo 0)
+      echo "  raw_helius_tx row count: $tx_count"
+      if [ "$tx_count" -lt 1000 ]; then
+        needs_seed=1
+        echo "  warehouse has $tx_count raw_helius_tx rows — needs re-seed"
+      fi
     fi
   fi
   if [ "$needs_seed" = 1 ]; then
