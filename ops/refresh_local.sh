@@ -52,14 +52,30 @@ fi
 
 # Railway-only: warehouse is on the persistent volume mounted at
 # data/, but the volume starts empty. Seed it from the latest GH
-# release if missing. (Mac already has data/warehouse.duckdb.)
-if [ ! -f data/warehouse.duckdb ] && command -v gh >/dev/null 2>&1; then
-  echo "Seeding warehouse.duckdb from GH release warehouse-seed…"
-  mkdir -p data
-  gh release download warehouse-seed -p 'warehouse_slim.duckdb.gz' -D data/ \
-    && gunzip data/warehouse_slim.duckdb.gz \
-    && mv data/warehouse_slim.duckdb data/warehouse.duckdb \
-    && echo "Seeded: $(du -sh data/warehouse.duckdb | cut -f1)"
+# release if missing OR clearly broken (an earlier failed run left an
+# empty file behind, which then made extract_transactions try to
+# backfill 777K sigs from scratch and stall).
+if command -v gh >/dev/null 2>&1; then
+  needs_seed=0
+  if [ ! -f data/warehouse.duckdb ]; then
+    needs_seed=1
+  else
+    # Anything under 100 MB is suspicious — slim warehouse is ~3 GB.
+    sz=$(stat -c%s data/warehouse.duckdb 2>/dev/null || stat -f%z data/warehouse.duckdb 2>/dev/null || echo 0)
+    if [ "$sz" -lt 104857600 ]; then
+      needs_seed=1
+      echo "  warehouse.duckdb is $(du -h data/warehouse.duckdb | cut -f1) (< 100 MB, probably empty from a failed run) — re-seeding"
+      rm -f data/warehouse.duckdb data/warehouse.duckdb.wal data/warehouse_slim.duckdb*
+    fi
+  fi
+  if [ "$needs_seed" = 1 ]; then
+    echo "Seeding warehouse.duckdb from GH release warehouse-seed…"
+    mkdir -p data
+    gh release download warehouse-seed -p 'warehouse_slim.duckdb.gz' -D data/ \
+      && gunzip data/warehouse_slim.duckdb.gz \
+      && mv data/warehouse_slim.duckdb data/warehouse.duckdb \
+      && echo "Seeded: $(du -sh data/warehouse.duckdb | cut -f1)"
+  fi
 fi
 
 # Railway-only: bootstrap git from scratch — Railway's build context strips
