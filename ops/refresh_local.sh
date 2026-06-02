@@ -36,6 +36,20 @@ fi
 echo ""
 echo "===== Refresh started: $(date) ====="
 
+# Railway gotcha: the persistent volume can be mounted up to ~30 seconds
+# AFTER the container starts (we observed it in our first run — extract_markets
+# wrote to ephemeral disk before /app/data was mounted). Detect the mount
+# explicitly by waiting for it to be a mountpoint. On Mac this exits
+# immediately because we're not in Railway.
+if [ -n "${RAILWAY_PROJECT_ID:-}" ]; then
+  for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+    if mountpoint -q data 2>/dev/null; then
+      echo "  volume mounted on data/ after ${i}x5s"; break
+    fi
+    sleep 5
+  done
+fi
+
 # Railway-only: warehouse is on the persistent volume mounted at
 # data/, but the volume starts empty. Seed it from the latest GH
 # release if missing. (Mac already has data/warehouse.duckdb.)
