@@ -94,10 +94,13 @@ if command -v gh >/dev/null 2>&1; then
     rm -rf data/*
     mkdir -p data
     echo "  after wipe: $(df -h data 2>/dev/null | tail -1)"
-    gh release download warehouse-seed -p 'warehouse_slim.duckdb.gz' -D data/ \
+    # -R required because we run BEFORE git bootstrap — without it, gh tries
+    # to detect the repo from local .git which doesn't exist yet.
+    gh release download warehouse-seed -R jayow/exponentdashboard2 -p 'warehouse_slim.duckdb.gz' -D data/ \
       && gunzip data/warehouse_slim.duckdb.gz \
       && mv data/warehouse_slim.duckdb data/warehouse.duckdb \
-      && echo "Seeded: $(du -sh data/warehouse.duckdb | cut -f1)"
+      && echo "Seeded: $(du -sh data/warehouse.duckdb | cut -f1)" \
+      || echo "  SEED FAILED — extractors will operate on empty warehouse, which will stall extract_signatures"
   fi
 fi
 
