@@ -20,9 +20,15 @@ RUN apt-get update \
 WORKDIR /app
 
 # Install Python deps first (better layer caching when only code changes).
+# pyproject.toml declares packages=["extract_load","serve","tests"]; setuptools
+# refuses to build the editable install if those dirs are missing, so we
+# stub them out before `pip install -e .` runs. The real code overwrites
+# the stubs in the COPY below.
 COPY pyproject.toml ./
-RUN pip install --no-cache-dir -e . \
- && cd /tmp && rm -rf /root/.cache
+RUN mkdir -p extract_load serve tests \
+ && touch extract_load/__init__.py serve/__init__.py tests/__init__.py \
+ && pip install --no-cache-dir -e . \
+ && rm -rf /root/.cache
 
 # Now copy the rest of the repo. .dockerignore strips .venv, node_modules,
 # .git, web/public (regenerated), and data/ (on the volume).
