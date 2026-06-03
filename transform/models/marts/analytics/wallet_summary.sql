@@ -26,35 +26,17 @@ with wallet_holdings as (
     from {{ ref('int_wallet_holdings_usd') }}
     group by wallet
 ),
--- Real unclaimed = staged interest (already collected to position buffer
--- but not yet withdrawn) + accrued-but-not-staged interest. We currently
--- only have `staged_raw` decoded — the unstaged accrued portion requires
--- decoding the position's 256-bit lastSeenIndex + vault state (separate
--- account). For Exponent's stablecoin SY tokens (USX/eUSX/ONyc/etc) the
--- SY rate is flat 1:1, so unstaged is $0 regardless; the gap mainly
--- affects LST-backed markets (xSOL, JitoSOL, hyloSOL, fragSOL).
--- Market emissions (USDC/SOL rewarded to YT/LP holders) is a separate
+-- Real unclaimed = staged interest (already moved to position buffer) +
+-- unstaged accrued interest (still in the vault, computed via
+-- yield_token_position.rs::calc_earned_sy from position.lastSeenIndex +
+-- vault.final_sy_exchange_rate). Both pieces come from the canonical
+-- unclaimed_yield mart — sum per wallet to get total USD exposure.
+-- Market emissions (USDC/SOL paid to YT/LP holders) is a separate
 -- unclaimed source we don't decode yet.
 unclaimed_yt as (
-    select
-        p.owner                                  as wallet,
-        sum(p.staged_raw
-             / power(10.0, coalesce(m.underlying_decimals, 6))
-             * coalesce(sr.rate, 1.0)
-             * coalesce(price.price_usd, 0)
-        ) as staged_usd
-    from {{ source('raw', 'raw_positions') }} p
-    join {{ ref('dim_markets') }} m on m.vault = p.vault
-    left join {{ ref('stg_sy_exchange_rates') }} sr
-        on sr.sy_mint = m.sy_mint and sr.date = p.snapshot_date
-    left join {{ ref('stg_prices') }} price
-        on price.mint = m.underlying_mint and price.date = p.snapshot_date
-    where p.leg = 'YT'
-      and coalesce(p.staged_raw, 0) > 0
-      and m.maturity_date >= p.snapshot_date
-      and coalesce(m.is_test, false) = false
-      and p.snapshot_date = (select max(snapshot_date) from {{ source('raw', 'raw_positions') }})
-    group by p.owner
+    select wallet, sum(unclaimed_usd) as unclaimed_usd
+    from {{ ref('unclaimed_yield') }}
+    group by wallet
 ),
 -- claimYield events: int_classified_events doesn't carry signer, so we
 -- join through stg_helius_tx to attribute. Only ~10 events globally —
@@ -91,16 +73,13 @@ select
     coalesce(h.active_markets_held, 0)               as active_markets_held,
     coalesce(h.active_positions, 0)                  as active_positions,
     coalesce(c.n_claims, 0)                          as n_claims,
-    -- Unclaimed = staged interest currently sitting in YT position accounts,
-    -- valued in underlying USD. Does NOT include:
-    --   - Unstaged accrued interest (would require decoding 256-bit
-    --     lastSeenIndex + vault state — moot for stablecoin SY which is 1:1)
-    --   - Market emissions (USDC/SOL rewards distributed to YT/LP holders —
-    --     not yet decoded; affects most active markets)
-    -- Earlier this used a v1 heuristic ("if never claimed, treat all YT
-    -- market value as unclaimed") which conflated "yield exposure" with
-    -- "accrued unclaimed yield" — fixed.
-    coalesce(uy.staged_usd, 0)                       as unclaimed_usd,
+    -- Unclaimed = staged + unstaged YT interest, valued in underlying USD.
+    -- Sourced from main_analytics.unclaimed_yield which applies the canonical
+    -- Pendle/Exponent formula floor((1/lsi − 1/final_sy_rate) × yt_balance).
+    -- Market emissions (USDC/SOL rewards distributed to YT/LP holders) is
+    -- a separate unclaimed source we don't decode yet — small in practice
+    -- relative to SY-side accrual on LST-backed markets.
+    coalesce(uy.unclaimed_usd, 0)                    as unclaimed_usd,
     coalesce(s.n_swaps, 0)                           as n_swaps,
     coalesce(s.total_volume_usd, 0)                  as total_volume_usd,
     coalesce(s.n_markets, 0)                         as lifetime_markets,

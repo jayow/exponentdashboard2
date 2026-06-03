@@ -156,9 +156,15 @@ run extract_transactions    "$PY" -m extract_load.extract_transactions
 run extract_token_metadata  "$PY" -m extract_load.extract_token_metadata
 run extract_prices          "$PY" -m extract_load.extract_prices
 run extract_positions       "$PY" -m extract_load.extract_positions
+run extract_vault_states    "$PY" -m extract_load.extract_vault_states
+run extract_market_three    "$PY" -m extract_load.extract_market_three_states
 run extract_pool_state      "$PY" -m extract_load.extract_pool_state
 run extract_holders         "$PY" -m extract_load.extract_holders
 run extract_anchor_events   "$PY" -m extract_load.extract_anchor_events
+# extract_clmm_claim_events is parked: ClaimFarmEmissions instructions only
+# fire from the Core program (Exponentna...), not CLMM (XPC1MM4d). The CLMM
+# IDL declares the event types but the program doesn't actually emit them.
+# Re-enable once we identify the actual CLMM farm-claim path.
 run extract_lst_rates       "$PY" -m extract_load.extract_lst_rates
 run extract_v2_markets      "$PY" -m extract_load.extract_v2_markets
 run extract_v2_books        "$PY" -m extract_load.extract_v2_books

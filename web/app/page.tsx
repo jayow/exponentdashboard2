@@ -40,15 +40,19 @@ export default function HomePage() {
 
       {/* Tabbed analytics */}
       <div className="mb-8">
-        <div className="flex items-center gap-1 mb-4">
-          {TABS.map(t => (
-            <button key={t.key} onClick={() => setTab(t.key)}
-              className={`text-xs px-3 py-1.5 rounded-lg border transition ${
-                tab === t.key ? 'border-white/30 bg-white/10 text-white' : 'border-white/10 text-white/40 hover:text-white'
-              }`}>
-              {t.label}
-            </button>
-          ))}
+        <div className="flex items-center gap-5 mb-6 mt-8 pt-5 border-t border-white/[0.06]">
+          {TABS.map(t => {
+            const isActive = tab === t.key;
+            return (
+              <button key={t.key} onClick={() => setTab(t.key)}
+                className={`relative pb-2 text-xs transition ${
+                  isActive ? 'text-white' : 'text-white/35 hover:text-white/70'
+                }`}>
+                {t.label}
+                {isActive && <span className="absolute left-0 right-0 -bottom-px h-px bg-white" />}
+              </button>
+            );
+          })}
         </div>
 
         {tab === 'markets' && <MarketsList />}

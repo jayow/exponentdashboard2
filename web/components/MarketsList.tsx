@@ -170,29 +170,33 @@ export function MarketsList() {
   if (!tvl || !ap) return <div className="text-white/40 text-sm p-4">Loading markets…</div>;
 
   return (
-    <section className="rounded-2xl border border-white/10 bg-white/5 p-4 mb-6">
-      <header className="flex items-baseline justify-between flex-wrap gap-2 mb-3">
+    <section className="mb-6">
+      <header className="flex items-baseline justify-between flex-wrap gap-2 mb-4">
         <div>
-          <h2 className="text-sm uppercase tracking-wider text-white/60">Markets</h2>
-          <p className="text-xs text-white/40">{rows.length} markets · click a row for detail</p>
+          <h2 className="text-[11px] uppercase tracking-[0.18em] text-white/35">Markets</h2>
+          <p className="text-xs text-white/40 mt-1">{rows.length} markets · click a row for detail</p>
         </div>
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-5">
           {([
             ['active', 'Active'],
             ['all',    'All'],
             ['v2',     'v2 only'],
-          ] as const).map(([s, label]) => (
-            <button key={s} onClick={() => setStatus(s as StatusFilter)}
-              className={`text-xs px-3 py-1 rounded-lg border ${status === s ? 'border-white/30 bg-white/10' : 'border-white/10 text-white/40'}`}>
-              {label}
-            </button>
-          ))}
+          ] as const).map(([s, label]) => {
+            const isActive = status === s;
+            return (
+              <button key={s} onClick={() => setStatus(s as StatusFilter)}
+                className={`relative pb-2 text-xs transition ${isActive ? 'text-white' : 'text-white/35 hover:text-white/70'}`}>
+                {label}
+                {isActive && <span className="absolute left-0 right-0 -bottom-px h-px bg-white" />}
+              </button>
+            );
+          })}
         </div>
       </header>
 
       <div className="overflow-x-auto">
         <table className="w-full text-xs">
-          <thead className="text-white/40 border-b border-white/10">
+          <thead className="text-white/40 border-t border-b border-white/[0.06]">
             <tr>
               {([
                 ['marketKey',    'Market',    'left',  ''],
@@ -217,18 +221,11 @@ export function MarketsList() {
           </thead>
           <tbody>
             {rows.slice(0, 100).map(r => {
-              const v2Badge = r.hasV2 ? (r.bookCount > 1 ? 'v2²' : (r.tvlUsd > 0 ? 'v2' : 'v2*')) : null;
               return (
-                <tr key={r.marketKey} className="border-b border-white/5 hover:bg-white/5 cursor-pointer"
+                <tr key={r.marketKey} className="border-b border-white/[0.06] hover:bg-white/5 cursor-pointer"
                     onClick={() => window.location.href = `/market/?key=${r.marketKey}`}>
                   <td className="py-1.5 text-white/85 whitespace-nowrap">
                     {r.marketKey}
-                    {v2Badge && (
-                      <span className="ml-2 text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded border border-emerald-400/30 bg-emerald-400/10 text-emerald-300"
-                            title={r.bookCount > 1 ? `v2 — ${r.bookCount} books on this market` : (r.tvlUsd > 0 ? 'v2 orderbook + v1 AMM' : 'v2-only (no v1 TVL)')}>
-                        {v2Badge}
-                      </span>
-                    )}
                     {r.isTest && (
                       <span className="ml-2 text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded border border-amber-400/30 bg-amber-400/10 text-amber-300"
                             title="Test/calibration deployment">

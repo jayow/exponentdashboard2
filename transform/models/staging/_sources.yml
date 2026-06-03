@@ -55,6 +55,26 @@ sources:
           - name: position_account
             tests: [not_null]
 
+      - name: raw_vault_states
+        description: Daily snapshot of Exponent Vault account fields needed for unstaged-yield computation (final_sy_exchange_rate, last_seen_sy_rate). Decoded from Vault accounts (disc d308e82b02987577 in core program).
+        columns:
+          - name: snapshot_date
+            tests: [not_null]
+          - name: vault
+            tests: [not_null]
+
+      - name: raw_market_three_states
+        description: Per-CLMM-market state for unclaimed-yield computation. lp_farm.farm_emissions[0] details + financials.liquidity_balance + ticks_account pointer.
+
+      - name: raw_clmm_ticks
+        description: Per-active-tick (slot, apy_bp, spot_price, fee_growth_outside_pt/sy) snapshot from each CLMM market's Ticks PDA. Powers Uniswap V3 fee_growth_inside computation.
+
+      - name: raw_clmm_lp_share_trackers
+        description: Per-LP-position share-tracker rows decoded from CLMM PositionAccount.share_trackers vec. Each row carries (position_account, share_idx, tick_idx, right_tick_idx, lp_share). Powers SDK withdrawLiquidity USD valuation.
+
+      - name: raw_clmm_market_globals
+        description: Per-CLMM-market global fee_growth + current tick snapshot (Ticks PDA footer).
+
       - name: raw_clmm_markets
         description: CLMM market accounts (disc f2f01a0f94bab9cd) → pt_mint mapping.
         columns:

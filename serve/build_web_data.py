@@ -14,6 +14,7 @@ Future:
 """
 from __future__ import annotations
 import json
+import math
 import os
 import re
 import tempfile
@@ -329,6 +330,80 @@ def build_tvl_json(con: duckdb.DuckDBPyConnection) -> dict:
                GROUP BY market_key"""
         ).fetchall()
     }
+    # Canonical PT price ratio per market — SDK time-curve, not AMM-median.
+    # int_implied_prices_daily uses the median of per-trade implied prices,
+    # which is noise-dominated for low-volume markets (~6 trades/day on
+    # ONyc-10SEP26 produced ratio=0.87 vs the SDK curve's 0.97, blowing up
+    # implied yield to 51% instead of ~13%). This canonical ratio comes
+    # straight from pt_exchange_rate = exp(last_ln_implied × years_remaining),
+    # the same value Exponent's SDK and our int_wallet_holdings_usd already
+    # use. Pick the largest pool by liquidity_usd when a market has multiple
+    # pools (deprecated v1 + live v2).
+    pt_ratio_by_market: dict[str, float] = {
+        mk: float(v or 0) for mk, v in con.execute(
+            """WITH ranked AS (
+                 SELECT market_key,
+                        1.0 / NULLIF(pt_exchange_rate, 0) AS pt_ratio,
+                        last_ln_implied_rate,
+                        liquidity_usd,
+                        ROW_NUMBER() OVER (PARTITION BY market_key
+                                           ORDER BY liquidity_usd DESC) AS rn
+                 FROM main_intermediate.int_pool_reserves_daily
+                 WHERE market_key IS NOT NULL
+               )
+               SELECT market_key, pt_ratio FROM ranked WHERE rn = 1"""
+        ).fetchall()
+    }
+    # Implied APY — annualized convention to match Exponent's UI display.
+    # last_ln_implied_rate is the continuously-compounded rate from the SDK
+    # time-curve (pt_exchange_rate = exp(r × t) where r = last_ln_implied_rate).
+    # Convert to annualized APY: APY = exp(r) − 1. The underlying rate is
+    # still 100% from our on-chain MarketTwo decode (offset 396); the math
+    # just matches the convention Exponent's "Implied APY" uses.
+    # Continuous 12.73% → annualized 13.57% (≈ Exponent's 13.56% for ONyc-10SEP26).
+    implied_yield_by_market: dict[str, float] = {
+        mk: float(v or 0) for mk, v in con.execute(
+            """WITH ranked AS (
+                 SELECT market_key, last_ln_implied_rate, liquidity_usd,
+                        ROW_NUMBER() OVER (PARTITION BY market_key
+                                           ORDER BY liquidity_usd DESC) AS rn
+                 FROM main_intermediate.int_pool_reserves_daily
+                 WHERE market_key IS NOT NULL
+               )
+               SELECT market_key, exp(last_ln_implied_rate) - 1.0 FROM ranked WHERE rn = 1"""
+        ).fetchall()
+    }
+    # Implied APY ~7 days ago — picks the raw_market_two_pools snapshot
+    # whose age sits closest to 7 days within a [4, 14] day window
+    # (avoids leaning on a stale outlier if the only history is very old).
+    # Returns (value, snapshot_date) per market. Returns None when no
+    # snapshot falls in range. Page formats delta + actual day count.
+    implied_yield_past_by_market: dict[str, tuple[float, str]] = {}
+    for mk, llir, snap_date in con.execute(
+        """WITH per_pool AS (
+             SELECT m.market_key, p.snapshot_date, p.last_ln_implied_rate,
+                    p.pt_balance_raw,
+                    ROW_NUMBER() OVER (PARTITION BY m.market_key, p.snapshot_date
+                                       ORDER BY p.pt_balance_raw DESC) AS rn
+             FROM main.raw_market_two_pools p
+             JOIN main_core.dim_markets m ON m.pt_mint = p.mint_pt
+           ),
+           with_age AS (
+             SELECT market_key, snapshot_date, last_ln_implied_rate,
+                    DATE_DIFF('day', snapshot_date, CURRENT_DATE) AS age_days,
+                    ABS(DATE_DIFF('day', snapshot_date, CURRENT_DATE) - 7) AS distance_from_7d
+             FROM per_pool WHERE rn = 1
+           ),
+           ranked_window AS (
+             SELECT market_key, snapshot_date, last_ln_implied_rate, age_days,
+                    ROW_NUMBER() OVER (PARTITION BY market_key
+                                       ORDER BY distance_from_7d ASC, age_days ASC) AS rn
+             FROM with_age WHERE age_days BETWEEN 4 AND 14
+           )
+           SELECT market_key, last_ln_implied_rate, snapshot_date::VARCHAR
+           FROM ranked_window WHERE rn = 1"""
+    ).fetchall():
+        implied_yield_past_by_market[mk] = (math.exp(float(llir)) - 1.0, snap_date)
     # LP USD per (market, date) — keyed for fast lookup in per-market breakdown
     lp_per_market = {(r[0], r[1]): float(r[2] or 0) for r in con.execute("""
         SELECT market_key, date::VARCHAR, SUM(usd_value)
@@ -406,6 +481,18 @@ def build_tvl_json(con: duckdb.DuckDBPyConnection) -> dict:
             # Active TVL = principalUsd[latest], derived fully from on-chain
             # PT supply × Jupiter/Pyth USD price.
             "activeTvlUsd": principal[-1] if principal else 0.0,
+            # Canonical PT price ratio + implied yield from the SDK time-curve
+            # (NOT the noisy AMM-median that feeds ptUsd/ytUsd arrays). Use these
+            # for the latest-day hero/position values; the historical arrays are
+            # kept as-is for the chart timeseries.
+            "ptRatio":      pt_ratio_by_market.get(mk),
+            "impliedYield": implied_yield_by_market.get(mk),
+            # Past implied yield for 7d delta on the hero number. We pick the
+            # snapshot whose age sits closest to 7 days within [4, 14] days;
+            # the actual date is emitted so the page labels honestly (e.g.
+            # "Past 12 Days" while history is sparse during early Railway runs).
+            "impliedYield7dAgo":     (implied_yield_past_by_market.get(mk) or (None, None))[0],
+            "impliedYield7dAgoDate": (implied_yield_past_by_market.get(mk) or (None, None))[1],
             "tvlUsd": usd,
             "tvlUnderlying": und,
             "principalUsd": principal,
@@ -1274,15 +1361,32 @@ def build_market_holders_json(con: duckdb.DuckDBPyConnection) -> dict:
 
 
 def build_unclaimed_yield_json(con: duckdb.DuckDBPyConnection) -> dict:
-    """Wallets with unclaimed YT (holds YT but never claimYield'd that market)."""
+    """Per-(wallet, market) unclaimed YT yield. Sourced from
+    main_analytics.unclaimed_yield which combines:
+      - staged_underlying:   already in the position's claim buffer
+      - unstaged_underlying: accrued in the vault, not yet staged (computed
+        via canonical formula from yield_token_position.rs::calc_earned_sy)
+    Output schema per entry:
+      { marketKey, ytBalance, stagedUnderlying, unstagedUnderlying,
+        unclaimedUnderlying, unclaimedUsd }
+    """
     rows = con.execute("""
-        SELECT wallet, market_key, yt_balance FROM main_analytics.unclaimed_yield
+        SELECT wallet, market_key, yt_balance,
+               staged_underlying, unstaged_underlying, clmm_underlying,
+               unclaimed_underlying, unclaimed_usd
+        FROM main_analytics.unclaimed_yield
     """).fetchall()
     by_wallet: dict[str, list[dict]] = {}
-    for wallet, mk, bal in rows:
-        by_wallet.setdefault(wallet, []).append(
-            {"marketKey": mk, "ytBalance": float(bal or 0)}
-        )
+    for wallet, mk, yt, staged, unstaged, clmm, total, usd in rows:
+        by_wallet.setdefault(wallet, []).append({
+            "marketKey": mk,
+            "ytBalance": float(yt or 0),
+            "stagedUnderlying":    float(staged or 0),
+            "unstagedUnderlying":  float(unstaged or 0),
+            "clmmUnderlying":      float(clmm or 0),
+            "unclaimedUnderlying": float(total or 0),
+            "unclaimedUsd":        float(usd or 0),
+        })
     return {
         "meta": {"generatedAt": datetime.now(timezone.utc).isoformat(),
                  "totalPositions": len(rows), "totalWallets": len(by_wallet)},
@@ -1492,21 +1596,34 @@ def build_wallet_shards(con: duckdb.DuckDBPyConnection) -> None:
             ],
         })
 
-    # Current positions per wallet — derived from int_holders_current. Pulls
-    # PT (via raw_holders) + YT/LP (via raw_positions Anchor accounts) and
-    # joins to dim_markets to attach market_key/ticker/leg labels.
+    # Current positions per wallet — derived from int_holders_current for
+    # PT/YT, and from int_clmm_lp_usd for CLMM LP positions (where the raw
+    # lp_mint balance is a V3 liquidity-unit number, NOT a token balance,
+    # and would mislead the UI by ~200× if shown as-is).
     rprint("  attaching current positions to each wallet…")
     pos_rows = con.execute("""
         SELECT h.owner, m.market_key, m.ticker, m.maturity_date::VARCHAR,
                CASE WHEN m.pt_mint = h.mint THEN 'PT'
                     WHEN m.yt_mint = h.mint THEN 'YT'
-                    WHEN m.lp_mint = h.mint THEN 'LP'
                END AS leg,
                h.amount
         FROM main_intermediate.int_holders_current h
         JOIN main_core.dim_markets m
-          ON h.mint IN (m.pt_mint, m.yt_mint, m.lp_mint)
+          ON h.mint IN (m.pt_mint, m.yt_mint)
         WHERE h.amount > 0.000001
+    """).fetchall()
+    # CLMM LP rows: one per (wallet, market_key), summing pt/sy underlying
+    # and USD across the wallet's positions in that market. balance is in
+    # underlying-token units (pt_underlying + sy_underlying), matching what
+    # the user would receive on a full burn.
+    clmm_lp_rows = con.execute("""
+        SELECT u.wallet, u.market_key, m.ticker, m.maturity_date::VARCHAR,
+               SUM(u.pt_underlying + u.sy_underlying)  AS balance_underlying,
+               SUM(u.lp_usd)                            AS lp_usd
+        FROM main_intermediate.int_clmm_lp_usd u
+        JOIN main_core.dim_markets m USING (market_key)
+        WHERE u.market_key IS NOT NULL
+        GROUP BY u.wallet, u.market_key, m.ticker, m.maturity_date
     """).fetchall()
     positions_by_wallet: dict[str, list[dict]] = {}
     for owner, mk, ticker, maturity, leg, amt in pos_rows:
@@ -1518,6 +1635,15 @@ def build_wallet_shards(con: duckdb.DuckDBPyConnection) -> None:
             "maturityDate": maturity,
             "leg": leg,
             "balance": float(amt or 0),
+        })
+    for owner, mk, ticker, maturity, bal, usd in clmm_lp_rows:
+        positions_by_wallet.setdefault(owner, []).append({
+            "marketKey": mk,
+            "ticker": ticker,
+            "maturityDate": maturity,
+            "leg": "LP",
+            "balance": float(bal or 0),
+            "usdValue": float(usd or 0),
         })
     for ps in positions_by_wallet.values():
         ps.sort(key=lambda p: (-p["balance"], p["marketKey"]))

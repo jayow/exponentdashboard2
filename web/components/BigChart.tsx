@@ -139,7 +139,7 @@ export function BigChart() {
   const [vol, setVol] = useState<VolData | null>(null);
   const [metric, setMetric] = useState<Metric>('tvl');
   const [view, setView] = useState<View>('protocol');
-  const [range, setRange] = useState<Range>('all');
+  const [range, setRange] = useState<Range>('30d');
   const [showTges, setShowTges] = useState<boolean>(true);
   // For the Market Share tab — which underlying powers the share calc.
   const [mscBase, setMscBase] = useState<'volume' | 'tvl'>('volume');
@@ -437,8 +437,8 @@ export function BigChart() {
   const interval = Math.max(0, Math.floor(data.length / 8));
 
   return (
-    <section className="rounded-2xl border border-white/10 bg-white/5 p-4 mb-6">
-      <header className="flex items-center justify-between flex-wrap gap-3 mb-3">
+    <section className="mt-8 pt-5 mb-6 border-t border-white/[0.06]">
+      <header className="flex items-center justify-between flex-wrap gap-3 mb-4">
         <div className="flex items-center gap-1 flex-wrap">
           {/* Metric tabs */}
           {([
@@ -448,8 +448,9 @@ export function BigChart() {
             ['marketshare', 'Market Share'],
           ] as [Metric, string][]).map(([m, label]) => (
             <button key={m} onClick={() => setMetric(m)}
-              className={`text-xs px-3 py-1.5 rounded-lg border transition ${metric === m ? 'border-white/30 bg-white/10 text-white' : 'border-white/10 text-white/40 hover:text-white'}`}>
+              className={`relative pb-2 mr-4 text-xs transition ${metric === m ? 'text-white' : 'text-white/35 hover:text-white/70'}`}>
               {label}
+              {metric === m && <span className="absolute left-0 right-0 -bottom-px h-px bg-white" />}
             </button>
           ))}
           <span className="w-3" />
@@ -458,10 +459,11 @@ export function BigChart() {
             <>
               {(['volume', 'tvl'] as const).map(b => (
                 <button key={b} onClick={() => setMscBase(b)}
-                  className={`text-xs px-3 py-1 rounded-lg transition ${
-                    mscBase === b ? 'bg-white/10 text-white' : 'text-white/40 hover:text-white'
+                  className={`relative pb-2 mr-4 text-xs transition ${
+                    mscBase === b ? 'text-white' : 'text-white/35 hover:text-white/70'
                   }`}>
                   {b === 'volume' ? 'Volume' : 'TVL'} share
+                  {mscBase === b && <span className="absolute left-0 right-0 -bottom-px h-px bg-white" />}
                 </button>
               ))}
               <span className="w-3" />
@@ -473,25 +475,27 @@ export function BigChart() {
               .filter(v => !(metric === 'marketshare' && v === 'protocol'))
               .map(v => (
                 <button key={v} onClick={() => setView(v)}
-                  className={`text-xs px-3 py-1 rounded-lg transition ${
-                    effectiveView === v ? 'bg-white/10 text-white' : 'text-white/40 hover:text-white'
+                  className={`relative pb-2 mr-4 text-xs transition ${
+                    effectiveView === v ? 'text-white' : 'text-white/35 hover:text-white/70'
                   }`}>
                   {v.charAt(0).toUpperCase() + v.slice(1)}
+                  {effectiveView === v && <span className="absolute left-0 right-0 -bottom-px h-px bg-white" />}
                 </button>
               ))}
         </div>
         <div className="flex items-center gap-1">
           <button onClick={() => setShowTges(v => !v)}
-            className={`text-[11px] px-2.5 py-1 rounded-md border transition ${
-              showTges ? 'border-amber-400/40 bg-amber-400/10 text-amber-300'
-                       : 'border-white/10 text-white/30 hover:text-white/60'
+            className={`relative pb-2 mr-3 text-[11px] uppercase tracking-[0.18em] transition ${
+              showTges ? 'text-amber-300' : 'text-white/35 hover:text-white/70'
             }`}>
             TGEs
+            {showTges && <span className="absolute left-0 right-0 -bottom-px h-px bg-amber-300" />}
           </button>
           {(['30d', '90d', '1y', 'all'] as Range[]).map(r => (
             <button key={r} onClick={() => setRange(r)}
-              className={`text-xs px-2.5 py-1 rounded-md transition ${range === r ? 'bg-white/10 text-white' : 'text-white/30 hover:text-white/60'}`}>
+              className={`relative pb-2 mr-3 text-xs transition ${range === r ? 'text-white' : 'text-white/35 hover:text-white/70'}`}>
               {r === 'all' ? 'All' : r.toUpperCase()}
+              {range === r && <span className="absolute left-0 right-0 -bottom-px h-px bg-white" />}
             </button>
           ))}
         </div>
@@ -570,7 +574,7 @@ export function BigChart() {
       {isToggleable && allKeys.length > 0 && (
         <div className="mt-3 flex items-center justify-center gap-x-4 gap-y-2 flex-wrap">
           <button onClick={hidden.size === allKeys.length ? showAll : hideAll}
-            className="text-[11px] px-2 py-0.5 rounded border border-white/15 text-white/60 hover:text-white hover:bg-white/5">
+            className="text-[10px] uppercase tracking-[0.18em] text-white/35 hover:text-white/70 transition border-l border-white/[0.08] pl-3">
             {hidden.size === allKeys.length ? 'Show All' : 'Hide All'}
           </button>
           {allKeys.map(k => {

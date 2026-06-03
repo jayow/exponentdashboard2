@@ -89,7 +89,7 @@ export function UsersAnalytics() {
   const [err, setErr] = useState<string | null>(null);
 
   const [view, setView] = useState<View>('leaderboard');
-  const [range, setRange] = useState<Range>('all');
+  const [range, setRange] = useState<Range>('30d');
   const [growthMetric, setGrowthMetric] = useState<'cumulative' | 'holders'>('holders');
   const [sortKey, setSortKey] = useState<SortKey>('holdingUsd');
   const [sortAsc, setSortAsc] = useState<boolean>(false);
@@ -183,10 +183,10 @@ export function UsersAnalytics() {
   const totalPages = Math.ceil(sortedWallets.length / PAGE);
 
   return (
-    <section className="rounded-2xl border border-white/10 bg-white/5 p-4 mb-6">
-      <header className="flex items-baseline justify-between flex-wrap gap-2 mb-3">
-        <h2 className="text-sm uppercase tracking-wider text-white/60">Users</h2>
-        <div className="flex items-center gap-1 flex-wrap">
+    <section className="mb-6">
+      <header className="flex items-baseline justify-between flex-wrap gap-3 mb-4">
+        <h2 className="text-[11px] uppercase tracking-[0.18em] text-white/35">Users</h2>
+        <div className="flex items-center gap-5 flex-wrap">
           {([
             { key: 'leaderboard',   label: 'Users' },
             { key: 'cohorts',       label: 'Cohorts' },
@@ -195,19 +195,24 @@ export function UsersAnalytics() {
             { key: 'retention',     label: 'Retention' },
             { key: 'whales',        label: 'Whales' },
             { key: 'concentration', label: 'Concentration' },
-          ] as { key: View; label: string }[]).map(v => (
-            <button key={v.key} onClick={() => setView(v.key)}
-              className={`text-xs px-3 py-1 rounded-lg border ${view === v.key ? 'border-white/30 bg-white/10 text-white' : 'border-white/10 text-white/40'}`}>
-              {v.label}
-            </button>
-          ))}
+          ] as { key: View; label: string }[]).map(v => {
+            const isActive = view === v.key;
+            return (
+              <button key={v.key} onClick={() => setView(v.key)}
+                className={`relative pb-2 text-xs transition ${isActive ? 'text-white' : 'text-white/35 hover:text-white/70'}`}>
+                {v.label}
+                {isActive && <span className="absolute left-0 right-0 -bottom-px h-px bg-white" />}
+              </button>
+            );
+          })}
           {(view === 'growth' || view === 'retention' || view === 'swaps') && (
             <>
-              <span className="w-2" />
+              <span className="w-3 border-l border-white/[0.08]" />
               {(['30d', '90d', '1y', 'all'] as Range[]).map(r => (
                 <button key={r} onClick={() => setRange(r)}
-                  className={`text-xs px-2.5 py-1 rounded-md ${range === r ? 'bg-white/10 text-white' : 'text-white/30 hover:text-white/60'}`}>
+                  className={`relative pb-2 text-xs transition ${range === r ? 'text-white' : 'text-white/35 hover:text-white/70'}`}>
                   {r === 'all' ? 'All' : r.toUpperCase()}
+                  {range === r && <span className="absolute left-0 right-0 -bottom-px h-px bg-white" />}
                 </button>
               ))}
             </>
@@ -221,7 +226,7 @@ export function UsersAnalytics() {
           <div className="flex items-center justify-between gap-3 mb-3 flex-wrap">
             <input value={search} onChange={e => { setSearch(e.target.value); setPage(0); }}
               placeholder="Search wallet address…"
-              className="flex-1 max-w-md bg-[#0a0a0a]/60 border border-white/10 focus:border-white/30 focus:outline-none rounded-md px-3 py-1.5 text-xs tabular-nums placeholder-white/20" />
+              className="flex-1 max-w-md bg-transparent border-b border-white/[0.08] focus:border-white/30 focus:outline-none px-1 py-1.5 text-xs tabular-nums placeholder-white/20" />
             <label className="flex items-center gap-1.5 text-[11px] text-white/50 cursor-pointer select-none">
               <input type="checkbox" checked={hidePools} onChange={e => { setHidePools(e.target.checked); setPage(0); }}
                 className="accent-white/40" />
@@ -342,10 +347,10 @@ export function UsersAnalytics() {
                 { label: '100+ swaps',      value: h.powerWallets,        sub: 'power users' },
                 { label: 'max by 1 wallet', value: h.maxSwapsByOneWallet, sub: 'top trader' },
               ].map(s => (
-                <div key={s.label} className="rounded-lg border border-white/10 p-2">
-                  <div className="text-[10px] uppercase text-white/40">{s.label}</div>
-                  <div className="text-base font-semibold tabular-nums text-white mt-0.5">{s.value.toLocaleString()}</div>
-                  <div className="text-[10px] text-white/30">{s.sub}</div>
+                <div key={s.label} className="border-l border-white/[0.08] pl-3 py-1">
+                  <div className="text-[10px] uppercase tracking-[0.18em] text-white/35">{s.label}</div>
+                  <div className="text-[36px] leading-none font-medium tracking-tight tabular-nums text-white mt-1">{s.value.toLocaleString()}</div>
+                  <div className="text-[10px] text-white/30 mt-1">{s.sub}</div>
                 </div>
               ))}
             </div>
@@ -438,13 +443,17 @@ export function UsersAnalytics() {
       {/* ─── Growth ─── */}
       {view === 'growth' && (
         <>
-          <div className="flex items-center gap-1 mb-2">
-            {(['holders', 'cumulative'] as const).map(m => (
-              <button key={m} onClick={() => setGrowthMetric(m)}
-                className={`text-[11px] px-2.5 py-1 rounded-md border ${growthMetric === m ? 'border-white/30 bg-white/10 text-white' : 'border-white/10 text-white/40'}`}>
-                {m === 'holders' ? 'PT/YT/LP holders' : 'Cumulative wallets'}
-              </button>
-            ))}
+          <div className="flex items-center gap-5 mb-3">
+            {(['holders', 'cumulative'] as const).map(m => {
+              const isActive = growthMetric === m;
+              return (
+                <button key={m} onClick={() => setGrowthMetric(m)}
+                  className={`relative pb-2 text-[11px] transition ${isActive ? 'text-white' : 'text-white/35 hover:text-white/70'}`}>
+                  {m === 'holders' ? 'PT/YT/LP holders' : 'Cumulative wallets'}
+                  {isActive && <span className="absolute left-0 right-0 -bottom-px h-px bg-white" />}
+                </button>
+              );
+            })}
           </div>
           <ResponsiveContainer width="100%" height={260}>
             {growthMetric === 'holders' ? (
@@ -540,20 +549,28 @@ export function UsersAnalytics() {
       {/* ─── Concentration (per-market top-N) ─── */}
       {view === 'concentration' && (
         <>
-          <div className="flex items-center gap-1 mb-3 flex-wrap">
-            {(['ALL', 'PT', 'YT', 'LP'] as LegFilter[]).map(l => (
-              <button key={l} onClick={() => setLeg(l)}
-                className={`text-[11px] px-2.5 py-1 rounded-md border ${leg === l ? 'border-white/30 bg-white/10 text-white' : 'border-white/10 text-white/40'}`}>
-                {l}
-              </button>
-            ))}
-            <span className="w-2" />
-            {(['active', 'all'] as StatusFilter[]).map(s => (
-              <button key={s} onClick={() => setConStatus(s)}
-                className={`text-[11px] px-2.5 py-1 rounded-md border ${conStatus === s ? 'border-white/30 bg-white/10 text-white' : 'border-white/10 text-white/40'}`}>
-                {s === 'active' ? 'Active' : 'All'}
-              </button>
-            ))}
+          <div className="flex items-center gap-5 mb-4 flex-wrap">
+            {(['ALL', 'PT', 'YT', 'LP'] as LegFilter[]).map(l => {
+              const isActive = leg === l;
+              return (
+                <button key={l} onClick={() => setLeg(l)}
+                  className={`relative pb-2 text-[11px] transition ${isActive ? 'text-white' : 'text-white/35 hover:text-white/70'}`}>
+                  {l}
+                  {isActive && <span className="absolute left-0 right-0 -bottom-px h-px bg-white" />}
+                </button>
+              );
+            })}
+            <span className="w-3 border-l border-white/[0.08]" />
+            {(['active', 'all'] as StatusFilter[]).map(s => {
+              const isActive = conStatus === s;
+              return (
+                <button key={s} onClick={() => setConStatus(s)}
+                  className={`relative pb-2 text-[11px] transition ${isActive ? 'text-white' : 'text-white/35 hover:text-white/70'}`}>
+                  {s === 'active' ? 'Active' : 'All'}
+                  {isActive && <span className="absolute left-0 right-0 -bottom-px h-px bg-white" />}
+                </button>
+              );
+            })}
           </div>
           {!holders && <div className="text-white/40 text-xs">Loading concentration…</div>}
           {holders && (

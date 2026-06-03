@@ -78,6 +78,14 @@ RAW_DDL = {
         -- staged_raw: only populated for YT positions — the staged-yield
         --   field at offset 112..120 in YieldTokenPosition.interest.staged.
         --   Used to add unclaimed-but-accrued yield to YT USD value.
+        -- last_seen_index: YT-only, decoded from interest.lastSeenIndex
+        --   (256-bit at 80..112, stored as DOUBLE = U256/1e12). Paired with
+        --   raw_vault_states.final_sy_exchange_rate to compute unstaged
+        --   yield via floor((1/lsi − 1/final) × yt_balance).
+        -- clmm_*: LP_CLMM-only Uniswap V3 fee-accounting state. Paired with
+        --   raw_clmm_ticks for fee_growth_inside computation. The u128 fields
+        --   are stored as UHUGEINT (signed 128-bit) — Q64.64 reads are correct
+        --   because we treat them as unsigned in dbt math.
         CREATE TABLE IF NOT EXISTS raw_positions (
             snapshot_date    DATE NOT NULL,
             leg              VARCHAR NOT NULL,
@@ -86,7 +94,164 @@ RAW_DDL = {
             vault            VARCHAR NOT NULL,
             amount_raw       UBIGINT,
             staged_raw       UBIGINT,
+            last_seen_index  DOUBLE,
+            clmm_fee_inside_last_pt  UHUGEINT,
+            clmm_fee_inside_last_sy  UHUGEINT,
+            clmm_tokens_owed_pt      UBIGINT,
+            clmm_tokens_owed_sy      UBIGINT,
+            clmm_lower_tick_idx      INTEGER,
+            clmm_upper_tick_idx      INTEGER,
+            clmm_farm_lsi            DOUBLE,
+            clmm_farm_staged         UBIGINT,
+            clmm_total_lp_share      DOUBLE,
             PRIMARY KEY (snapshot_date, position_account)
+        )
+    """,
+    "raw_vault_states": """
+        -- Daily snapshot of Exponent Vault.final_sy_exchange_rate (256-bit
+        -- Number at offset 401..433, stored as DOUBLE = U256/1e12). Required
+        -- to compute unstaged YT yield via
+        --   unstaged_atoms = floor((1/lsi − 1/final) × yt_balance)
+        -- where lsi comes from raw_positions.last_seen_index.
+        -- Populated by extract_load/extract_vault_states.py.
+        CREATE TABLE IF NOT EXISTS raw_vault_states (
+            snapshot_date            DATE NOT NULL,
+            vault                    VARCHAR NOT NULL,
+            mint_pt                  VARCHAR,
+            mint_yt                  VARCHAR,
+            final_sy_exchange_rate   DOUBLE,
+            last_seen_sy_rate        DOUBLE,
+            PRIMARY KEY (snapshot_date, vault)
+        )
+    """,
+    "raw_market_three_states": """
+        -- Per-CLMM-market state needed for unclaimed-yield computation:
+        --   • ticks_account     — PDA holding the tick array (raw_clmm_ticks)
+        --   • lp_farm_index     — current global farm index (matches first
+        --     lp_farm.farm_emissions[].index; we only track #0 today)
+        --   • lp_farm_last_ts   — last update timestamp for projection
+        --   • lp_farm_token_rate — emission rate per second for projection
+        --   • lp_farm_expiry_ts — emissions stop accruing past this
+        --   • liquidity_balance — total LP supply in escrow (for projection)
+        CREATE TABLE IF NOT EXISTS raw_market_three_states (
+            snapshot_date         DATE NOT NULL,
+            clmm_market           VARCHAR NOT NULL,
+            mint_pt               VARCHAR,
+            mint_sy               VARCHAR,
+            mint_yt               VARCHAR,
+            vault                 VARCHAR,
+            ticks_account         VARCHAR,
+            liquidity_balance     UBIGINT,
+            lp_farm_last_ts       INTEGER,
+            lp_farm_token_rate    UBIGINT,
+            lp_farm_expiry_ts     INTEGER,
+            lp_farm_index         DOUBLE,
+            lp_farm_mint          VARCHAR,
+            PRIMARY KEY (snapshot_date, clmm_market)
+        )
+    """,
+    "raw_clmm_ticks": """
+        -- Per-(market, tick-slot) Uniswap V3 fee_growth_outside snapshot.
+        -- One row per active tick (apy_bp > 0) within each MarketThree's
+        -- Ticks PDA. fee_growth_outside_pt/sy are u128 Q64.64 — stored as
+        -- UHUGEINT and treated as unsigned in dbt math.
+        -- principal_pt + principal_sy + principal_share_supply enable the
+        -- canonical CLMM LP USD valuation via SDK withdrawLiquidity formula:
+        --   token_out = lp_share × tick.principal_X / tick.principal_share_supply
+        CREATE TABLE IF NOT EXISTS raw_clmm_ticks (
+            snapshot_date            DATE NOT NULL,
+            clmm_market              VARCHAR NOT NULL,
+            tick_slot                INTEGER NOT NULL,
+            apy_bp                   INTEGER,
+            spot_price               DOUBLE,
+            liquidity_gross          UBIGINT,
+            fee_growth_outside_pt    UHUGEINT,
+            fee_growth_outside_sy    UHUGEINT,
+            principal_pt             UHUGEINT,
+            principal_sy             UHUGEINT,
+            principal_share_supply   DOUBLE,
+            PRIMARY KEY (snapshot_date, clmm_market, tick_slot)
+        )
+    """,
+    "raw_clmm_lp_share_trackers": """
+        -- Per-(position, share-index) entry from CLMM LpPosition.share_trackers
+        -- vec. Each PrincipalShare locks a fraction of the position's
+        -- liquidity into a specific tick range; the canonical valuation
+        -- sums (lp_share × tick.principal_X / tick.principal_share_supply)
+        -- across all shares of the position.
+        CREATE TABLE IF NOT EXISTS raw_clmm_lp_share_trackers (
+            snapshot_date     DATE NOT NULL,
+            position_account  VARCHAR NOT NULL,
+            share_idx         INTEGER NOT NULL,
+            tick_idx          INTEGER,
+            right_tick_idx    INTEGER,
+            lp_share          DOUBLE,
+            PRIMARY KEY (snapshot_date, position_account, share_idx)
+        )
+    """,
+    "raw_clmm_market_globals": """
+        -- Per-(market, snapshot) global fee_growth state + current tick.
+        -- Decoded from the Ticks PDA footer alongside raw_clmm_ticks.
+        CREATE TABLE IF NOT EXISTS raw_clmm_market_globals (
+            snapshot_date          DATE NOT NULL,
+            clmm_market            VARCHAR NOT NULL,
+            fee_growth_global_pt   UHUGEINT,
+            fee_growth_global_sy   UHUGEINT,
+            current_tick_slot      INTEGER,
+            current_spot_price     DOUBLE,
+            PRIMARY KEY (snapshot_date, clmm_market)
+        )
+    """,
+    "raw_clmm_claim_events": """
+        -- Empirical calibration corpus: captures every ClaimFarmEmissionsEvent
+        -- and MarketCollectEmissionEvent emitted by CLMM transactions.
+        -- The Anchor event includes amount_claimed (ground truth) alongside
+        -- the full position state at claim time (lp_balance, tick range,
+        -- farms tracker, share_trackers). Each row is one (state, amount)
+        -- pair we can fit a formula against. After ~50-100 samples across
+        -- diverse positions, the CLMM farm-reward formula can be derived
+        -- statistically and validated before going live in the mart.
+        --
+        -- event_type:
+        --   'ClaimFarmEmissions' — Anchor disc b80a9f9090c2a65c
+        --   'MarketCollectEmission' — Anchor disc 7d810f8be8f45243
+        CREATE TABLE IF NOT EXISTS raw_clmm_claim_events (
+            signature        VARCHAR NOT NULL,
+            log_index        INTEGER NOT NULL,
+            block_time       BIGINT,
+            event_type       VARCHAR NOT NULL,
+            owner_address    VARCHAR,
+            market_address   VARCHAR,
+            lp_position      VARCHAR,
+            mint             VARCHAR,
+            farm_index       SMALLINT,
+            amount_claimed   UBIGINT,
+            remaining_staged UBIGINT,
+            lp_balance       UBIGINT,
+            lower_tick       INTEGER,
+            upper_tick       INTEGER,
+            tokens_owed_pt   UBIGINT,
+            tokens_owed_sy   UBIGINT,
+            farm_lsi         DOUBLE,
+            farm_staged      UBIGINT,
+            total_lp_share   DOUBLE,
+            n_shares         INTEGER,
+            PRIMARY KEY (signature, log_index)
+        )
+    """,
+    "raw_vault_emissions": """
+        -- Per-vault emission tracker indices (Vault.emissions vec). Each row
+        -- = one EmissionInfo entry. tracker_index is the position in the vec
+        -- (matches YT position's emissions tracker index by parallel order).
+        -- last_seen_index = current global emission index used in
+        -- calc_share_value(position_lsi, vault_lsi, yt_balance).
+        CREATE TABLE IF NOT EXISTS raw_vault_emissions (
+            snapshot_date    DATE NOT NULL,
+            vault            VARCHAR NOT NULL,
+            tracker_index    INTEGER NOT NULL,
+            token_account    VARCHAR,
+            last_seen_index  DOUBLE,
+            PRIMARY KEY (snapshot_date, vault, tracker_index)
         )
     """,
     "raw_anchor_position_events": """
@@ -256,7 +421,7 @@ RAW_DDL = {
             owner_wallet    VARCHAR  NOT NULL,
             side            VARCHAR(3) NOT NULL,  -- 'bid' | 'ask' | '?'
             apy_rate        DOUBLE   NOT NULL,    -- decimal, e.g. 0.1225
-            size_sy_atomic  HUGEINT  NOT NULL,    -- divide by 1e9 for SY units
+            size_sy_atomic  UHUGEINT  NOT NULL,    -- divide by 1e9 for SY units
             expiry_at       INTEGER  NOT NULL,
             created_at      INTEGER  NOT NULL,
             type_flag       SMALLINT NOT NULL,
@@ -271,9 +436,19 @@ RAW_DDL = {
 # Lightweight ALTER migrations for columns added after initial DDL shipped.
 # Each entry is (table, column, type_sql). Skipped if column already exists.
 COLUMN_MIGRATIONS: list[tuple[str, str, str]] = [
-    ("raw_signatures", "discovered_via", "VARCHAR"),
-    ("raw_positions",  "staged_raw",     "UBIGINT"),
-    ("raw_v2_markets", "sy_decimals",    "SMALLINT"),
+    ("raw_signatures", "discovered_via",            "VARCHAR"),
+    ("raw_positions",  "staged_raw",                "UBIGINT"),
+    ("raw_positions",  "last_seen_index",           "DOUBLE"),
+    ("raw_positions",  "clmm_fee_inside_last_pt",   "UHUGEINT"),
+    ("raw_positions",  "clmm_fee_inside_last_sy",   "UHUGEINT"),
+    ("raw_positions",  "clmm_tokens_owed_pt",       "UBIGINT"),
+    ("raw_positions",  "clmm_tokens_owed_sy",       "UBIGINT"),
+    ("raw_positions",  "clmm_lower_tick_idx",       "INTEGER"),
+    ("raw_positions",  "clmm_upper_tick_idx",       "INTEGER"),
+    ("raw_positions",  "clmm_farm_lsi",             "DOUBLE"),
+    ("raw_positions",  "clmm_farm_staged",          "UBIGINT"),
+    ("raw_positions",  "clmm_total_lp_share",       "DOUBLE"),
+    ("raw_v2_markets", "sy_decimals",               "SMALLINT"),
 ]
 
 # Tables that had breaking schema changes — drop + recreate (data loss is OK

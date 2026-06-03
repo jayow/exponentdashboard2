@@ -45,3 +45,7 @@ out/
 # Generated wallet event shards (~30K files, regenerable via serve.build_web_data)
 web/public/wallet/
 .vercel
+
+# Local-only Mac launchd configs (hardcoded user paths; Railway is the source of truth for cron)
+ops/com.exponent.*.plist
+ops/range_monitor.py

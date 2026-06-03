@@ -21,6 +21,13 @@ type MarketHoldersData = {
 type TvlByMarket = Record<string, {
   ticker: string; tvlUsd: number[]; tvlUnderlying: number[]; principalUsd?: number[];
   ptUsd?: number[]; ytUsd?: number[]; lpUsd?: number[]; idleUsd?: number[];
+  // Canonical (SDK time-curve) — for latest-day hero/position values.
+  // ptUsd/ytUsd arrays use a noisier AMM-median, fine for chart history
+  // but wrong for the headline number on low-volume markets.
+  ptRatio?: number | null; impliedYield?: number | null;
+  // Past-snapshot implied APY for the 7d delta. Sparse during early daily
+  // history — `…Date` carries the actual lookback so we can label honestly.
+  impliedYield7dAgo?: number | null; impliedYield7dAgoDate?: string | null;
 }>;
 type ApLeg = { byMarket: Record<string, number[]>; totals: number[] };
 type ApTicker = { underlyingMint: string; latest: Record<string, number>; legs: Record<string, ApLeg> };
@@ -50,6 +57,42 @@ function fmtUsd(n: number) {
   if (n >= 1e3) return `$${(n / 1e3).toFixed(1)}K`;
   return `$${n.toFixed(2)}`;
 }
+
+// Parse "10SEP26" (the trailing maturity token in marketKey) into a Date.
+const MONTH_ABBR: Record<string, number> = {
+  JAN:0,FEB:1,MAR:2,APR:3,MAY:4,JUN:5,JUL:6,AUG:7,SEP:8,OCT:9,NOV:10,DEC:11,
+};
+function parseMaturity(key: string): Date | null {
+  const tail = key.split('-').pop() || '';
+  const m = tail.match(/^(\d{1,2})([A-Z]{3})(\d{2})$/);
+  if (!m) return null;
+  const mon = MONTH_ABBR[m[2]];
+  if (mon === undefined) return null;
+  return new Date(Date.UTC(2000 + parseInt(m[3]), mon, parseInt(m[1])));
+}
+function daysToMaturity(d: Date | null): number | null {
+  if (!d) return null;
+  return Math.ceil((d.getTime() - Date.now()) / 86400_000);
+}
+function prettyDate(d: Date | null): string {
+  if (!d) return '—';
+  return d.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric', timeZone: 'UTC' });
+}
+// nDelta(series, n) = (last - last-n) / last-n. Returns null if not enough data.
+function nDelta(series: number[], n = 7): number | null {
+  if (series.length < n + 1) return null;
+  const cur = series[series.length - 1], past = series[series.length - 1 - n];
+  if (!past) return null;
+  return (cur - past) / past;
+}
+// Fallback annualized APY from ptRatio. Used only when marketTvl.impliedYield
+// is missing (older JSON builds). APY = (1/pt_ratio)^(1/years) − 1, matching
+// Exponent's "Implied APY" convention.
+function impliedYieldFromRatio(ptRatio: number | null | undefined, daysToMat: number | null): number | null {
+  if (!ptRatio || !daysToMat || daysToMat <= 0) return null;
+  if (ptRatio <= 0 || ptRatio >= 1) return null;
+  return Math.pow(1 / ptRatio, 365 / daysToMat) - 1;
+}
 function fmtCount(n: number, ticker: string) {
   if (Math.abs(n) >= 1e9) return `${(n / 1e9).toFixed(2)}B ${ticker}`;
   if (Math.abs(n) >= 1e6) return `${(n / 1e6).toFixed(2)}M ${ticker}`;
@@ -78,7 +121,7 @@ function MarketDetailView() {
 
   const [tab, setTab] = useState<Leg>('PT');
   const [metric, setMetric] = useState<Metric>('tvl');
-  const [range, setRange] = useState<Range>('90d');
+  const [range, setRange] = useState<Range>('30d');
   // Volume tab — toggle bars between absolute USD and per-day share %.
   const [volumeShare, setVolumeShare] = useState<boolean>(false);
   const [search, setSearch] = useState('');
@@ -98,7 +141,6 @@ function MarketDetailView() {
   }, []);
 
   const v2Market: V2MarketBook | null = v2?.byMarket[marketKey] ?? null;
-  const v2SnapshotDate = v2?.meta.snapshotDate ?? null;
 
   const tvlSeries = tvl?.byMarket?.[marketKey]?.tvlUsd ?? [];
   const tickerData = positions?.byTicker?.[ticker];
@@ -179,29 +221,146 @@ function MarketDetailView() {
   const supply = latestSupply.length ? latestSupply[latestSupply.length - 1] : 0;
   const currentTvl = tvlSeries.length ? tvlSeries[tvlSeries.length - 1] : 0;
 
+  // Derive headline numbers from the same JSON the existing components use.
+  // No new data dependencies — just better story.
+  const maturityDate = parseMaturity(marketKey);
+  const daysToMat = daysToMaturity(maturityDate);
+  const isExpired = daysToMat !== null && daysToMat <= 0;
+  const marketTvl = tvl?.byMarket?.[marketKey];
+  const lastN = (arr?: number[]) => (arr && arr.length ? arr[arr.length - 1] : 0);
+  // Canonical SDK-curve ratio for the latest day. The historical ptUsd/ytUsd
+  // arrays use a noisy AMM-median (fine for the chart, wrong for the headline
+  // number on low-volume markets — e.g. ONyc-10SEP26 read 51% instead of 12.7%).
+  // For the hero number and position cards, derive PT$ / YT$ from principalUsd[-1]
+  // × ptRatio rather than reading the corrupted aggregates.
+  const ptRatio = marketTvl?.ptRatio ?? null;
+  const principalUsd = lastN(marketTvl?.principalUsd);
+  const ptUsd = ptRatio !== null && ptRatio > 0 ? principalUsd * ptRatio : lastN(marketTvl?.ptUsd);
+  const ytUsd = ptRatio !== null && ptRatio > 0 ? principalUsd * (1 - ptRatio) : lastN(marketTvl?.ytUsd);
+  const lpUsd = lastN(marketTvl?.lpUsd);
+  const ptSupply = lastN(tickerData?.legs.PT?.byMarket?.[marketKey]);
+  const ytSupply = lastN(tickerData?.legs.YT?.byMarket?.[marketKey]);
+  const lpSupply = lastN(tickerData?.legs.LP?.byMarket?.[marketKey]);
+  const tvlDelta7d = nDelta(tvlSeries, 7);
+  // Prefer the SDK-curve implied yield emitted by build_web_data.py. Fall back
+  // to the closed-form -ln(ptRatio)/t if the JSON didn't ship that field.
+  // Clamp to null when the implied-yield concept doesn't apply:
+  //   - Expired markets: the on-chain rate is stale (the AMM still holds the
+  //     pre-maturity ln_implied), so showing it as "Implied PT Yield" misleads.
+  //   - v2-only markets (no PT supply): there's no PT to imply a yield from.
+  const impliedRaw = marketTvl?.impliedYield ?? impliedYieldFromRatio(ptRatio, daysToMat);
+  const implied = (isExpired || principalUsd <= 0) ? null : impliedRaw;
+  // 7d delta for the implied yield hero. JSON ships the past value + actual
+  // snapshot date (history is sparse during early Railway runs; we picked the
+  // snapshot closest to 7 days). Render delta as a percentage-point change and
+  // label with the actual lookback so the user sees what window we used.
+  const impliedPast = marketTvl?.impliedYield7dAgo ?? null;
+  const impliedPastDate = marketTvl?.impliedYield7dAgoDate ?? null;
+  const impliedDeltaPct = impliedPast !== null && implied !== null && impliedPast > 0
+    ? (implied - impliedPast) / impliedPast
+    : null;
+  const impliedLookbackDays = impliedPastDate
+    ? Math.round((Date.now() - new Date(impliedPastDate).getTime()) / 86400_000)
+    : null;
+  // Total holders timeseries from historyByMarket → 7d relative delta.
+  const holdersHist = holders?.historyByMarket?.[marketKey];
+  const holdersTotals = holdersHist
+    ? holdersHist.PT.map((v, i) => v + (holdersHist.YT[i] || 0) + (holdersHist.LP[i] || 0))
+    : [];
+  const holdersDelta7d = nDelta(holdersTotals, 7);
+  const totalHolders =
+    (ptSnap?.holders ?? 0) + (ytSnap?.holders ?? 0) + (lpSnap?.holders ?? 0);
+  // platform name as a soft subtitle (falls back gracefully).
+  const platform = marketTvl?.ticker ? '' : ''; // no platform string in tvl.json — keep empty
+
+  // Tail sparkline window (last 30 points). Aligned with hero feel; not chart-replacement.
+  const tvlSpark = tvlSeries.slice(-30);
+
+  // Lifecycle progress — fraction of the market's life elapsed.
+  // Pull start from the TVL series (first non-zero day) as a proxy
+  // for "when this market opened." Capped at [0, 1].
+  const firstActiveIdx = tvl?.dates ? (marketTvl?.tvlUsd ?? []).findIndex(v => v > 0) : -1;
+  const startMs = firstActiveIdx >= 0 && tvl?.dates
+    ? new Date(tvl.dates[firstActiveIdx]).getTime()
+    : null;
+  const lifeProgress = (startMs && maturityDate)
+    ? Math.max(0, Math.min(1, (Date.now() - startMs) / (maturityDate.getTime() - startMs)))
+    : null;
+
   return (
-    <main className="mx-auto max-w-[1400px] px-4 sm:px-6 py-10">
-      <Link href="/" className="text-white/40 hover:text-white text-sm">← back</Link>
-      <div className="mt-4 flex items-baseline gap-4 flex-wrap">
-        <h1 className="text-2xl font-semibold text-white">{marketKey}</h1>
-        <span className="text-sm text-white/40">{ticker} · matures {maturityStr}</span>
-      </div>
+    <main className="mx-auto max-w-[1100px] px-4 sm:px-6 py-6">
+      <Link href="/" className="text-[12px] text-white/30 hover:text-white/60">← Markets</Link>
 
-      {/* Stats row */}
-      <div className="mt-6 grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3 text-sm">
-        <Stat label="TVL" value={fmtUsd(currentTvl)} />
-        <Stat label="PT supply" value={fmtCount(tickerData?.legs.PT?.byMarket?.[marketKey]?.slice(-1)[0] || 0, ticker)} />
-        <Stat label="YT supply" value={fmtCount(tickerData?.legs.YT?.byMarket?.[marketKey]?.slice(-1)[0] || 0, ticker)} />
-        <Stat label="LP supply" value={fmtCount(tickerData?.legs.LP?.byMarket?.[marketKey]?.slice(-1)[0] || 0, ticker)} />
-        <Stat label="PT holders" value={ptSnap ? ptSnap.holders.toLocaleString() : '–'} />
-        <Stat label="YT holders" value={ytSnap ? ytSnap.holders.toLocaleString() : '–'} />
-        <Stat label="LP holders" value={lpSnap ? lpSnap.holders.toLocaleString() : '–'} />
-      </div>
+      {/* ─── HEADER ─────────────────────────────────────────────── */}
+      <header className="mt-4">
+        <h1 className="text-[28px] font-medium tracking-tight text-white">
+          {ticker} <span className="text-white/30">·</span>{' '}
+          <span className="text-white/40 font-normal">{prettyDate(maturityDate)}</span>
+        </h1>
+        <div className="mt-1 text-[13px] text-white/40">
+          {isExpired
+            ? `Matured ${Math.abs(daysToMat ?? 0)} Days Ago`
+            : `${daysToMat ?? '—'} Days to Maturity`}
+        </div>
+        {/* Quiet lifecycle bar — first/now/end implied by position */}
+        {lifeProgress !== null && (
+          <div className="mt-3 h-px bg-white/[0.07] relative overflow-visible">
+            <div className="absolute inset-y-0 left-0 bg-white/40" style={{ width: `${lifeProgress * 100}%` }} />
+            <div className="absolute -top-[3px] w-[7px] h-[7px] rounded-full bg-white" style={{ left: `calc(${lifeProgress * 100}% - 3.5px)` }} />
+          </div>
+        )}
+      </header>
 
-      {/* Chart */}
-      <div className="mt-8">
+      {/* ─── HERO NUMBERS ─────────────────────────────────────── */}
+      <section className="mt-8 grid grid-cols-1 sm:grid-cols-3 gap-x-12 gap-y-6">
+        <HeroNumber
+          value={fmtUsd(currentTvl)}
+          label="Total Value Locked"
+          sub={tvlDelta7d !== null
+            ? `${tvlDelta7d > 0 ? '↑' : tvlDelta7d < 0 ? '↓' : '·'} ${Math.abs(tvlDelta7d * 100).toFixed(2)}% Past 7 Days`
+            : undefined}
+          subTone={tvlDelta7d === null ? 'mute' : tvlDelta7d > 0 ? 'up' : tvlDelta7d < 0 ? 'down' : 'mute'}
+        />
+        <HeroNumber
+          value={implied === null ? '—' : `${(implied * 100).toFixed(2)}%`}
+          label={isExpired ? 'Realized PT Yield' : 'Implied PT Yield'}
+          sub={isExpired
+            ? 'Settled at Par'
+            : impliedDeltaPct !== null && impliedLookbackDays
+              ? `${impliedDeltaPct > 0 ? '↑' : impliedDeltaPct < 0 ? '↓' : '·'} ${Math.abs(impliedDeltaPct * 100).toFixed(2)}% Past ${impliedLookbackDays} Days`
+              : 'Fixed at Maturity'}
+          subTone={isExpired || impliedDeltaPct === null
+            ? 'mute'
+            : impliedDeltaPct > 0 ? 'up'
+            : impliedDeltaPct < 0 ? 'down'
+            : 'mute'}
+        />
+        <HeroNumber
+          value={totalHolders.toLocaleString()}
+          label="Holders"
+          sub={holdersDelta7d !== null
+            ? `${holdersDelta7d > 0 ? '↑' : holdersDelta7d < 0 ? '↓' : '·'} ${Math.abs(holdersDelta7d * 100).toFixed(2)}% Past 7 Days`
+            : 'PT + YT + LP'}
+          subTone={holdersDelta7d === null ? 'mute' : holdersDelta7d > 0 ? 'up' : holdersDelta7d < 0 ? 'down' : 'mute'}
+        />
+      </section>
+
+      {/* ─── POSITIONS ────────────────────────────────────────── */}
+      <section className="mt-8 pt-5 border-t border-white/[0.06]">
+        <h2 className="text-[11px] uppercase tracking-[0.18em] text-white/35 mb-4">Positions</h2>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-x-12 gap-y-6">
+          <PositionLine label="Principal"  ticker={ticker} usd={ptUsd} supply={ptSupply} holders={ptSnap?.holders ?? null} />
+          <PositionLine label="Yield"      ticker={ticker} usd={ytUsd} supply={ytSupply} holders={ytSnap?.holders ?? null} />
+          <PositionLine label="Liquidity"  ticker={ticker} usd={lpUsd} supply={lpSupply} holders={lpSnap?.holders ?? null} />
+        </div>
+      </section>
+
+      {/* ─── ACTIVITY ──────────────────────────────────────── */}
+      <section className="mt-8 pt-5 border-t border-white/[0.06]">
+        <h2 className="text-[11px] uppercase tracking-[0.18em] text-white/35 mb-4">Activity</h2>
+
         <div className="flex items-center justify-between mb-3 flex-wrap gap-3">
-          <div className="flex items-center gap-1">
+          <div className="flex items-center gap-5 flex-wrap text-[13px]">
             {(['tvl', 'breakdown', 'positions', 'volume', 'holders', 'orderbook'] as Metric[]).map(m => {
               if (m === 'orderbook' && !v2Market) return null;
               const label = m === 'tvl' ? 'TVL'
@@ -210,44 +369,41 @@ function MarketDetailView() {
                 : m === 'volume' ? 'Volume'
                 : m === 'holders' ? 'Holders'
                 : 'Orderbook';
+              const isActive = metric === m;
               return (
                 <button key={m} onClick={() => setMetric(m)}
-                  className={`text-xs px-3 py-1 rounded-lg border ${metric === m ? 'border-white/30 bg-white/10 text-white' : 'border-white/10 text-white/40'}`}>
+                  className={`relative pb-2 transition ${isActive ? 'text-white' : 'text-white/35 hover:text-white/70'}`}>
                   {label}
+                  {isActive && <span className="absolute left-0 right-0 -bottom-px h-px bg-white" />}
                 </button>
               );
             })}
           </div>
-          <div className="flex items-center gap-1">
+          <div className="flex items-center gap-1 text-[12px]">
             {metric === 'volume' && (
               <button onClick={() => setVolumeShare(v => !v)}
-                className={`text-[11px] px-2.5 py-1 rounded-md border transition mr-1 ${
-                  volumeShare
-                    ? 'border-white/30 bg-white/10 text-white'
-                    : 'border-white/10 text-white/30 hover:text-white/60'
-                }`}
+                className={`px-2 py-1 mr-2 transition ${volumeShare ? 'text-white' : 'text-white/30 hover:text-white/60'}`}
                 title="Toggle Share % stacked view">
-                Share %
+                Share%
               </button>
             )}
             {(['30d', '90d', '1y', 'all'] as Range[]).map(r => (
               <button key={r} onClick={() => setRange(r)}
-                className={`text-xs px-2.5 py-1 rounded-md ${range === r ? 'bg-white/10 text-white' : 'text-white/30 hover:text-white/60'}`}>
+                className={`px-2 py-1 tabular-nums transition ${range === r ? 'text-white' : 'text-white/30 hover:text-white/60'}`}>
                 {r === 'all' ? 'All' : r.toUpperCase()}
               </button>
             ))}
           </div>
         </div>
-        <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+        <div className="pt-2">
           {metric === 'orderbook' && v2Market ? (
             <OrderbookView
               market={v2Market}
-              snapshotDate={v2SnapshotDate}
               activeBookIdx={activeBookIdx}
               setActiveBookIdx={setActiveBookIdx}
             />
           ) : (
-          <ResponsiveContainer width="100%" height={300}>
+          <ResponsiveContainer width="100%" height={260}>
             {metric === 'positions' ? (
               <AreaChart data={chartData as any} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
                 <XAxis dataKey="date" tick={{ fill: '#888', fontSize: 11 }} />
@@ -314,7 +470,7 @@ function MarketDetailView() {
           </ResponsiveContainer>
           )}
         </div>
-      </div>
+      </section>
 
       {/* Holders tabs — only on the Holders metric */}
       {metric === 'holders' && (
@@ -395,9 +551,54 @@ function MarketDetailView() {
 
 function Stat({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-xl border border-white/10 bg-white/5 px-3 py-2">
-      <div className="text-[10px] uppercase tracking-wider text-white/40">{label}</div>
-      <div className="mt-0.5 text-base font-semibold text-white tabular-nums">{value}</div>
+    <div className="border-l border-white/[0.08] pl-3 py-1">
+      <div className="text-[10px] uppercase tracking-[0.16em] text-white/35">{label}</div>
+      <div className="mt-0.5 text-[15px] text-white tabular-nums">{value}</div>
+    </div>
+  );
+}
+
+// One hero number with a small label underneath and an optional one-line subline.
+// Hierarchy is size + weight + spacing only — no cards, no borders.
+function HeroNumber({ value, label, sub, subTone }: {
+  value: string; label: string; sub?: string;
+  subTone?: 'up' | 'down' | 'mute';
+}) {
+  const subClass =
+    subTone === 'up'   ? 'text-emerald-400/80' :
+    subTone === 'down' ? 'text-rose-400/80'    :
+                         'text-white/35';
+  return (
+    <div>
+      <div className="text-[36px] leading-none font-medium tracking-tight text-white tabular-nums">{value}</div>
+      <div className="mt-2 text-[13px] text-white/55">{label}</div>
+      {sub && <div className={`mt-1 text-[12px] tabular-nums ${subClass}`}>{sub}</div>}
+    </div>
+  );
+}
+
+// One position column. Label / $value / single compact meta line.
+// Supply + holders collapse into one inline KV with a hairline center-dot
+// separator so the meta sits anchored under the $value rather than
+// floating in a 2-col sub-grid with trailing whitespace.
+function PositionLine({ label, ticker, usd, supply, holders }: {
+  label: string; ticker: string;
+  usd: number; supply: number; holders: number | null;
+}) {
+  const dash = '—';
+  const supplyStr = supply > 0 ? `${fmtCount(supply, '').trim()} ${ticker}` : dash;
+  const holdersStr = holders !== null ? `${holders.toLocaleString()} holders` : `${dash} holders`;
+  return (
+    <div>
+      <div className="text-[11px] uppercase tracking-[0.18em] text-white/35">{label}</div>
+      <div className="mt-2 text-[24px] leading-none font-medium tracking-tight text-white tabular-nums">
+        {usd > 0 ? fmtUsd(usd) : dash}
+      </div>
+      <div className="mt-2 text-[12px] text-white/55">
+        <span className="tabular-nums">{supplyStr}</span>
+        <span className="mx-2 text-white/25">·</span>
+        <span className="tabular-nums">{holdersStr}</span>
+      </div>
     </div>
   );
 }
@@ -483,10 +684,9 @@ function aggregateTicks(rows: V2OrderRow[], side: 'bid' | 'ask'): Tick[] {
 }
 
 function OrderbookView({
-  market, snapshotDate, activeBookIdx, setActiveBookIdx,
+  market, activeBookIdx, setActiveBookIdx,
 }: {
   market: V2MarketBook;
-  snapshotDate: string | null;
   activeBookIdx: number;
   setActiveBookIdx: (i: number) => void;
 }) {
@@ -510,46 +710,61 @@ function OrderbookView({
 
   return (
     <div>
-      {/* Header — book selector (multi-book) + agg toggle + snapshot info */}
-      <div className="flex items-center justify-between gap-2 mb-3 flex-wrap">
-        <div className="flex items-center gap-2 flex-wrap">
-          {market.books.length > 1 && market.books.map((b, i) => (
-            <button key={b.bookAccount} onClick={() => setActiveBookIdx(i)}
-              className={`text-[11px] px-2.5 py-1 rounded-md border ${bookIdx === i ? 'border-white/30 bg-white/10 text-white' : 'border-white/10 text-white/40 hover:text-white/70'}`}
-              title={b.bookAccount}>
-              Book {i + 1} <span className="text-white/40 ml-1">{shortAddr(b.bookAccount)}</span>
-            </button>
-          ))}
-          {(['aggregate','expanded'] as AggMode[]).map(v => (
-            <button key={v} onClick={() => setAggMode(v)}
-              className={`text-[11px] px-2.5 py-1 rounded-md border ${aggMode === v ? 'border-white/30 bg-white/10 text-white' : 'border-white/10 text-white/40 hover:text-white/70'}`}>
-              {v === 'aggregate' ? 'Aggregate' : 'Expanded'}
-            </button>
-          ))}
+      {/* Toolbar — view mode + book selector + search, single row,
+          underline-tab language matching the Activity nav above. */}
+      <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
+        <div className="flex items-center gap-5 flex-wrap text-[13px]">
+          {(['aggregate','expanded'] as AggMode[]).map(v => {
+            const isActive = aggMode === v;
+            return (
+              <button key={v} onClick={() => setAggMode(v)}
+                className={`relative pb-2 transition ${isActive ? 'text-white' : 'text-white/35 hover:text-white/70'}`}>
+                {v === 'aggregate' ? 'Aggregate' : 'Expanded'}
+                {isActive && <span className="absolute left-0 right-0 -bottom-px h-px bg-white" />}
+              </button>
+            );
+          })}
+          {market.books.length > 1 && (
+            <>
+              <span className="h-3 w-px bg-white/10" />
+              {market.books.map((b, i) => {
+                const isActive = bookIdx === i;
+                return (
+                  <button key={b.bookAccount} onClick={() => setActiveBookIdx(i)}
+                    className={`relative pb-2 transition ${isActive ? 'text-white' : 'text-white/35 hover:text-white/70'}`}
+                    title={b.bookAccount}>
+                    Book {i + 1}
+                    {isActive && <span className="absolute left-0 right-0 -bottom-px h-px bg-white" />}
+                  </button>
+                );
+              })}
+            </>
+          )}
         </div>
-        <div className="text-[11px] text-white/40">
-          snapshot {snapshotDate ?? '—'} · book <span className="font-mono">{shortAddr(book.bookAccount)}</span>
+        <div className="relative">
+          <svg className="absolute left-2 top-1/2 -translate-y-1/2 w-3 h-3 text-white/30 pointer-events-none"
+               viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="11" cy="11" r="7" />
+            <line x1="21" y1="21" x2="16.65" y2="16.65" />
+          </svg>
+          <input
+            value={walletSearch}
+            onChange={(e) => setWalletSearch(e.target.value)}
+            placeholder="Search wallets"
+            className="w-[200px] bg-transparent border-b border-white/[0.08] focus:border-white/30 focus:outline-none pl-6 pr-2 py-1 text-[12px] placeholder-white/25 font-mono transition"
+          />
         </div>
       </div>
 
       {/* Stat strip */}
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2 mb-4">
-        <Stat label="Bid top" value={fmtApy(bestBid)} />
-        <Stat label="Ask top" value={fmtApy(bestAsk)} />
+        <Stat label="Bid Top" value={fmtApy(bestBid)} />
+        <Stat label="Ask Top" value={fmtApy(bestAsk)} />
         <Stat label="Spread"  value={fmtSpread(spreadBps)} />
         <Stat label="Bids Σ" value={`${fmtSy(bidTotal)} SY`} />
         <Stat label="Asks Σ" value={`${fmtSy(askTotal)} SY`} />
         <Stat label="Orders" value={`${book.nBids} / ${book.nAsks}`} />
-      </div>
-
-      {/* Search */}
-      <div className="mb-3">
-        <input
-          value={walletSearch}
-          onChange={(e) => setWalletSearch(e.target.value)}
-          placeholder="Filter by wallet address…"
-          className="w-full max-w-md bg-[#0a0a0a]/80 border border-white/10 focus:border-white/30 focus:outline-none rounded-md px-3 py-2 text-xs placeholder-white/20 font-mono"
-        />
       </div>
 
       <UnifiedLadder
