@@ -200,7 +200,7 @@ fi
 
 echo ""
 echo "--- commit + push ---"
-git add web/public/*.json
+git add web/public/*.json web/public/wallet/
 if git diff --cached --quiet; then
   echo "No JSON changes to commit."
 else

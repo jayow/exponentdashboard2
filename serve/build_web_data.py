@@ -1527,15 +1527,39 @@ def build_v2_orderbook_json(con: duckdb.DuckDBPyConnection) -> dict:
 def build_wallet_shards(con: duckdb.DuckDBPyConnection) -> None:
     """Emit one JSON per wallet under web/public/wallet/{addr}.json.
 
-    Filters to wallets with >= 3 events to keep file count reasonable
-    (~20K files for ~50K total wallets indexed). Each shard includes the
-    full event log with per-tx signer-side token deltas, symbol-resolved.
+    Restricted to wallets the UI actually links to — leaderboard +
+    market top-holders + whale signers — so Vercel ships ~50 MB of
+    shards instead of 220 MB for 31K mostly-unreachable wallets. The
+    wallet detail page already renders a "no timeline data" fallback
+    on 404 for wallets that aren't sharded.
     """
     shard_dir = WEB_PUBLIC / "wallet"
     if shard_dir.exists():
         for f in shard_dir.glob("*.json"):
             f.unlink()
     shard_dir.mkdir(parents=True, exist_ok=True)
+
+    referenced: set[str] = set()
+    try:
+        with open(WEB_PUBLIC / "users.json") as f:
+            u = json.load(f)
+        for w in u.get("topWallets", []):  referenced.add(w.get("signer"))
+        for w in u.get("wallets",    []):  referenced.add(w.get("wallet"))
+        for w in u.get("whaleEvents",[]):  referenced.add(w.get("signer"))
+        with open(WEB_PUBLIC / "market_holders.json") as f:
+            mh = json.load(f)
+        for _, e in (mh.get("byMarketLeg") or {}).items():
+            for t in (e.get("top") or [])[:200]:
+                referenced.add(t.get("owner"))
+        with open(WEB_PUBLIC / "holders.json") as f:
+            h = json.load(f)
+        for r in h.get("rows") or []:
+            referenced.add(r.get("wallet"))
+    except FileNotFoundError as e:
+        rprint(f"[yellow]  warn: {e.filename} not built yet; shipping all wallets[/yellow]")
+        referenced = set()
+    referenced.discard(None)
+    rprint(f"  UI-referenced wallets: {len(referenced):,}")
 
     rprint("  fetching per-event token changes…")
     # Build a giant cursor: for each (wallet, sig) emit its events + the wallet's own
@@ -1651,6 +1675,14 @@ def build_wallet_shards(con: duckdb.DuckDBPyConnection) -> None:
     # Ensure wallets with positions but no events still get a shard
     for wallet in positions_by_wallet:
         by_wallet.setdefault(wallet, [])
+
+    # Restrict to wallets the UI links to so Vercel deploy stays well under
+    # size limits. Wallets dropped here render the page's "no timeline data"
+    # fallback when someone types the URL directly.
+    if referenced:
+        before = len(by_wallet)
+        by_wallet = {w: e for w, e in by_wallet.items() if w in referenced}
+        rprint(f"  filtered {before:,} → {len(by_wallet):,} (UI-referenced only)")
 
     rprint(f"  writing {len(by_wallet):,} wallet shards…")
     for wallet, events in by_wallet.items():
