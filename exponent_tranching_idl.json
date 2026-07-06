@@ -1,0 +1,2385 @@
+{
+  "address": "5vD9m4eGgbeccFRUYR36GTJpR7cpreq17riqFAtg7nDL",
+  "metadata": {
+    "name": "exponent_tranching",
+    "version": "0.1.0",
+    "spec": "0.1.0",
+    "description": "Created with Anchor"
+  },
+  "instructions": [
+    {
+      "name": "deposit",
+      "discriminator": [
+        242,
+        35,
+        198,
+        137,
+        82,
+        225,
+        242,
+        182
+      ],
+      "accounts": [
+        {
+          "name": "user",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "market",
+          "writable": true
+        },
+        {
+          "name": "return_model_storage",
+          "writable": true
+        },
+        {
+          "name": "address_lookup_table"
+        },
+        {
+          "name": "sy_program"
+        },
+        {
+          "name": "sy_mint"
+        },
+        {
+          "name": "token_src",
+          "writable": true
+        },
+        {
+          "name": "token_sy_escrow",
+          "writable": true
+        },
+        {
+          "name": "token_lp_dst",
+          "writable": true
+        },
+        {
+          "name": "mint_lp",
+          "writable": true
+        },
+        {
+          "name": "token_program"
+        },
+        {
+          "name": "event_authority"
+        },
+        {
+          "name": "program"
+        }
+      ],
+      "args": [
+        {
+          "name": "params",
+          "type": {
+            "defined": {
+              "name": "DepositParams"
+            }
+          }
+        }
+      ],
+      "returns": {
+        "defined": {
+          "name": "DepositEvent"
+        }
+      }
+    },
+    {
+      "name": "initialize_tranching_market",
+      "discriminator": [
+        68,
+        121,
+        71,
+        233,
+        137,
+        147,
+        126,
+        45
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "market",
+          "writable": true
+        },
+        {
+          "name": "return_model_storage",
+          "writable": true
+        },
+        {
+          "name": "address_lookup_table"
+        },
+        {
+          "name": "sy_program"
+        },
+        {
+          "name": "sy_mint"
+        },
+        {
+          "name": "token_sy_escrow",
+          "writable": true
+        },
+        {
+          "name": "mint_lp_senior",
+          "writable": true
+        },
+        {
+          "name": "mint_lp_junior",
+          "writable": true
+        },
+        {
+          "name": "token_program",
+          "docs": [
+            "Use the old Token program as the implementation for SY and LP tokens"
+          ]
+        },
+        {
+          "name": "system_program"
+        }
+      ],
+      "args": [
+        {
+          "name": "roles",
+          "type": {
+            "defined": {
+              "name": "TranchingMarketRoles"
+            }
+          }
+        },
+        {
+          "name": "risk_config",
+          "type": {
+            "defined": {
+              "name": "TranchingRiskConfig"
+            }
+          }
+        },
+        {
+          "name": "protocol_fee_config",
+          "type": {
+            "defined": {
+              "name": "TranchingProtocolFeeConfig"
+            }
+          }
+        },
+        {
+          "name": "return_model",
+          "type": {
+            "defined": {
+              "name": "TrancheReturnModelUpdate"
+            }
+          }
+        },
+        {
+          "name": "sy_cpi_accounts",
+          "type": {
+            "defined": {
+              "name": "CpiAccounts"
+            }
+          }
+        },
+        {
+          "name": "max_senior_lp_supply",
+          "type": "u64"
+        },
+        {
+          "name": "max_junior_lp_supply",
+          "type": "u64"
+        },
+        {
+          "name": "seed_id",
+          "type": {
+            "array": [
+              "u8",
+              8
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "mint_protocol_fee_shares",
+      "discriminator": [
+        133,
+        34,
+        97,
+        80,
+        246,
+        183,
+        24,
+        168
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "signer": true
+        },
+        {
+          "name": "market",
+          "writable": true
+        },
+        {
+          "name": "protocol_fee_recipient"
+        },
+        {
+          "name": "mint_lp_senior",
+          "writable": true
+        },
+        {
+          "name": "mint_lp_junior",
+          "writable": true
+        },
+        {
+          "name": "token_lp_senior_dst",
+          "writable": true
+        },
+        {
+          "name": "token_lp_junior_dst",
+          "writable": true
+        },
+        {
+          "name": "token_program"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "modify_market",
+      "discriminator": [
+        195,
+        49,
+        4,
+        91,
+        235,
+        161,
+        139,
+        178
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "market",
+          "writable": true
+        },
+        {
+          "name": "return_model_storage",
+          "writable": true
+        },
+        {
+          "name": "address_lookup_table"
+        },
+        {
+          "name": "sy_program"
+        },
+        {
+          "name": "system_program"
+        }
+      ],
+      "args": [
+        {
+          "name": "params",
+          "type": {
+            "defined": {
+              "name": "ModifyMarketParams"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "set_market_paused",
+      "discriminator": [
+        233,
+        31,
+        161,
+        248,
+        178,
+        111,
+        102,
+        65
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "signer": true
+        },
+        {
+          "name": "market",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "paused",
+          "type": "bool"
+        }
+      ]
+    },
+    {
+      "name": "withdraw",
+      "discriminator": [
+        183,
+        18,
+        70,
+        156,
+        148,
+        109,
+        161,
+        34
+      ],
+      "accounts": [
+        {
+          "name": "user",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "market",
+          "writable": true
+        },
+        {
+          "name": "return_model_storage",
+          "writable": true
+        },
+        {
+          "name": "address_lookup_table"
+        },
+        {
+          "name": "sy_program"
+        },
+        {
+          "name": "sy_mint"
+        },
+        {
+          "name": "token_lp_src",
+          "writable": true
+        },
+        {
+          "name": "token_sy_escrow",
+          "writable": true
+        },
+        {
+          "name": "token_dst",
+          "writable": true
+        },
+        {
+          "name": "mint_lp",
+          "writable": true
+        },
+        {
+          "name": "token_program"
+        },
+        {
+          "name": "event_authority"
+        },
+        {
+          "name": "program"
+        }
+      ],
+      "args": [
+        {
+          "name": "params",
+          "type": {
+            "defined": {
+              "name": "WithdrawParams"
+            }
+          }
+        }
+      ],
+      "returns": {
+        "defined": {
+          "name": "WithdrawEvent"
+        }
+      }
+    },
+    {
+      "name": "wrapper_deposit",
+      "discriminator": [
+        136,
+        36,
+        56,
+        133,
+        237,
+        66,
+        224,
+        149
+      ],
+      "accounts": [
+        {
+          "name": "user",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "market",
+          "writable": true
+        },
+        {
+          "name": "return_model_storage",
+          "writable": true
+        },
+        {
+          "name": "address_lookup_table"
+        },
+        {
+          "name": "sy_program"
+        },
+        {
+          "name": "sy_mint"
+        },
+        {
+          "name": "token_src",
+          "writable": true
+        },
+        {
+          "name": "token_sy_escrow",
+          "writable": true
+        },
+        {
+          "name": "token_lp_dst",
+          "writable": true
+        },
+        {
+          "name": "mint_lp",
+          "writable": true
+        },
+        {
+          "name": "token_program"
+        },
+        {
+          "name": "event_authority"
+        },
+        {
+          "name": "program"
+        }
+      ],
+      "args": [
+        {
+          "name": "tranche_side",
+          "type": {
+            "defined": {
+              "name": "TrancheSide"
+            }
+          }
+        },
+        {
+          "name": "amount_base",
+          "type": "u64"
+        },
+        {
+          "name": "min_lp_out",
+          "type": "u64"
+        },
+        {
+          "name": "mint_sy_accounts_until",
+          "type": "u8"
+        }
+      ],
+      "returns": {
+        "defined": {
+          "name": "WrapperDepositEvent"
+        }
+      }
+    },
+    {
+      "name": "wrapper_withdraw",
+      "discriminator": [
+        129,
+        83,
+        80,
+        33,
+        205,
+        187,
+        240,
+        12
+      ],
+      "accounts": [
+        {
+          "name": "user",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "market",
+          "writable": true
+        },
+        {
+          "name": "return_model_storage",
+          "writable": true
+        },
+        {
+          "name": "address_lookup_table"
+        },
+        {
+          "name": "sy_program"
+        },
+        {
+          "name": "sy_mint"
+        },
+        {
+          "name": "token_lp_src",
+          "writable": true
+        },
+        {
+          "name": "token_sy_escrow",
+          "writable": true
+        },
+        {
+          "name": "token_dst",
+          "writable": true
+        },
+        {
+          "name": "mint_lp",
+          "writable": true
+        },
+        {
+          "name": "token_program"
+        },
+        {
+          "name": "event_authority"
+        },
+        {
+          "name": "program"
+        }
+      ],
+      "args": [
+        {
+          "name": "tranche_side",
+          "type": {
+            "defined": {
+              "name": "TrancheSide"
+            }
+          }
+        },
+        {
+          "name": "lp_amount_in",
+          "type": "u64"
+        },
+        {
+          "name": "min_base_out",
+          "type": "u64"
+        },
+        {
+          "name": "redeem_sy_accounts_until",
+          "type": "u8"
+        }
+      ],
+      "returns": {
+        "defined": {
+          "name": "WrapperWithdrawEvent"
+        }
+      }
+    }
+  ],
+  "accounts": [
+    {
+      "name": "ExponentTranchingMarket",
+      "discriminator": [
+        119,
+        38,
+        120,
+        122,
+        60,
+        24,
+        58,
+        160
+      ]
+    },
+    {
+      "name": "ExponentTranchingMarketReturnModel",
+      "discriminator": [
+        156,
+        251,
+        98,
+        150,
+        78,
+        127,
+        196,
+        77
+      ]
+    }
+  ],
+  "events": [
+    {
+      "name": "DepositEvent",
+      "discriminator": [
+        120,
+        248,
+        61,
+        83,
+        31,
+        142,
+        107,
+        144
+      ]
+    },
+    {
+      "name": "MarketPausedSetEvent",
+      "discriminator": [
+        67,
+        128,
+        115,
+        202,
+        33,
+        149,
+        134,
+        101
+      ]
+    },
+    {
+      "name": "MintProtocolFeeSharesEvent",
+      "discriminator": [
+        26,
+        46,
+        47,
+        252,
+        3,
+        204,
+        112,
+        243
+      ]
+    },
+    {
+      "name": "WithdrawEvent",
+      "discriminator": [
+        22,
+        9,
+        133,
+        26,
+        160,
+        44,
+        71,
+        192
+      ]
+    },
+    {
+      "name": "WrapperDepositEvent",
+      "discriminator": [
+        67,
+        103,
+        175,
+        214,
+        117,
+        136,
+        202,
+        172
+      ]
+    },
+    {
+      "name": "WrapperWithdrawEvent",
+      "discriminator": [
+        125,
+        130,
+        107,
+        122,
+        122,
+        132,
+        122,
+        50
+      ]
+    }
+  ],
+  "errors": [
+    {
+      "code": 6000,
+      "name": "MissingRequiredSignature",
+      "msg": "Missing required signature"
+    },
+    {
+      "code": 6001,
+      "name": "UnauthorizedRole",
+      "msg": "Signer is not authorized for this role"
+    },
+    {
+      "code": 6002,
+      "name": "AmountTooSmall",
+      "msg": "Amount is too small"
+    },
+    {
+      "code": 6003,
+      "name": "MathOverflow",
+      "msg": "Mathematical overflow"
+    },
+    {
+      "code": 6004,
+      "name": "MarketNotEmpty",
+      "msg": "Market must be empty for this operation"
+    },
+    {
+      "code": 6005,
+      "name": "RewardsDisabled",
+      "msg": "Rewards are disabled for this market"
+    },
+    {
+      "code": 6006,
+      "name": "InvalidReturnModelConfig",
+      "msg": "Invalid return allocation model configuration"
+    },
+    {
+      "code": 6007,
+      "name": "InvalidProtocolFeeConfig",
+      "msg": "Invalid protocol fee configuration"
+    },
+    {
+      "code": 6008,
+      "name": "InvalidRiskConfig",
+      "msg": "Invalid risk configuration"
+    },
+    {
+      "code": 6009,
+      "name": "MarketPaused",
+      "msg": "Market is paused"
+    },
+    {
+      "code": 6010,
+      "name": "InvalidLpMint",
+      "msg": "Invalid LP mint"
+    },
+    {
+      "code": 6011,
+      "name": "InvalidPda",
+      "msg": "Invalid PDA"
+    },
+    {
+      "code": 6012,
+      "name": "UnsupportedMint",
+      "msg": "Unsupported token mint"
+    },
+    {
+      "code": 6013,
+      "name": "InvalidSyEscrow",
+      "msg": "Invalid SY escrow account"
+    },
+    {
+      "code": 6014,
+      "name": "InvalidMarketAuthority",
+      "msg": "Invalid market authority"
+    },
+    {
+      "code": 6015,
+      "name": "MinLpOutNotMet",
+      "msg": "Minimum LP output not met"
+    },
+    {
+      "code": 6016,
+      "name": "LpSupplyMaximumExceeded",
+      "msg": "LP supply maximum exceeded"
+    },
+    {
+      "code": 6017,
+      "name": "SeniorDepositDisabledInLoss",
+      "msg": "Senior deposit is disabled while senior impermanent loss exists"
+    },
+    {
+      "code": 6018,
+      "name": "SeniorDepositStateNotAllowed",
+      "msg": "Senior deposit is not allowed in the current market state"
+    },
+    {
+      "code": 6019,
+      "name": "JuniorDepositStateNotAllowed",
+      "msg": "Junior deposit is not allowed in the current market state"
+    },
+    {
+      "code": 6020,
+      "name": "CoverageExceeded",
+      "msg": "Post-deposit coverage requirement would be violated"
+    },
+    {
+      "code": 6021,
+      "name": "MinAmountOutNotMet",
+      "msg": "Minimum withdrawal output not met"
+    },
+    {
+      "code": 6022,
+      "name": "InsufficientTrancheLiquidity",
+      "msg": "Insufficient tranche SY liquidity"
+    },
+    {
+      "code": 6023,
+      "name": "InsufficientSyEscrowLiquidity",
+      "msg": "Insufficient SY escrow liquidity"
+    },
+    {
+      "code": 6024,
+      "name": "SeniorWithdrawStateNotAllowed",
+      "msg": "Senior withdrawal is not allowed in the current market state"
+    },
+    {
+      "code": 6025,
+      "name": "JuniorWithdrawStateNotAllowed",
+      "msg": "Junior withdrawal is not allowed in the current market state"
+    },
+    {
+      "code": 6026,
+      "name": "InvalidMarketAccountData",
+      "msg": "Market account has invalid data"
+    },
+    {
+      "code": 6027,
+      "name": "MarketAlreadyInitialized",
+      "msg": "Market account has already been initialized"
+    }
+  ],
+  "types": [
+    {
+      "name": "CpiAccounts",
+      "docs": [
+        "Account lists for validating CPI calls to the SY program"
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "get_sy_state",
+            "docs": [
+              "Fetch SY state"
+            ],
+            "type": {
+              "vec": {
+                "defined": {
+                  "name": "CpiInterfaceContext"
+                }
+              }
+            }
+          },
+          {
+            "name": "deposit_sy",
+            "docs": [
+              "Deposit SY into personal account owned by market"
+            ],
+            "type": {
+              "vec": {
+                "defined": {
+                  "name": "CpiInterfaceContext"
+                }
+              }
+            }
+          },
+          {
+            "name": "withdraw_sy",
+            "docs": [
+              "Withdraw SY from personal account owned by market"
+            ],
+            "type": {
+              "vec": {
+                "defined": {
+                  "name": "CpiInterfaceContext"
+                }
+              }
+            }
+          },
+          {
+            "name": "claim_emission",
+            "docs": [
+              "Settle rewards for market-owned accounts"
+            ],
+            "type": {
+              "vec": {
+                "vec": {
+                  "defined": {
+                    "name": "CpiInterfaceContext"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "name": "get_position_state",
+            "docs": [
+              "Get personal yield position"
+            ],
+            "type": {
+              "vec": {
+                "defined": {
+                  "name": "CpiInterfaceContext"
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "CpiInterfaceContext",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "alt_index",
+            "docs": [
+              "Address-lookup-table index"
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "is_signer",
+            "type": "bool"
+          },
+          {
+            "name": "is_writable",
+            "type": "bool"
+          }
+        ]
+      }
+    },
+    {
+      "name": "DepositEvent",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "user",
+            "type": "pubkey"
+          },
+          {
+            "name": "market",
+            "type": "pubkey"
+          },
+          {
+            "name": "tranche_side",
+            "type": {
+              "defined": {
+                "name": "TrancheSide"
+              }
+            }
+          },
+          {
+            "name": "token_src",
+            "type": "pubkey"
+          },
+          {
+            "name": "token_sy_escrow",
+            "type": "pubkey"
+          },
+          {
+            "name": "token_lp_dst",
+            "type": "pubkey"
+          },
+          {
+            "name": "mint_lp",
+            "type": "pubkey"
+          },
+          {
+            "name": "amount_in",
+            "type": "u64"
+          },
+          {
+            "name": "value_allocated",
+            "type": {
+              "defined": {
+                "name": "Number"
+              }
+            }
+          },
+          {
+            "name": "lp_out",
+            "type": "u64"
+          },
+          {
+            "name": "new_total_lp_supply",
+            "type": "u64"
+          },
+          {
+            "name": "sy_exchange_rate",
+            "type": {
+              "defined": {
+                "name": "Number"
+              }
+            }
+          },
+          {
+            "name": "senior_raw_nav",
+            "type": {
+              "defined": {
+                "name": "Number"
+              }
+            }
+          },
+          {
+            "name": "junior_raw_nav",
+            "type": {
+              "defined": {
+                "name": "Number"
+              }
+            }
+          },
+          {
+            "name": "senior_effective_nav",
+            "type": {
+              "defined": {
+                "name": "Number"
+              }
+            }
+          },
+          {
+            "name": "junior_effective_nav",
+            "type": {
+              "defined": {
+                "name": "Number"
+              }
+            }
+          },
+          {
+            "name": "senior_loss",
+            "type": {
+              "defined": {
+                "name": "Number"
+              }
+            }
+          },
+          {
+            "name": "junior_loss",
+            "type": {
+              "defined": {
+                "name": "Number"
+              }
+            }
+          },
+          {
+            "name": "senior_premium",
+            "type": {
+              "defined": {
+                "name": "Number"
+              }
+            }
+          },
+          {
+            "name": "junior_premium",
+            "type": {
+              "defined": {
+                "name": "Number"
+              }
+            }
+          },
+          {
+            "name": "utilization",
+            "type": {
+              "defined": {
+                "name": "Number"
+              }
+            }
+          },
+          {
+            "name": "senior_lp_price_net_asset",
+            "type": {
+              "defined": {
+                "name": "Number"
+              }
+            }
+          },
+          {
+            "name": "junior_lp_price_net_asset",
+            "type": {
+              "defined": {
+                "name": "Number"
+              }
+            }
+          },
+          {
+            "name": "timestamp",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "DepositParams",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "tranche_side",
+            "type": {
+              "defined": {
+                "name": "TrancheSide"
+              }
+            }
+          },
+          {
+            "name": "amount_in",
+            "type": "u64"
+          },
+          {
+            "name": "min_lp_out",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ExponentTranchingMarket",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "address_lookup_table",
+            "docs": [
+              "Address to ALT"
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "sy_mint",
+            "docs": [
+              "Standardized yield token mint"
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "sy_program",
+            "docs": [
+              "Linked SY program id"
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "token_sy_escrow",
+            "docs": [
+              "Escrow token account that holds SY owned by the market"
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "mint_lp_senior",
+            "docs": [
+              "Senior LP mint"
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "mint_lp_junior",
+            "docs": [
+              "Junior LP mint"
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "self_address",
+            "docs": [
+              "Authority PDA for CPI calls owned by the market state"
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "return_model_storage",
+            "docs": [
+              "PDA account that stores the active return allocation model."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "signer_bump",
+            "docs": [
+              "PDA signer bump"
+            ],
+            "type": {
+              "array": [
+                "u8",
+                1
+              ]
+            }
+          },
+          {
+            "name": "return_model_storage_bump",
+            "docs": [
+              "Return model storage PDA bump"
+            ],
+            "type": {
+              "array": [
+                "u8",
+                1
+              ]
+            }
+          },
+          {
+            "name": "seed_id",
+            "docs": [
+              "Unique seed id for the market"
+            ],
+            "type": {
+              "array": [
+                "u8",
+                8
+              ]
+            }
+          },
+          {
+            "name": "status_flags",
+            "docs": [
+              "Global status flags"
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "market_state",
+            "docs": [
+              "Current market lifecycle state"
+            ],
+            "type": {
+              "defined": {
+                "name": "TranchingMarketState"
+              }
+            }
+          },
+          {
+            "name": "financials",
+            "docs": [
+              "Core financial state"
+            ],
+            "type": {
+              "defined": {
+                "name": "TranchingMarketFinancials"
+              }
+            }
+          },
+          {
+            "name": "tranche_supply_state",
+            "docs": [
+              "Tranche LP supply and escrow state"
+            ],
+            "type": {
+              "defined": {
+                "name": "TrancheSupplyState"
+              }
+            }
+          },
+          {
+            "name": "tranche_asset_state",
+            "docs": [
+              "Tranche-owned SY balances"
+            ],
+            "type": {
+              "defined": {
+                "name": "TrancheAssetState"
+              }
+            }
+          },
+          {
+            "name": "risk_config",
+            "docs": [
+              "Risk parameters"
+            ],
+            "type": {
+              "defined": {
+                "name": "TranchingRiskConfig"
+              }
+            }
+          },
+          {
+            "name": "protocol_fee_config",
+            "docs": [
+              "Protocol fee configuration"
+            ],
+            "type": {
+              "defined": {
+                "name": "TranchingProtocolFeeConfig"
+              }
+            }
+          },
+          {
+            "name": "return_model",
+            "docs": [
+              "Return allocation model configuration"
+            ],
+            "type": {
+              "defined": {
+                "name": "TrancheReturnModel"
+              }
+            }
+          },
+          {
+            "name": "roles",
+            "docs": [
+              "Role memberships for market control"
+            ],
+            "type": {
+              "defined": {
+                "name": "TranchingMarketRoles"
+              }
+            }
+          },
+          {
+            "name": "sy_cpi_accounts",
+            "docs": [
+              "Record of CPI accounts for the linked SY program"
+            ],
+            "type": {
+              "defined": {
+                "name": "CpiAccounts"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "ExponentTranchingMarketReturnModel",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "market",
+            "type": "pubkey"
+          },
+          {
+            "name": "return_model",
+            "type": {
+              "defined": {
+                "name": "TrancheReturnModel"
+              }
+            }
+          },
+          {
+            "name": "reserved",
+            "type": {
+              "array": [
+                "u8",
+                128
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "MarketPausedSetEvent",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "market",
+            "type": "pubkey"
+          },
+          {
+            "name": "paused",
+            "type": "bool"
+          },
+          {
+            "name": "status_flags",
+            "type": "u8"
+          },
+          {
+            "name": "timestamp",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "MintProtocolFeeSharesEvent",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "market",
+            "type": "pubkey"
+          },
+          {
+            "name": "protocol_fee_recipient",
+            "type": "pubkey"
+          },
+          {
+            "name": "token_lp_senior_dst",
+            "type": "pubkey"
+          },
+          {
+            "name": "token_lp_junior_dst",
+            "type": "pubkey"
+          },
+          {
+            "name": "senior_lp_shares_minted",
+            "type": "u64"
+          },
+          {
+            "name": "junior_lp_shares_minted",
+            "type": "u64"
+          },
+          {
+            "name": "timestamp",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ModifyMarketParams",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "risk_config",
+            "type": {
+              "option": {
+                "defined": {
+                  "name": "TranchingRiskConfig"
+                }
+              }
+            }
+          },
+          {
+            "name": "protocol_fee_config",
+            "type": {
+              "option": {
+                "defined": {
+                  "name": "TranchingProtocolFeeConfig"
+                }
+              }
+            }
+          },
+          {
+            "name": "return_model",
+            "type": {
+              "option": {
+                "defined": {
+                  "name": "TrancheReturnModelUpdate"
+                }
+              }
+            }
+          },
+          {
+            "name": "sy_cpi_accounts",
+            "type": {
+              "option": {
+                "defined": {
+                  "name": "CpiAccounts"
+                }
+              }
+            }
+          },
+          {
+            "name": "address_lookup_table",
+            "type": {
+              "option": "pubkey"
+            }
+          },
+          {
+            "name": "roles",
+            "type": {
+              "option": {
+                "defined": {
+                  "name": "TranchingMarketRoles"
+                }
+              }
+            }
+          },
+          {
+            "name": "max_senior_lp_supply",
+            "type": {
+              "option": "u64"
+            }
+          },
+          {
+            "name": "max_junior_lp_supply",
+            "type": {
+              "option": "u64"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "Number",
+      "docs": [
+        "High precision number, stored as 4 u64 words in little endian"
+      ],
+      "repr": {
+        "kind": "c"
+      },
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "array": [
+              "u64",
+              4
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "PiecewiseLinearCurveParams",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "points",
+            "type": {
+              "vec": "u64"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "PiecewiseLinearCurvePoint",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "utilization",
+            "type": {
+              "defined": {
+                "name": "Number"
+              }
+            }
+          },
+          {
+            "name": "y",
+            "type": {
+              "defined": {
+                "name": "Number"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "TrancheAssetState",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "senior_sy_amount",
+            "docs": [
+              "SY balance owned by the senior tranche"
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "junior_sy_amount",
+            "docs": [
+              "SY balance owned by the junior tranche"
+            ],
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "TrancheReturnModel",
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "UtilizationGuidedCurve",
+            "fields": [
+              {
+                "defined": {
+                  "name": "UtilizationGuidedCurveParams"
+                }
+              }
+            ]
+          },
+          {
+            "name": "PiecewiseLinearCurve",
+            "fields": [
+              {
+                "defined": {
+                  "name": "PiecewiseLinearCurveParams"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "TrancheReturnModelUpdate",
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "UtilizationGuidedCurve",
+            "fields": [
+              {
+                "defined": {
+                  "name": "UtilizationGuidedCurveParams"
+                }
+              }
+            ]
+          },
+          {
+            "name": "PiecewiseLinearCurve",
+            "fields": [
+              {
+                "vec": {
+                  "defined": {
+                    "name": "PiecewiseLinearCurvePoint"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "TrancheSide",
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "Senior"
+          },
+          {
+            "name": "Junior"
+          }
+        ]
+      }
+    },
+    {
+      "name": "TrancheSupplyState",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "total_senior_lp_supply",
+            "docs": [
+              "Total senior LP supply"
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "total_junior_lp_supply",
+            "docs": [
+              "Total junior LP supply"
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "max_senior_lp_supply",
+            "docs": [
+              "Optional max senior LP supply"
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "max_junior_lp_supply",
+            "docs": [
+              "Optional max junior LP supply"
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "pending_senior_protocol_fee_lp_shares",
+            "docs": [
+              "Protocol fee senior LP shares accrued but not minted yet"
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "pending_junior_protocol_fee_lp_shares",
+            "docs": [
+              "Protocol fee junior LP shares accrued but not minted yet"
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "pending_senior_deposit_protocol_fee_lp_shares",
+            "docs": [
+              "Senior deposit protocol fee LP shares accrued but not minted yet"
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "pending_junior_deposit_protocol_fee_lp_shares",
+            "docs": [
+              "Junior deposit protocol fee LP shares accrued but not minted yet"
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "pending_senior_withdraw_protocol_fee_lp_shares",
+            "docs": [
+              "Senior withdrawal protocol fee LP shares accrued but not minted yet"
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "pending_junior_withdraw_protocol_fee_lp_shares",
+            "docs": [
+              "Junior withdrawal protocol fee LP shares accrued but not minted yet"
+            ],
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "TranchingMarketFinancials",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "sr_raw_net_asset",
+            "docs": [
+              "Senior raw net asset value"
+            ],
+            "type": {
+              "defined": {
+                "name": "Number"
+              }
+            }
+          },
+          {
+            "name": "jr_raw_net_asset",
+            "docs": [
+              "Junior raw net asset value"
+            ],
+            "type": {
+              "defined": {
+                "name": "Number"
+              }
+            }
+          },
+          {
+            "name": "sr_effective_net_asset",
+            "docs": [
+              "Senior effective net asset value"
+            ],
+            "type": {
+              "defined": {
+                "name": "Number"
+              }
+            }
+          },
+          {
+            "name": "jr_effective_net_asset",
+            "docs": [
+              "Junior effective net asset value"
+            ],
+            "type": {
+              "defined": {
+                "name": "Number"
+              }
+            }
+          },
+          {
+            "name": "sr_impermanent_loss",
+            "docs": [
+              "Senior impermanent loss balance"
+            ],
+            "type": {
+              "defined": {
+                "name": "Number"
+              }
+            }
+          },
+          {
+            "name": "jr_impermanent_loss",
+            "docs": [
+              "Junior impermanent loss balance"
+            ],
+            "type": {
+              "defined": {
+                "name": "Number"
+              }
+            }
+          },
+          {
+            "name": "utilization",
+            "docs": [
+              "Current utilization"
+            ],
+            "type": {
+              "defined": {
+                "name": "Number"
+              }
+            }
+          },
+          {
+            "name": "current_junior_return_share",
+            "docs": [
+              "Last distributed junior return share"
+            ],
+            "type": {
+              "defined": {
+                "name": "Number"
+              }
+            }
+          },
+          {
+            "name": "tw_junior_return_share_accrued",
+            "docs": [
+              "Accrued time-weighted junior return share"
+            ],
+            "type": {
+              "defined": {
+                "name": "Number"
+              }
+            }
+          },
+          {
+            "name": "last_sync_ts",
+            "docs": [
+              "Last market sync timestamp"
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "last_distribution_ts",
+            "docs": [
+              "Last yield distribution timestamp"
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "fixed_term_end_ts",
+            "docs": [
+              "Fixed-term end timestamp, if active"
+            ],
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "TranchingMarketRoles",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "admin",
+            "type": {
+              "vec": "pubkey"
+            }
+          },
+          {
+            "name": "sentinel",
+            "type": {
+              "vec": "pubkey"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "TranchingMarketState",
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "Uninitialized"
+          },
+          {
+            "name": "Active"
+          },
+          {
+            "name": "FixedTermRecovery"
+          },
+          {
+            "name": "Paused"
+          }
+        ]
+      }
+    },
+    {
+      "name": "TranchingProtocolFeeConfig",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "protocol_fee_recipient",
+            "docs": [
+              "Protocol fee recipient that receives minted LP fee shares"
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "sr_protocol_fee",
+            "docs": [
+              "Protocol fee charged on senior-side yield retained by senior"
+            ],
+            "type": {
+              "defined": {
+                "name": "Number"
+              }
+            }
+          },
+          {
+            "name": "jr_protocol_fee",
+            "docs": [
+              "Protocol fee charged on junior-side raw appreciation retained by junior"
+            ],
+            "type": {
+              "defined": {
+                "name": "Number"
+              }
+            }
+          },
+          {
+            "name": "junior_return_protocol_fee",
+            "docs": [
+              "Protocol fee charged on senior return allocated to junior"
+            ],
+            "type": {
+              "defined": {
+                "name": "Number"
+              }
+            }
+          },
+          {
+            "name": "senior_deposit_protocol_fee",
+            "docs": [
+              "Protocol fee charged on senior tranche deposits"
+            ],
+            "type": {
+              "defined": {
+                "name": "Number"
+              }
+            }
+          },
+          {
+            "name": "junior_deposit_protocol_fee",
+            "docs": [
+              "Protocol fee charged on junior tranche deposits"
+            ],
+            "type": {
+              "defined": {
+                "name": "Number"
+              }
+            }
+          },
+          {
+            "name": "senior_withdraw_protocol_fee",
+            "docs": [
+              "Protocol fee charged on senior tranche withdrawals"
+            ],
+            "type": {
+              "defined": {
+                "name": "Number"
+              }
+            }
+          },
+          {
+            "name": "junior_withdraw_protocol_fee",
+            "docs": [
+              "Protocol fee charged on junior tranche withdrawals"
+            ],
+            "type": {
+              "defined": {
+                "name": "Number"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "TranchingRiskConfig",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "min_coverage",
+            "docs": [
+              "Minimum coverage requirement."
+            ],
+            "type": {
+              "defined": {
+                "name": "Number"
+              }
+            }
+          },
+          {
+            "name": "beta",
+            "docs": [
+              "Junior downside beta."
+            ],
+            "type": {
+              "defined": {
+                "name": "Number"
+              }
+            }
+          },
+          {
+            "name": "liquidation_utilization",
+            "docs": [
+              "Liquidation utilization threshold."
+            ],
+            "type": {
+              "defined": {
+                "name": "Number"
+              }
+            }
+          },
+          {
+            "name": "fixed_term_duration_sec",
+            "docs": [
+              "Fixed-term observation period duration"
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "min_deposit_amount",
+            "docs": [
+              "Min deposit amount in underlying units"
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "sr_self_liquidation_bonus",
+            "docs": [
+              "Senior self-liquidation bonus."
+            ],
+            "type": {
+              "defined": {
+                "name": "Number"
+              }
+            }
+          },
+          {
+            "name": "sr_net_asset_dust_tolerance",
+            "docs": [
+              "Senior NAV dust tolerance."
+            ],
+            "type": {
+              "defined": {
+                "name": "Number"
+              }
+            }
+          },
+          {
+            "name": "jr_net_asset_dust_tolerance",
+            "docs": [
+              "Junior NAV dust tolerance."
+            ],
+            "type": {
+              "defined": {
+                "name": "Number"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "UtilizationGuidedCurveParams",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "junior_share_at_target_utilization",
+            "type": {
+              "defined": {
+                "name": "Number"
+              }
+            }
+          },
+          {
+            "name": "last_target_shift_ts",
+            "type": "i64"
+          },
+          {
+            "name": "max_target_shift_speed",
+            "type": {
+              "defined": {
+                "name": "Number"
+              }
+            }
+          },
+          {
+            "name": "zero_utilization_junior_share_discount",
+            "type": {
+              "defined": {
+                "name": "Number"
+              }
+            }
+          },
+          {
+            "name": "full_utilization_junior_share_premium",
+            "type": {
+              "defined": {
+                "name": "Number"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "WithdrawEvent",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "user",
+            "type": "pubkey"
+          },
+          {
+            "name": "market",
+            "type": "pubkey"
+          },
+          {
+            "name": "tranche_side",
+            "type": {
+              "defined": {
+                "name": "TrancheSide"
+              }
+            }
+          },
+          {
+            "name": "token_lp_src",
+            "type": "pubkey"
+          },
+          {
+            "name": "token_sy_escrow",
+            "type": "pubkey"
+          },
+          {
+            "name": "token_dst",
+            "type": "pubkey"
+          },
+          {
+            "name": "mint_lp",
+            "type": "pubkey"
+          },
+          {
+            "name": "lp_amount_in",
+            "type": "u64"
+          },
+          {
+            "name": "amount_out",
+            "type": "u64"
+          },
+          {
+            "name": "value_redeemed",
+            "type": {
+              "defined": {
+                "name": "Number"
+              }
+            }
+          },
+          {
+            "name": "new_total_lp_supply",
+            "type": "u64"
+          },
+          {
+            "name": "sy_exchange_rate",
+            "type": {
+              "defined": {
+                "name": "Number"
+              }
+            }
+          },
+          {
+            "name": "senior_raw_nav",
+            "type": {
+              "defined": {
+                "name": "Number"
+              }
+            }
+          },
+          {
+            "name": "junior_raw_nav",
+            "type": {
+              "defined": {
+                "name": "Number"
+              }
+            }
+          },
+          {
+            "name": "senior_effective_nav",
+            "type": {
+              "defined": {
+                "name": "Number"
+              }
+            }
+          },
+          {
+            "name": "junior_effective_nav",
+            "type": {
+              "defined": {
+                "name": "Number"
+              }
+            }
+          },
+          {
+            "name": "senior_loss",
+            "type": {
+              "defined": {
+                "name": "Number"
+              }
+            }
+          },
+          {
+            "name": "junior_loss",
+            "type": {
+              "defined": {
+                "name": "Number"
+              }
+            }
+          },
+          {
+            "name": "senior_premium",
+            "type": {
+              "defined": {
+                "name": "Number"
+              }
+            }
+          },
+          {
+            "name": "junior_premium",
+            "type": {
+              "defined": {
+                "name": "Number"
+              }
+            }
+          },
+          {
+            "name": "utilization",
+            "type": {
+              "defined": {
+                "name": "Number"
+              }
+            }
+          },
+          {
+            "name": "senior_lp_price_net_asset",
+            "type": {
+              "defined": {
+                "name": "Number"
+              }
+            }
+          },
+          {
+            "name": "junior_lp_price_net_asset",
+            "type": {
+              "defined": {
+                "name": "Number"
+              }
+            }
+          },
+          {
+            "name": "timestamp",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "WithdrawParams",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "tranche_side",
+            "type": {
+              "defined": {
+                "name": "TrancheSide"
+              }
+            }
+          },
+          {
+            "name": "lp_amount_in",
+            "type": "u64"
+          },
+          {
+            "name": "min_amount_out",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "WrapperDepositEvent",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "user",
+            "type": "pubkey"
+          },
+          {
+            "name": "market",
+            "type": "pubkey"
+          },
+          {
+            "name": "tranche_side",
+            "type": {
+              "defined": {
+                "name": "TrancheSide"
+              }
+            }
+          },
+          {
+            "name": "amount_base_in",
+            "type": "u64"
+          },
+          {
+            "name": "amount_sy_in",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "WrapperWithdrawEvent",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "user",
+            "type": "pubkey"
+          },
+          {
+            "name": "market",
+            "type": "pubkey"
+          },
+          {
+            "name": "tranche_side",
+            "type": {
+              "defined": {
+                "name": "TrancheSide"
+              }
+            }
+          },
+          {
+            "name": "lp_amount_in",
+            "type": "u64"
+          },
+          {
+            "name": "amount_base_out",
+            "type": "u64"
+          }
+        ]
+      }
+    }
+  ],
+  "constants": [
+    {
+      "name": "MARKET_RETURN_MODEL_SEED",
+      "type": "bytes",
+      "value": "[109, 97, 114, 107, 101, 116, 95, 114, 101, 116, 117, 114, 110, 95, 109, 111, 100, 101, 108]"
+    },
+    {
+      "name": "MARKET_SEED",
+      "type": "bytes",
+      "value": "[109, 97, 114, 107, 101, 116]"
+    },
+    {
+      "name": "TOKEN_SY_ESCROW_SEED",
+      "type": "bytes",
+      "value": "[116, 111, 107, 101, 110, 95, 115, 121, 95, 101, 115, 99, 114, 111, 119]"
+    }
+  ]
+}

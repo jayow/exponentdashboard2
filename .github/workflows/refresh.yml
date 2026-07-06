@@ -15,7 +15,10 @@ concurrency:
 jobs:
   refresh:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # 120: the pipeline outgrew 60 (daily runs were cancelled at 1h00m from
+    # 2026-07-03), and the strategy-vault executions extractor does a one-time
+    # ~17.6K-tx backfill on warehouses that predate its table.
+    timeout-minutes: 120
     permissions:
       contents: write
 
@@ -115,6 +118,17 @@ jobs:
           run extract_lst_rates       python -m extract_load.extract_lst_rates
           run extract_v2_markets      python -m extract_load.extract_v2_markets
           run extract_v2_books        python -m extract_load.extract_v2_books
+          # Strategy vaults: states before obligations/holders (both read the
+          # latest states snapshot); actions consumes the signatures cursor.
+          run extract_sv_registry     python -m extract_load.extract_strategy_vault_registry
+          run extract_sv_states       python -m extract_load.extract_strategy_vault_states
+          run extract_sv_obligations  python -m extract_load.extract_strategy_vault_obligations
+          run extract_sv_proposals    python -m extract_load.extract_strategy_vault_proposals
+          run extract_sv_withdrawals  python -m extract_load.extract_strategy_vault_withdrawals
+          run extract_sv_signatures   python -m extract_load.extract_strategy_vault_signatures
+          run extract_sv_actions      python -m extract_load.extract_strategy_vault_actions
+          run extract_sv_executions   python -m extract_load.extract_strategy_vault_executions
+          run extract_sv_holders      python -m extract_load.extract_strategy_vault_holders
           if [ $failed -gt 0 ]; then
             echo "::warning::$failed extractor(s) failed — dbt + serve will run on partial data"
           fi
@@ -156,7 +170,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add web/public/*.json
+          git add web/public/*.json web/public/strategy-txns/
           if git diff --cached --quiet; then
             echo "No JSON changes to commit."
           else

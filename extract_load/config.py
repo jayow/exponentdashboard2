@@ -31,12 +31,21 @@ EXPONENT_CLMM_PROGRAM = "XPC1MM4dYACDfykNuXYZ5una2DsMDWL24CrYubCvarC"
 EXPONENT_XPBOOK_PROGRAM  = "XPBookgQTN2p8Yw1C2La35XkPMmZTCEYH77AdReVvK1"
 EXPONENT_XP1BRL_PROGRAM  = "XP1BRLn8eCYSygrd8er5P4GKdzqKbC3DLoSsS5UYVZy"
 
-# Every Exponent-related tx invokes one of these — scanning all four is exhaustive.
+# Tranching program (sr/jr risk tranches), live 2026-06-17. IDL ships as
+# @exponent-labs/exponent-tranching-idl on npm. Account layout decoded in
+# extract_load/extract_tranche_states.py.
+EXPONENT_TRANCHING_PROGRAM = "XPTrnchoawiUc9iYJrpfchS8vgr8Y5X2QGBdHPXukty"
+
+# Strategy Vaults program (managed vaults w/ Squads governance).
+EXPONENT_STRATEGY_VAULT_PROGRAM = "sVau1tXvayVWfotzm9Ahcv2qfnnfRWttt78BCnNC6dD"
+
+# Every Exponent-related tx invokes one of these — scanning all five is exhaustive.
 EXPONENT_PROGRAMS = [
     EXPONENT_CORE_PROGRAM,
     EXPONENT_CLMM_PROGRAM,
     EXPONENT_XPBOOK_PROGRAM,
     EXPONENT_XP1BRL_PROGRAM,
+    EXPONENT_STRATEGY_VAULT_PROGRAM,
 ]
 
 

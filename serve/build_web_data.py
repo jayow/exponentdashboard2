@@ -1394,6 +1394,975 @@ def build_unclaimed_yield_json(con: duckdb.DuckDBPyConnection) -> dict:
     }
 
 
+def build_tranche_json(con: duckdb.DuckDBPyConnection) -> dict:
+    """Tranche-market state snapshot, sourced from on-chain via extract_tranche_states.
+
+    Reads the latest raw_tranche_states snapshot — decoded directly from
+    XPTrnchoawi… ExponentTranchingMarket accounts using the Anchor IDL.
+    See docs/ONYC_TRANCHES_PLAN.md for the full pipeline.
+
+    Per-tranche timeseries (coverage / APY history) will land in a follow-up
+    once we have ≥7 snapshots — implemented via an int_tranche_state_daily
+    mart that this builder will read in addition to the current snapshot.
+    """
+    # Read from the int_tranche_apy_daily mart (joins raw_tranche_states +
+    # raw_pool_state + computes coverage_ratio, lp_prices, underlying/sr/jr
+    # APYs via window functions). Falls back to raw_tranche_states for
+    # bonus on-chain fields the mart doesn't carry.
+    rows = con.execute("""
+        WITH latest AS (
+            SELECT MAX(snapshot_date) AS d FROM main_intermediate.int_tranche_apy_daily
+        )
+        SELECT a.*, t.mint_lp_senior, t.mint_lp_junior, t.market_state,
+               t.min_deposit_amount, t.last_distribution_ts
+        FROM main_intermediate.int_tranche_apy_daily a, latest
+        JOIN main.raw_tranche_states t
+          ON t.tranche_vault = a.tranche_vault
+         AND t.snapshot_date = a.snapshot_date
+        WHERE a.snapshot_date = latest.d
+    """).fetchall()
+    cols = [d[0] for d in con.description]
+
+    # Historical timeseries: per-vault daily snapshots ordered by date.
+    # Returns: { vault_pk: { dates: [...], coverage: [...], sr_nav: [...],
+    #                        jr_nav: [...], utilization: [...] } }
+    history_rows = con.execute("""
+        SELECT
+            tranche_vault, snapshot_date::VARCHAR,
+            sr_effective_nav_usd, jr_effective_nav_usd,
+            sr_raw_nav_usd, jr_raw_nav_usd,
+            utilization, current_junior_return_share
+        FROM main.raw_tranche_states
+        ORDER BY tranche_vault, snapshot_date
+    """).fetchall()
+    history: dict[str, dict] = {}
+    for vault, dt, sr_eff, jr_eff, sr_raw, jr_raw, util, jr_share in history_rows:
+        h = history.setdefault(vault, {
+            "dates": [], "coverageRatio": [], "srNavUsd": [], "jrNavUsd": [],
+            "utilizationPct": [], "currentJrReturnShare": [],
+        })
+        h["dates"].append(dt)
+        total_eff = (sr_eff or 0) + (jr_eff or 0)
+        h["coverageRatio"].append((jr_eff or 0) / total_eff if total_eff > 0 else None)
+        h["srNavUsd"].append(sr_raw or 0)
+        h["jrNavUsd"].append(jr_raw or 0)
+        h["utilizationPct"].append((util or 0) * 100)
+        h["currentJrReturnShare"].append(jr_share)
+
+    # LP action aggregates per tranche vault (cumulative since vault genesis).
+    lp_action_rows = con.execute("""
+        SELECT tranche_vault, leg,
+               COUNT(*)                                AS n_actions,
+               COUNT(DISTINCT wallet)                   AS n_unique_wallets,
+               SUM(CASE WHEN lp_amount_raw > 0 THEN 1 ELSE 0 END) AS n_deposits,
+               SUM(CASE WHEN lp_amount_raw < 0 THEN 1 ELSE 0 END) AS n_withdrawals
+        FROM main.raw_tranche_lp_actions
+        GROUP BY 1, 2
+    """).fetchall()
+    actions_by_vault: dict[str, dict] = {}
+    for vault, leg, n, n_wallets, n_dep, n_wd in lp_action_rows:
+        actions_by_vault.setdefault(vault, {})[leg] = {
+            "actions": n, "uniqueWallets": n_wallets,
+            "deposits": n_dep, "withdrawals": n_wd,
+        }
+
+    # Top LPs per (vault, leg) — by cumulative net LP held (deposits − withdrawals).
+    top_lp_rows = con.execute("""
+        WITH net_per_wallet AS (
+            SELECT tranche_vault, leg, wallet,
+                   SUM(lp_amount_raw) / 1e9 AS net_lp_units
+            FROM main.raw_tranche_lp_actions
+            GROUP BY 1, 2, 3
+            HAVING SUM(lp_amount_raw) > 0
+        ),
+        ranked AS (
+            SELECT *,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY tranche_vault, leg
+                       ORDER BY net_lp_units DESC
+                   ) AS rk
+            FROM net_per_wallet
+        )
+        SELECT tranche_vault, leg, wallet, net_lp_units, rk
+        FROM ranked
+        WHERE rk <= 10
+        ORDER BY tranche_vault, leg, rk
+    """).fetchall()
+    top_lps_by_vault: dict[str, dict[str, list[dict]]] = {}
+    for vault, leg, wallet, net_lp, rk in top_lp_rows:
+        d = top_lps_by_vault.setdefault(vault, {})
+        d.setdefault(leg, []).append({"wallet": wallet, "lpUnits": float(net_lp)})
+
+    # Recent activity per vault (newest 25 events across both legs).
+    recent_rows = con.execute("""
+        SELECT tranche_vault, signature, block_time, ix_name, wallet, leg,
+               lp_amount_raw / 1e9 AS lp_units
+        FROM main.raw_tranche_lp_actions
+        ORDER BY tranche_vault, block_time DESC
+    """).fetchall()
+    recent_by_vault: dict[str, list[dict]] = {}
+    for vault, sig, bt, ix, wallet, leg, lp_units in recent_rows:
+        lst = recent_by_vault.setdefault(vault, [])
+        if len(lst) >= 25:
+            continue
+        lst.append({
+            "sig": sig,
+            "blockTime": int(bt or 0),
+            "action": ix,
+            "wallet": wallet,
+            "leg": leg,
+            "lpUnits": float(lp_units),
+        })
+
+    # Return curve (50 breakpoints per vault — same for every snapshot today
+    # but stored daily so we can detect ModifyMarket curve updates).
+    curve_rows = con.execute("""
+        SELECT tranche_vault, breakpoint_idx, x_value, y_value
+        FROM main.raw_tranche_return_curves
+        WHERE snapshot_date = (
+            SELECT MAX(snapshot_date) FROM main.raw_tranche_return_curves
+        )
+        ORDER BY tranche_vault, breakpoint_idx
+    """).fetchall()
+    curve_by_vault: dict[str, list[dict]] = {}
+    for vault, idx, x, y in curve_rows:
+        curve_by_vault.setdefault(vault, []).append({"x": x, "y": y})
+
+    # Need supply caps from raw_tranche_states (not in the apy mart).
+    cap_rows = con.execute("""
+        SELECT tranche_vault, max_sr_lp_supply, max_jr_lp_supply
+        FROM main.raw_tranche_states
+        WHERE snapshot_date = (SELECT MAX(snapshot_date) FROM main.raw_tranche_states)
+    """).fetchall()
+    cap_by_vault = {v: (sr, jr) for v, sr, jr in cap_rows}
+
+    tranches = []
+    for r in rows:
+        row = dict(zip(cols, r))
+        sr_nav        = row.get("sr_raw_nav_usd") or 0.0
+        jr_nav        = row.get("jr_raw_nav_usd") or 0.0
+        sr_eff        = row.get("sr_effective_nav_usd") or 0.0
+        jr_eff        = row.get("jr_effective_nav_usd") or 0.0
+        sr_lp_price   = row.get("sr_lp_price")
+        jr_lp_price   = row.get("jr_lp_price")
+        underlying_apy = row.get("underlying_apy")
+        senior_apy    = row.get("senior_apy")
+        junior_apy    = row.get("junior_apy")
+
+        vault_pk      = row.get("tranche_vault")
+        max_sr_raw, max_jr_raw = cap_by_vault.get(vault_pk, (0, 0))
+        sr_max_ui     = (max_sr_raw or 0) / 1e9
+        jr_max_ui     = (max_jr_raw or 0) / 1e9
+        sr_max_usd    = (sr_max_ui * sr_lp_price) if sr_lp_price else None
+        jr_max_usd    = (jr_max_ui * jr_lp_price) if jr_lp_price else None
+        sr_rem_usd    = (sr_max_usd - sr_nav) if sr_max_usd is not None else None
+        jr_rem_usd    = (jr_max_usd - jr_nav) if jr_max_usd is not None else None
+
+        # Ticker + platform are derived from the seed_id today; can be enriched
+        # via a side-table once more tranche vaults exist (currently 1: onycC101).
+        seed = row.get("seed_id") or ""
+        ticker = "ONyc" if seed.lower().startswith("onyc") else seed.split("C")[0].upper() or "?"
+
+        tranches.append({
+            "address":            vault_pk,
+            "ticker":             ticker,
+            "platform":           "OnRe" if ticker == "ONyc" else None,
+            "seedId":             seed,
+            "startDate":          None,  # not on the vault account
+            "marketState":        row.get("market_state"),
+            "underlyingApy":      underlying_apy,
+            "underlyingApy7d":    underlying_apy,  # same source; window is implicit in lag(1)
+            "underlyingApy30d":   underlying_apy,  # phase 4: separate 30d window calc
+            "syExchangeRate":     row.get("current_sy_exchange_rate"),
+            "coverageRatio":      row.get("coverage_ratio"),
+            "minCoverageRatio":   row.get("min_coverage_ratio"),
+            "marketSizeUsd":      sr_nav + jr_nav,
+            "effectiveSizeUsd":   (sr_eff or 0) + (jr_eff or 0),
+            "utilizationPct":     row.get("utilization_pct"),
+            "senior": {
+                "apy":            senior_apy,
+                "navUsd":         sr_nav,
+                "effectiveNavUsd":sr_eff,
+                "lpPrice":        sr_lp_price,
+                "maxCapacityUsd": sr_max_usd,
+                "remainingUsd":   sr_rem_usd,
+                "pointsMult":     None,  # not on-chain
+                "lpMint":         row.get("mint_lp_senior"),
+            },
+            "junior": {
+                "apy":            junior_apy,
+                "navUsd":         jr_nav,
+                "effectiveNavUsd":jr_eff,
+                "lpPrice":        jr_lp_price,
+                "maxCapacityUsd": jr_max_usd,
+                "remainingUsd":   jr_rem_usd,
+                "pointsMult":     None,
+                "lpMint":         row.get("mint_lp_junior"),
+            },
+            "syMint":             row.get("sy_mint"),
+            "baseMint":           None,
+            # Bonus on-chain fields not exposed by the API:
+            "currentJrReturnShare":      row.get("current_junior_return_share"),
+            "twJrReturnShareAccrued":    row.get("tw_junior_return_share_accrued"),
+            "lastSyncTs":                row.get("last_sync_ts"),
+            "lastDistributionTs":        row.get("last_distribution_ts"),
+            "fixedTermEndTs":            row.get("fixed_term_end_ts"),
+            "fixedTermDurationSec":      row.get("fixed_term_duration_sec"),
+            "minDepositAmount":          row.get("min_deposit_amount"),
+            # Per-vault per-day timeseries; grows by 1 row per refresh.
+            "history":                   history.get(vault_pk, {}),
+            # Lifetime per-leg LP action aggregates (deposits, withdrawals,
+            # unique wallets). Powers the "active LPs" widget.
+            "lpActions":                 actions_by_vault.get(vault_pk, {}),
+            # Top 10 LPs per leg by cumulative net LP units held.
+            "topLps":                    top_lps_by_vault.get(vault_pk, {}),
+            # Most-recent 25 deposit/withdraw events (newest first).
+            "recentActivity":            recent_by_vault.get(vault_pk, []),
+            # Piecewise-linear return curve (50 breakpoints) for plotting.
+            "returnCurve":               curve_by_vault.get(vault_pk, []),
+        })
+
+    return {
+        "meta": {
+            "generatedAt":  datetime.now(timezone.utc).isoformat(),
+            "source":       "warehouse: int_tranche_apy_daily (on-chain XPTrnchoawi vault + XP1BRL SY pool; APYs from time-series delta)",
+            "count":        len(tranches),
+            "snapshotDate": str(rows[0][0]) if rows else None,
+        },
+        "tranches": tranches,
+    }
+
+
+# Fallback (symbol, decimals) when raw_token_metadata is missing the mint.
+# USD1 in particular has no metadata entry today, so hard-code it here.
+_STRATEGY_VAULT_MINT_FALLBACK = {
+    "So11111111111111111111111111111111111111112":  ("SOL",  9),
+    "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": ("USDC", 6),
+    "USD1111111111111111111111111111111111111111":  ("USD", 6),
+}
+
+# Managed strategies listed on app.exponent.finance/en/strategy/<address>.
+# The authoritative source is raw_strategy_vault_registry (Exponent's
+# /strategies/managed API); this map is only the fallback when the registry
+# extractor hasn't populated the warehouse yet.
+_MANAGED_STRATEGY_NAMES = {
+    "9iPUphFXxnyAKYnCTG3XZv5ybHv5Ki1diqA5mis3TBVB": "OnRe Growth",
+    "puiRBGikahXM4C7weFtNRFcs7bSUx8wVn1m5v6RA91o":  "Raiku SOL Ecosystem Vault",
+    "F7ekbk2uWGGvp71bJdmqs7P1d5xAt46qyMj2R5W4XEVR": "Solstice Yield Looping",
+}
+
+_REGISTRY_COLS = [
+    "address", "name", "strategist", "profile", "description",
+    "deposit_mint", "deposit_ticker",
+    "apy_3d", "apy_7d", "apy_30d", "apy_current", "pt_weight",
+    "lp_price", "tvl", "exchange_rate", "capacity",
+]
+
+
+def build_strategy_vault_json(con: duckdb.DuckDBPyConnection) -> dict:
+    """Strategy-vault leaderboard + per-vault history, flows, holders, activity.
+
+    One row per vault from mart_strategy_vault_leaderboard (latest snapshot).
+    History pulled from mart_strategy_vault_timeseries (may be short while
+    the backfill is still landing). Recent activity + flow aggregates come
+    from mart_strategy_vault_flows (user actions only, tx_success=true).
+    Top holders read from raw_strategy_vault_holders at the latest snapshot.
+
+    underlyingSymbol/underlyingDecimals resolve from raw_token_metadata
+    first, then fall back to _STRATEGY_VAULT_MINT_FALLBACK (currently just
+    USD1, which has no metadata row).
+    """
+    # Leaderboard — one row per vault at latest snapshot.
+    lb_rows = con.execute("""
+        SELECT * FROM main_analytics.mart_strategy_vault_leaderboard
+    """).fetchall()
+    lb_cols = [d[0] for d in con.description]
+
+    # Exponent's managed-strategy registry — curated names, strategist, and
+    # THEIR windowed APYs (from their lpPrice history, matching the Exponent
+    # frontend). Absent until the registry extractor has run.
+    try:
+        reg_rows = con.execute(f"""
+            SELECT {", ".join(_REGISTRY_COLS)}
+            FROM main.raw_strategy_vault_registry
+            WHERE fetch_date = (SELECT MAX(fetch_date)
+                                FROM main.raw_strategy_vault_registry)
+        """).fetchall()
+    except duckdb.Error:
+        reg_rows = []
+    registry = {r[0]: dict(zip(_REGISTRY_COLS, r)) for r in reg_rows}
+    managed_order_keys = list(registry) if registry else list(_MANAGED_STRATEGY_NAMES)
+
+    # Underlying + LP mint → (symbol, decimals). Prefer token_metadata; fall back.
+    mint_rows = con.execute("""
+        SELECT mint, symbol, decimals FROM main.raw_token_metadata
+        WHERE mint IN (SELECT DISTINCT underlying_mint
+                       FROM main_analytics.mart_strategy_vault_leaderboard
+                       UNION
+                       SELECT DISTINCT mint_lp
+                       FROM main_analytics.mart_strategy_vault_leaderboard)
+    """).fetchall()
+    mint_info: dict[str, tuple[str, int]] = {}
+    mint_decimals: dict[str, int] = {}
+    for mint, sym, dec in mint_rows:
+        if dec is not None:
+            mint_decimals[mint] = int(dec)
+        if sym is not None and dec is not None:
+            mint_info[mint] = (sym, int(dec))
+
+    def resolve_mint(mint: str | None) -> tuple[str | None, int]:
+        if not mint:
+            return None, 9
+        if mint in mint_info:
+            return mint_info[mint]
+        if mint in _STRATEGY_VAULT_MINT_FALLBACK:
+            return _STRATEGY_VAULT_MINT_FALLBACK[mint]
+        return None, 9
+
+    # LP-mint decimals per vault — from token metadata when indexed, else
+    # assume the LP mint mirrors the underlying's decimals (observed on-chain:
+    # deposits mint LP ≈ 1:1 with base at NAV ~1).
+    lp_dec_by_vault: dict[str, int] = {}
+    for r in lb_rows:
+        row = dict(zip(lb_cols, r))
+        _, u_dec = resolve_mint(row["underlying_mint"])
+        lp_dec_by_vault[row["vault"]] = mint_decimals.get(row["mint_lp"], u_dec)
+
+    # Per-vault daily history. total_aum = idle base + deployed positions.
+    history_rows = con.execute("""
+        SELECT vault, date::VARCHAR, total_aum, lp_balance, nav_per_share,
+               apy_7d, apy_30d, net_flow_lp, unique_actors
+        FROM main_analytics.mart_strategy_vault_timeseries
+        ORDER BY vault, date
+    """).fetchall()
+
+    # Per-vault flow aggregates over the full mart window.
+    flow_agg_rows = con.execute("""
+        SELECT vault,
+               COUNT(*) FILTER (WHERE ix_name = 'deposit_liquidity')            AS n_deposits,
+               COUNT(*) FILTER (WHERE ix_name = 'queue_withdrawal')             AS n_queues,
+               COUNT(*) FILTER (WHERE ix_name = 'execute_withdrawal')           AS n_executes,
+               COUNT(*) FILTER (WHERE ix_name =
+                                      'execute_withdrawal_from_reserves')       AS n_fast,
+               COUNT(DISTINCT actor)                                            AS n_actors
+        FROM main_analytics.mart_strategy_vault_flows
+        GROUP BY vault
+    """).fetchall()
+    flow_agg_by_vault: dict[str, dict] = {}
+    for vault, n_dep, n_q, n_ex, n_fw, n_act in flow_agg_rows:
+        flow_agg_by_vault[vault] = {
+            "totalDeposits":      int(n_dep or 0),
+            "totalQueues":        int(n_q or 0),
+            "totalExecutes":      int(n_ex or 0),
+            "totalFastWithdraws": int(n_fw or 0),
+            "uniqueActors":       int(n_act or 0),
+        }
+
+    # Position composition per vault, from the latest state snapshot:
+    # token_entries (idle base) + strategy_positions TokenAccount balances,
+    # labeled via the full token-metadata table (PT mints are indexed there).
+    all_meta = {
+        m: (s, int(dc)) for m, s, dc in con.execute(
+            "SELECT mint, symbol, decimals FROM main.raw_token_metadata "
+            "WHERE decimals IS NOT NULL"
+        ).fetchall()
+    }
+    position_rows = con.execute("""
+        SELECT vault, token_entries_json, strategy_positions_json
+        FROM main.raw_strategy_vault_states
+        WHERE snapshot_date = (SELECT MAX(snapshot_date)
+                               FROM main.raw_strategy_vault_states)
+    """).fetchall()
+
+    # Kamino obligation snapshots (may be absent on warehouses where the
+    # obligations extractor hasn't run yet — treat as no data).
+    try:
+        oblig_rows = con.execute("""
+            SELECT vault, obligation, collateral_value, debt_value,
+                   allowed_borrow_value, unhealthy_borrow_value
+            FROM main.raw_strategy_vault_obligations
+            WHERE snapshot_date = (SELECT MAX(snapshot_date)
+                                   FROM main.raw_strategy_vault_obligations)
+        """).fetchall()
+    except duckdb.Error:
+        oblig_rows = []
+    obligs_by_vault: dict[str, list[dict]] = {}
+    for vault, obligation, coll, debt, allowed, unhealthy in oblig_rows:
+        coll = float(coll or 0)
+        debt = float(debt or 0)
+        if coll == 0 and debt == 0:
+            continue
+        net = coll - debt
+        obligs_by_vault.setdefault(vault, []).append({
+            "obligation":      obligation,
+            "collateralValue": coll,
+            "debtValue":       debt,
+            "netValue":        net,
+            "ltv":             (debt / coll) if coll > 0 else None,
+            "maxLtv":          (float(allowed or 0) / coll) if coll > 0 else None,
+            "liqLtv":          (float(unhealthy or 0) / coll) if coll > 0 else None,
+            "leverage":        (coll / net) if net > 0 else None,
+        })
+
+    def _position_tokens(vault_pk: str, te_json: str | None,
+                         sp_json: str | None, fallback_dec: int) -> list[dict]:
+        """Nonzero token holdings: idle base entries + strategy token accounts."""
+        out: list[dict] = []
+        def add(mint: str, amount: int, kind: str) -> None:
+            if not amount:
+                return
+            sym, dec = all_meta.get(mint, (None, fallback_dec))
+            out.append({
+                "mint":     mint,
+                "symbol":   sym,
+                "amountUi": amount / 10 ** dec,
+                "kind":     kind,
+            })
+        try:
+            for t in json.loads(te_json or "[]"):
+                add(t.get("mint", ""), int(t.get("last_observed_amount") or 0), "idle")
+            for p in json.loads(sp_json or "[]"):
+                if p.get("variant") == "TokenAccount":
+                    amt = sum(int(b.get("last_observed_amount") or 0)
+                              for b in p.get("balances", []))
+                    add(p.get("token_mint", ""), amt, "position")
+        except (TypeError, json.JSONDecodeError):
+            pass
+        return out
+
+    positions_json_by_vault = {v: (te, sp) for v, te, sp in position_rows}
+
+    # Top 10 holders per vault at the latest snapshot.
+    holder_rows = con.execute("""
+        SELECT vault, holder, lp_amount
+        FROM main.raw_strategy_vault_holders
+        WHERE snapshot_date = (SELECT MAX(snapshot_date)
+                               FROM main.raw_strategy_vault_holders)
+        ORDER BY vault, lp_amount DESC
+    """).fetchall()
+    holders_by_vault: dict[str, list[dict]] = {}
+    for vault, wallet, lp_amt in holder_rows:
+        lst = holders_by_vault.setdefault(vault, [])
+        if len(lst) >= 10:
+            continue
+        lst.append({
+            "wallet":   wallet,
+            "lpAmount": int(lp_amt or 0),
+            "lpUi":     (int(lp_amt or 0)) / 10 ** lp_dec_by_vault.get(vault, 9),
+        })
+
+    # Deposit-implied NAV: every deposit mints LP at the prevailing NAV, so
+    # deposit_token_amount_in / lp_delta is an exact NAV observation at that
+    # block. Daily median per vault gives a NAV series back to inception —
+    # crucial while the daily state-snapshot history is still short.
+    # CAVEAT: routed/wrapper deposits carry sentinel-scale args (~1e19)
+    # unrelated to the actual amount, so raw per-deposit observations are
+    # collected here and filtered to a sane NAV band after per-vault decimal
+    # rescaling below; the daily median is taken over surviving observations.
+    implied_nav_rows = con.execute("""
+        SELECT vault,
+               action_date::DATE::VARCHAR          AS d,
+               deposit_token_amount_in / lp_delta  AS nav_atoms
+        FROM main_analytics.mart_strategy_vault_flows
+        WHERE ix_name = 'deposit_liquidity'
+          AND deposit_token_amount_in IS NOT NULL AND deposit_token_amount_in > 0
+          AND lp_delta IS NOT NULL AND lp_delta >= 1000
+        ORDER BY vault, d
+    """).fetchall()
+    implied_nav_obs: dict[str, dict[str, list[float]]] = {}
+    for vault, d, nav_atoms in implied_nav_rows:
+        implied_nav_obs.setdefault(vault, {}).setdefault(d, []).append(float(nav_atoms))
+
+    # Recent activity: newest 25 user actions per vault. mart_strategy_vault_flows
+    # is already filtered to user actions with tx_success=true and ordered by
+    # block_time DESC — we just cap per-vault in Python.
+    activity_rows = con.execute("""
+        SELECT vault, signature, block_time, actor, ix_name,
+               lp_delta, base_delta,
+               deposit_token_amount_in, queue_lp_amount, fast_withdraw_lp_amount
+        FROM main_analytics.mart_strategy_vault_flows
+        ORDER BY vault, block_time DESC
+    """).fetchall()
+    managed_addrs = set(registry) | set(_MANAGED_STRATEGY_NAMES)
+
+    # Vault-side operations for the /strategy/ detail page: manager position
+    # updates, policy changes, governance proposal cycles, and withdrawal
+    # fills (fill_withdrawal is manager-executed even though the flows mart
+    # groups it with user actions). Keeper noise — refresh_aum, oracle
+    # cranks, interaction hooks, policy syncs — is excluded.
+    manager_activity_rows = con.execute("""
+        SELECT vault, signature, block_time, actor, ix_name, lp_delta, base_delta
+        FROM main_staging.stg_strategy_vault_actions
+        WHERE tx_success
+          AND (NOT is_user_action OR ix_name = 'fill_withdrawal')
+          AND NOT is_oracle_crank
+          AND ix_name NOT IN ('refresh_aum', 'validate_interaction_hook',
+                              'sync_policy_authorities', 'anchor_event_cpi',
+                              'unknown')
+        ORDER BY vault, block_time DESC
+    """).fetchall()
+    manager_activity_by_vault: dict[str, list[dict]] = {}
+    for vault, sig, bt, actor, ix_name, lp_delta, base_delta in manager_activity_rows:
+        if vault not in managed_addrs:
+            continue
+        lst = manager_activity_by_vault.setdefault(vault, [])
+        if len(lst) >= 50:
+            continue
+        lst.append({
+            "sig":       sig,
+            "blockTime": int(bt or 0),
+            "actor":     actor,
+            "ixName":    ix_name,
+            "lpDelta":   float(lp_delta or 0),
+            "baseDelta": float(base_delta or 0),
+            "argsJson":  None,
+        })
+
+    activity_by_vault: dict[str, list[dict]] = {}
+    for (vault, sig, bt, actor, ix_name, lp_delta, base_delta,
+         dep_amt, q_amt, fw_amt) in activity_rows:
+        lst = activity_by_vault.setdefault(vault, [])
+        # Managed vaults power the /strategy/ detail page's transaction
+        # list — keep a deeper window for them.
+        if len(lst) >= (100 if vault in managed_addrs else 25):
+            continue
+        # Pack typed args into a compact JSON string (only non-null fields).
+        args = {}
+        if dep_amt is not None: args["depositTokenAmountIn"] = int(dep_amt)
+        if q_amt   is not None: args["queueLpAmount"]        = int(q_amt)
+        if fw_amt  is not None: args["fastWithdrawLpAmount"] = int(fw_amt)
+        lst.append({
+            "sig":       sig,
+            "blockTime": int(bt or 0),
+            "actor":     actor,
+            "ixName":    ix_name,
+            "lpDelta":   float(lp_delta or 0),
+            "baseDelta": float(base_delta or 0),
+            "argsJson":  json.dumps(args, separators=(",", ":")) if args else None,
+        })
+
+    # Assemble per-vault history dicts.
+    history_by_vault: dict[str, dict] = {}
+    for (vault, dt, aum_base, lp_bal, nav, apy7, apy30, net_flow, uniq) in history_rows:
+        h = history_by_vault.setdefault(vault, {
+            "dates": [], "aumUi": [], "lpBalance": [], "navPerShare": [],
+            "apy7d": [], "apy30d": [], "netFlowLp": [], "uniqueActors": [],
+        })
+        h["dates"].append(dt)
+        h["lpBalance"].append(float(lp_bal or 0))
+        h["navPerShare"].append(float(nav) if nav is not None else None)
+        h["apy7d"].append(float(apy7) if apy7 is not None else None)
+        h["apy30d"].append(float(apy30) if apy30 is not None else None)
+        h["netFlowLp"].append(float(net_flow or 0))
+        h["uniqueActors"].append(int(uniq or 0))
+        # aumUi depends on underlying decimals — patched below once we know them.
+        h.setdefault("_aumBase", []).append(float(aum_base or 0))
+
+    vaults = []
+    snapshot_date_out = None
+    for r in lb_rows:
+        row = dict(zip(lb_cols, r))
+        vault_pk = row["vault"]
+        underlying_mint = row["underlying_mint"]
+        symbol, decimals = resolve_mint(underlying_mint)
+
+        scale = 10 ** decimals
+        # Headline AUM is total NAV: idle base tokens + capital deployed
+        # into strategy positions (net of debt).
+        aum_base = float(row["total_aum"] or 0)
+        aum_ui = aum_base / scale
+        idle_ui = float(row["aum_in_base"] or 0) / scale
+        deployed_ui = float(row["aum_in_base_in_positions"] or 0) / scale
+        lp_dec = lp_dec_by_vault.get(vault_pk, decimals)
+
+        # Rescale history aumUi with this vault's decimals, then drop the
+        # helper base array.
+        h = history_by_vault.get(vault_pk, {})
+        if h:
+            h["aumUi"] = [v / scale for v in h.pop("_aumBase", [])]
+
+        snap_date = row["snapshot_date"]
+        if snapshot_date_out is None and snap_date is not None:
+            snapshot_date_out = str(snap_date)
+
+        reg = registry.get(vault_pk)
+
+        # Rescale implied-NAV atoms ratio to UI units:
+        # (amt/10^u_dec) / (lp/10^lp_dec) = atoms_ratio * 10^(lp_dec - u_dec)
+        # then discard sentinel-arg outliers — NAV starts at 1.0 and drifts
+        # by yield, so anything outside [0.2, 5] is a routed/garbage arg,
+        # not a real mint ratio. Median over survivors per day.
+        # The ratio is deposit-token per LP, so it only tracks NAV when the
+        # deposit token is pegged ~1:1 to the quote unit — skip vaults whose
+        # deposit asset floats against the quote (e.g. rkuSOL vs SOL), where
+        # the series would conflate LST appreciation with vault performance.
+        implied = None
+        deposit_pegged = (
+            reg is None
+            or reg["exchange_rate"] is None
+            or abs(float(reg["exchange_rate"]) - 1) <= 0.005
+        )
+        obs = implied_nav_obs.get(vault_pk) if deposit_pegged else None
+        if obs:
+            nav_scale = 10 ** (lp_dec - decimals)
+            dates, navs = [], []
+            for day in sorted(obs):
+                vals = sorted(
+                    v * nav_scale for v in obs[day]
+                    if 0.2 <= v * nav_scale <= 5.0
+                )
+                if not vals:
+                    continue
+                mid = len(vals) // 2
+                dates.append(day)
+                navs.append(vals[mid] if len(vals) % 2 else (vals[mid - 1] + vals[mid]) / 2)
+            if dates:
+                implied = {"dates": dates, "nav": navs}
+
+        te_json, sp_json = positions_json_by_vault.get(vault_pk, (None, None))
+        is_managed = vault_pk in registry or (not registry and vault_pk in _MANAGED_STRATEGY_NAMES)
+
+        vaults.append({
+            "address":                vault_pk,
+            "name":                   (reg or {}).get("name") or _MANAGED_STRATEGY_NAMES.get(vault_pk),
+            "isManaged":              is_managed,
+            "managedOrder":           managed_order_keys.index(vault_pk) if vault_pk in managed_order_keys else None,
+            "strategist":             (reg or {}).get("strategist"),
+            "profile":                (reg or {}).get("profile"),
+            "description":            (reg or {}).get("description"),
+            "depositTicker":          (reg or {}).get("deposit_ticker"),
+            "capacityUi":             (reg or {}).get("capacity"),
+            "exponentApy": None if not reg else {
+                "d3":       reg["apy_3d"],
+                "d7":       reg["apy_7d"],
+                "d30":      reg["apy_30d"],
+                "current":  reg["apy_current"],
+                "ptWeight": reg["pt_weight"],
+            },
+            "positions": {
+                "tokens":      _position_tokens(vault_pk, te_json, sp_json, decimals),
+                "obligations": obligs_by_vault.get(vault_pk, []),
+            },
+            "underlyingMint":         underlying_mint,
+            "underlyingSymbol":       symbol,
+            "underlyingDecimals":     decimals,
+            "mintLp":                 row["mint_lp"],
+            "squadsVault":            row["manager"],
+            "aumInBase":              aum_base,
+            "aumUi":                  aum_ui,
+            "idleUi":                 idle_ui,
+            "deployedUi":             deployed_ui,
+            "lpBalance":              float(row["lp_balance"] or 0),
+            "lpDecimals":             lp_dec,
+            "lpBalanceUi":            float(row["lp_balance"] or 0) / 10 ** lp_dec,
+            "navPerShare":            float(row["nav_per_share"]) if row["nav_per_share"] is not None else None,
+            "pctFull":                float(row["pct_full"]) if row["pct_full"] is not None else None,
+            "deployedRatio":          float(row["deployed_ratio"]) if row["deployed_ratio"] is not None else None,
+            "idleRatio":              float(row["idle_ratio"]) if row["idle_ratio"] is not None else None,
+            "fastExitUtilization":    float(row["fast_exit_utilization"]) if row["fast_exit_utilization"] is not None else None,
+            "pendingWithdrawRatio":   float(row["pending_withdraw_ratio"]) if row["pending_withdraw_ratio"] is not None else None,
+            "managementFeeBps":       row["management_fee_bps"],
+            "normalWithdrawalCutBp":  row["normal_withdrawal_cut_bp"],
+            "fastWithdrawalCutBp":    row["fast_withdrawal_cut_bp"],
+            "snapshotDate":           str(snap_date) if snap_date is not None else None,
+            "history":                h,
+            "impliedNav":             implied,
+            "flows":                  flow_agg_by_vault.get(vault_pk, {
+                "totalDeposits": 0, "totalQueues": 0, "totalExecutes": 0,
+                "totalFastWithdraws": 0, "uniqueActors": 0,
+            }),
+            "topHolders":             holders_by_vault.get(vault_pk, []),
+            "recentActivity":         activity_by_vault.get(vault_pk, []),
+            "managerActivity":        manager_activity_by_vault.get(vault_pk, []),
+        })
+
+    return {
+        "meta": {
+            "generatedAt":  datetime.now(timezone.utc).isoformat(),
+            "source":       "extract_strategy_vault_states + backfill",
+            "count":        len(vaults),
+            "snapshotDate": snapshot_date_out,
+        },
+        "vaults": vaults,
+    }
+
+
+def build_strategy_txn_shards(con: duckdb.DuckDBPyConnection) -> None:
+    """Emit one JSON per managed strategy under web/public/strategy-txns/.
+
+    The /strategy/ detail page fetches these for the FULL transaction
+    history (strategy_vault.json only embeds a capped window as fallback).
+    userActivity mirrors mart_strategy_vault_flows minus fill_withdrawal;
+    vaultActivity is manager/governance ops with keeper noise excluded,
+    argsJson passed through (init_proposal carries proposal_id). roles maps
+    known operator addresses so the UI can label actors.
+    """
+    shard_dir = WEB_PUBLIC / "strategy-txns"
+    if shard_dir.exists():
+        for f in shard_dir.glob("*.json"):
+            f.unlink()
+    shard_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        reg_rows = con.execute("""
+            SELECT address, payload_json
+            FROM main.raw_strategy_vault_registry
+            WHERE fetch_date = (SELECT MAX(fetch_date)
+                                FROM main.raw_strategy_vault_registry)
+        """).fetchall()
+    except duckdb.Error:
+        reg_rows = []
+    payload_by_addr = {a: json.loads(p or "{}") for a, p in reg_rows}
+    managed = set(payload_by_addr) | set(_MANAGED_STRATEGY_NAMES)
+
+    # Label lookups for proposal action summaries: mint → symbol from token
+    # metadata; program id → protocol name from every registry protocols list
+    # (plus the vault program itself).
+    sym_by_mint = dict(con.execute(
+        "SELECT mint, symbol FROM main.raw_token_metadata WHERE symbol IS NOT NULL"
+    ).fetchall())
+    protocol_names: dict[str, str] = {
+        "sVau1tXvayVWfotzm9Ahcv2qfnnfRWttt78BCnNC6dD": "Strategy Vault",
+    }
+    for p in payload_by_addr.values():
+        for proto in p.get("protocols") or []:
+            if proto.get("programId") and proto.get("name"):
+                protocol_names[proto["programId"]] = proto["name"]
+
+    # Per-vault NAV context for valuing the withdrawal queue.
+    state_rows = con.execute("""
+        SELECT vault, mint_lp, underlying_mint,
+               coalesce(aum_in_base, 0) + coalesce(aum_in_base_in_positions, 0),
+               lp_balance, pending_withdrawal_backlog_due_at
+        FROM main.raw_strategy_vault_states
+        WHERE snapshot_date = (SELECT MAX(snapshot_date)
+                               FROM main.raw_strategy_vault_states)
+    """).fetchall()
+    dec_by_mint = {
+        m: int(dc) for m, dc in con.execute(
+            "SELECT mint, decimals FROM main.raw_token_metadata WHERE decimals IS NOT NULL"
+        ).fetchall()
+    }
+    state_by_vault = {}
+    for vault, mint_lp, u_mint, total_aum, lp_bal, due_at in state_rows:
+        u_dec = dec_by_mint.get(u_mint, _STRATEGY_VAULT_MINT_FALLBACK.get(u_mint, (None, 9))[1])
+        lp_dec = dec_by_mint.get(mint_lp, u_dec)
+        state_by_vault[vault] = {
+            "lp_dec": lp_dec,
+            "u_dec": u_dec,
+            "nav": (float(total_aum) / float(lp_bal)) if lp_bal else None,
+            "lp_supply": float(lp_bal or 0),
+            "due_at": int(due_at or 0),
+        }
+
+    try:
+        wd_rows = con.execute("""
+            SELECT vault, owner, lp_amount_requested, lp_amount_remaining, created_at
+            FROM main.raw_strategy_vault_withdrawals
+            WHERE lp_amount_remaining > 0
+            ORDER BY vault, lp_amount_remaining DESC
+        """).fetchall()
+    except duckdb.Error:
+        wd_rows = []
+    wd_by_vault: dict[str, list[tuple]] = {}
+    for r in wd_rows:
+        wd_by_vault.setdefault(r[0], []).append(r)
+
+    try:
+        proposal_rows = con.execute("""
+            SELECT vault, proposal_id, proposer, status, created_at,
+                   voting_ends_at, executable_at, reject_votes,
+                   opt_out_votes, lp_supply_snapshot, actions_json, parse_error
+            FROM main.raw_strategy_vault_proposals
+            ORDER BY vault, proposal_id DESC
+        """).fetchall()
+    except duckdb.Error:
+        proposal_rows = []
+    proposals_by_vault: dict[str, list[dict]] = {}
+    for (vault, pid, proposer, status, created, ends, executable,
+         reject, optout, lp_snap, actions_json, perr) in proposal_rows:
+        actions = []
+        for s in json.loads(actions_json or "[]"):
+            assets, protocols = [], []
+            for pk in s.get("pubkeys", []):
+                if pk in protocol_names:
+                    protocols.append(protocol_names[pk])
+                elif pk in sym_by_mint:
+                    assets.append(sym_by_mint[pk])
+            protocols = list(dict.fromkeys(protocols))
+            # Policy hooks always reference the vault program itself — only
+            # worth showing when no external protocol is involved.
+            if len(protocols) > 1 and "Strategy Vault" in protocols:
+                protocols.remove("Strategy Vault")
+            actions.append({
+                "name":      s.get("name"),
+                "mode":      s.get("mode"),
+                "assets":    list(dict.fromkeys(assets)),
+                "protocols": protocols,
+                "verbs":     s.get("verbs", []),
+            })
+        proposals_by_vault.setdefault(vault, []).append({
+            "id":            int(pid),
+            "proposer":      proposer,
+            "status":        status,
+            "createdAt":     int(created or 0),
+            "votingEndsAt":  int(ends or 0),
+            "executableAt":  int(executable or 0),
+            "rejectVotes":   float(reject or 0),
+            "optOutVotes":   float(optout or 0),
+            "lpSnapshot":    float(lp_snap or 0),
+            "actions":       actions,
+            "parseError":    bool(perr),
+        })
+
+    for addr in sorted(managed):
+        p = payload_by_addr.get(addr, {})
+        roles = {
+            "admin":      p.get("adminAddress"),
+            "sentinel":   p.get("sentinelAddress"),
+            "strategist": (p.get("strategist") or {}).get("address"),
+            "depositors": p.get("depositorsAddress"),
+        }
+
+        user_rows = con.execute("""
+            SELECT signature, block_time, actor, ix_name, lp_delta, base_delta,
+                   deposit_token_amount_in, queue_lp_amount, fast_withdraw_lp_amount
+            FROM main_analytics.mart_strategy_vault_flows
+            WHERE vault = ? AND ix_name != 'fill_withdrawal'
+            ORDER BY block_time DESC
+        """, [addr]).fetchall()
+        user_activity = []
+        for sig, bt, actor, ix_name, lp_d, base_d, dep, q, fw in user_rows:
+            args = {}
+            if dep is not None: args["depositTokenAmountIn"] = int(dep)
+            if q   is not None: args["queueLpAmount"]        = int(q)
+            if fw  is not None: args["fastWithdrawLpAmount"] = int(fw)
+            user_activity.append({
+                "sig":       sig,
+                "blockTime": int(bt or 0),
+                "actor":     actor,
+                "ixName":    ix_name,
+                "lpDelta":   float(lp_d or 0),
+                "baseDelta": float(base_d or 0),
+                "argsJson":  json.dumps(args, separators=(",", ":")) if args else None,
+            })
+
+        vault_rows = con.execute("""
+            SELECT signature, block_time, actor, ix_name, lp_delta, base_delta,
+                   args_json
+            FROM main_staging.stg_strategy_vault_actions
+            WHERE vault = ? AND tx_success
+              AND (NOT is_user_action OR ix_name = 'fill_withdrawal')
+              AND NOT is_oracle_crank
+              AND ix_name NOT IN ('refresh_aum', 'validate_interaction_hook',
+                                  'sync_policy_authorities', 'anchor_event_cpi',
+                                  'unknown')
+            ORDER BY block_time DESC
+        """, [addr]).fetchall()
+        vault_activity = [{
+            "sig":       sig,
+            "blockTime": int(bt or 0),
+            "actor":     actor,
+            "ixName":    ix_name,
+            "lpDelta":   float(lp_d or 0),
+            "baseDelta": float(base_d or 0),
+            "argsJson":  args_json,
+        } for sig, bt, actor, ix_name, lp_d, base_d, args_json in vault_rows]
+
+        # Execution legs (manager's actual DeFi activity), newest first.
+        try:
+            exec_rows = con.execute("""
+                SELECT signature, block_time, types, program_ids,
+                       asset_mint, amount_ui, deltas_json
+                FROM main.raw_strategy_vault_executions
+                WHERE vault = ?
+                ORDER BY block_time DESC
+            """, [addr]).fetchall()
+        except duckdb.Error:
+            exec_rows = []
+        executions = []
+        for sig, bt, types, pids, mint, amt, deltas_json in exec_rows:
+            protos = list(dict.fromkeys(
+                protocol_names[p] for p in (pids or "").split(",")
+                if p in protocol_names and protocol_names[p] != "Strategy Vault"
+            ))
+            type_list = [t for t in (types or "").split(",") if t]
+            deltas = json.loads(deltas_json or "[]")
+            symbol = sym_by_mint.get(mint) or (f"{mint[:4]}…" if mint else None)
+            amount = float(amt) if amt is not None else None
+
+            # Presentation to match Exponent's activity view:
+            # - a PT-token delta via the CLMM/orderbook is a PT trade, not
+            #   its mechanical LP / SY legs;
+            # - for swaps, show the asset RECEIVED (largest positive delta).
+            if symbol and symbol.startswith("PT-") and any(
+                    p in ("Exponent CLMM", "Exponent Orderbook") for p in protos):
+                type_list = ["Trade PT"] + [t for t in type_list
+                                            if t not in ("LP", "Deposit SY", "Withdraw SY", "Trade PT")]
+            if "Swap" in type_list:
+                received = max((d for d in deltas if d["amountUi"] > 0),
+                               key=lambda d: d["amountUi"], default=None)
+                if received:
+                    symbol = sym_by_mint.get(received["mint"], f"{received['mint'][:4]}…")
+                    amount = received["amountUi"]
+
+            executions.append({
+                "sig":       sig,
+                "blockTime": int(bt or 0),
+                "types":     type_list,
+                "protocols": protos,
+                "symbol":    symbol,
+                "amountUi":  amount,
+                "deltas":    [{"symbol": sym_by_mint.get(d["mint"], f"{d['mint'][:4]}…"),
+                               "amountUi": d["amountUi"]} for d in deltas[:6]],
+            })
+
+        # Reject threshold: registry rejectionThresholdBps is 1e-6-scale
+        # (300000 → 30%).
+        threshold_bps = p.get("rejectionThresholdBps")
+        reject_threshold = (float(threshold_bps) / 1e6) if threshold_bps else None
+
+        # Withdrawal queue summary: open requests, LP + base value leaving,
+        # and the on-chain backlog due date.
+        st = state_by_vault.get(addr, {})
+        lp_dec = st.get("lp_dec", 9)
+        nav = st.get("nav")
+        open_reqs = wd_by_vault.get(addr, [])
+        lp_remaining_ui = sum(r[3] for r in open_reqs) / 10 ** lp_dec
+        withdrawal_queue = {
+            "count":          len(open_reqs),
+            "lpRequestedUi":  sum(r[2] for r in open_reqs) / 10 ** lp_dec,
+            "lpRemainingUi":  lp_remaining_ui,
+            "valueUi":        (lp_remaining_ui * nav) if nav else None,
+            "pctOfSupply":    (sum(r[3] for r in open_reqs) / st["lp_supply"])
+                              if st.get("lp_supply") else None,
+            "oldestCreatedAt": min((int(r[4]) for r in open_reqs), default=None),
+            "dueAt":          st.get("due_at") or None,
+            "requests": [{
+                "owner":     owner,
+                "lpUi":      remaining / 10 ** lp_dec,
+                "valueUi":   (remaining / 10 ** lp_dec * nav) if nav else None,
+                "createdAt": int(created),
+            } for _, owner, _, remaining, created in open_reqs[:10]],
+        }
+
+        _write_atomic(shard_dir / f"{addr}.json", {
+            "address":         addr,
+            "generatedAt":     datetime.now(timezone.utc).isoformat(),
+            "roles":           roles,
+            "rejectThreshold": reject_threshold,
+            "withdrawalQueue": withdrawal_queue,
+            "proposals":       proposals_by_vault.get(addr, []),
+            "userActivity":    user_activity,
+            "vaultActivity":   vault_activity,
+            "executions":      executions,
+        })
+        rprint(f"  strategy-txns/{addr[:8]}…json  "
+               f"user={len(user_activity)} vault={len(vault_activity)} "
+               f"proposals={len(proposals_by_vault.get(addr, []))} "
+               f"executions={len(executions)}")
+
+
 def build_v2_orderbook_json(con: duckdb.DuckDBPyConnection) -> dict:
     """v2 (XPBook) orderbook snapshot per market.
 
@@ -1710,12 +2679,16 @@ def build() -> None:
             ("users.json", build_users_json),
             ("unclaimed_yield.json", build_unclaimed_yield_json),
             ("v2_orderbook.json", build_v2_orderbook_json),
+            ("tranche.json", build_tranche_json),
+            ("strategy_vault.json", build_strategy_vault_json),
         ]:
             rprint(f"[cyan]Building {name}…[/cyan]")
             payload = builder(con)
             _write_atomic(WEB_PUBLIC / name, payload)
             size = (WEB_PUBLIC / name).stat().st_size / 1024
             rprint(f"  wrote {name}  ({size:.1f} KB)")
+        rprint("[cyan]Building strategy txn shards…[/cyan]")
+        build_strategy_txn_shards(con)
         rprint("[cyan]Building wallet shards…[/cyan]")
         build_wallet_shards(con)
     finally:

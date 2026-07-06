@@ -27,6 +27,15 @@ extract:
 	python3 -m extract_load.extract_pool_state
 	python3 -m extract_load.extract_holders
 	python3 -m extract_load.extract_anchor_events
+	python3 -m extract_load.extract_strategy_vault_registry
+	python3 -m extract_load.extract_strategy_vault_states
+	python3 -m extract_load.extract_strategy_vault_obligations
+	python3 -m extract_load.extract_strategy_vault_proposals
+	python3 -m extract_load.extract_strategy_vault_withdrawals
+	python3 -m extract_load.extract_strategy_vault_signatures
+	python3 -m extract_load.extract_strategy_vault_actions
+	python3 -m extract_load.extract_strategy_vault_executions
+	python3 -m extract_load.extract_strategy_vault_holders
 
 transform:
 	cd transform && DBT_PROFILES_DIR=. dbt build

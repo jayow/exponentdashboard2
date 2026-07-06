@@ -1,0 +1,1571 @@
+{
+  "address": "XP1BRLn8eCYSygrd8er5P4GKdzqKbC3DLoSsS5UYVZy",
+  "metadata": {
+    "name": "generic_standard",
+    "version": "0.1.0",
+    "spec": "0.1.0",
+    "description": "Created with Anchor"
+  },
+  "instructions": [
+    {
+      "name": "add_emission",
+      "discriminator": [
+        4
+      ],
+      "accounts": [
+        {
+          "name": "signer",
+          "signer": true
+        },
+        {
+          "name": "fee_payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "meta",
+          "writable": true
+        },
+        {
+          "name": "token_emission",
+          "docs": [
+            "The emission token account, which will be the escrow for accrued emissions"
+          ]
+        },
+        {
+          "name": "mint_emission",
+          "docs": [
+            "The mint for the emission"
+          ]
+        },
+        {
+          "name": "system_program",
+          "docs": [
+            "Needed for realloc'ing the emission tracker"
+          ]
+        },
+        {
+          "name": "admin_state"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "collect_emission",
+      "discriminator": [
+        8
+      ],
+      "accounts": [
+        {
+          "name": "owner",
+          "signer": true
+        },
+        {
+          "name": "meta",
+          "writable": true
+        },
+        {
+          "name": "position",
+          "writable": true
+        },
+        {
+          "name": "token_emission_account_authority",
+          "writable": true
+        },
+        {
+          "name": "token_emission_signer",
+          "writable": true
+        },
+        {
+          "name": "token_program"
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
+          "type": {
+            "defined": {
+              "name": "Amount"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "collect_treasury_emission",
+      "discriminator": [
+        9
+      ],
+      "accounts": [
+        {
+          "name": "treasury_administrator",
+          "signer": true
+        },
+        {
+          "name": "meta",
+          "writable": true
+        },
+        {
+          "name": "admin"
+        },
+        {
+          "name": "token_emission_account_authority",
+          "writable": true
+        },
+        {
+          "name": "token_emission_treasury_administrator",
+          "writable": true
+        },
+        {
+          "name": "token_program"
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
+          "type": {
+            "defined": {
+              "name": "Amount"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "deposit",
+      "discriminator": [
+        5
+      ],
+      "accounts": [
+        {
+          "name": "depositor",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "meta",
+          "writable": true
+        },
+        {
+          "name": "mint_sy"
+        },
+        {
+          "name": "token_sy_escrow",
+          "writable": true
+        },
+        {
+          "name": "token_sy_depositor",
+          "writable": true
+        },
+        {
+          "name": "position",
+          "writable": true
+        },
+        {
+          "name": "token_program"
+        },
+        {
+          "name": "system_program"
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
+          "type": "u64"
+        }
+      ],
+      "returns": {
+        "defined": {
+          "name": "SyState"
+        }
+      }
+    },
+    {
+      "name": "get_position",
+      "discriminator": [
+        10
+      ],
+      "accounts": [
+        {
+          "name": "position",
+          "writable": true
+        },
+        {
+          "name": "meta",
+          "writable": true
+        },
+        {
+          "name": "mint_sy"
+        },
+        {
+          "name": "token_sy_escrow"
+        },
+        {
+          "name": "system_program"
+        }
+      ],
+      "args": [],
+      "returns": {
+        "defined": {
+          "name": "PositionState"
+        }
+      }
+    },
+    {
+      "name": "get_state",
+      "discriminator": [
+        7
+      ],
+      "accounts": [
+        {
+          "name": "meta",
+          "writable": true
+        },
+        {
+          "name": "mint_sy"
+        },
+        {
+          "name": "token_sy_escrow"
+        }
+      ],
+      "args": [],
+      "returns": {
+        "defined": {
+          "name": "SyState"
+        }
+      }
+    },
+    {
+      "name": "init_sy",
+      "discriminator": [
+        0
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "sy_meta",
+          "docs": [
+            "Master metadata account for SY token"
+          ],
+          "writable": true
+        },
+        {
+          "name": "mint_sy",
+          "docs": [
+            "Mint for SY token"
+          ],
+          "writable": true
+        },
+        {
+          "name": "yield_bearing_mint"
+        },
+        {
+          "name": "token_yield_bearing_escrow"
+        },
+        {
+          "name": "token_sy_escrow",
+          "docs": [
+            "Escrow account for deposited SY"
+          ],
+          "writable": true
+        },
+        {
+          "name": "yield_bearing_token_program"
+        },
+        {
+          "name": "sy_token_program"
+        },
+        {
+          "name": "system_program"
+        },
+        {
+          "name": "admin_state"
+        },
+        {
+          "name": "metadata",
+          "writable": true
+        },
+        {
+          "name": "token_metadata_program"
+        }
+      ],
+      "args": [
+        {
+          "name": "min_mint_size",
+          "type": "u64"
+        },
+        {
+          "name": "min_redeem_size",
+          "type": "u64"
+        },
+        {
+          "name": "name",
+          "type": "string"
+        },
+        {
+          "name": "symbol",
+          "type": "string"
+        },
+        {
+          "name": "uri",
+          "type": "string"
+        },
+        {
+          "name": "interface_accounts",
+          "type": {
+            "vec": "pubkey"
+          }
+        },
+        {
+          "name": "interface_type",
+          "type": {
+            "defined": {
+              "name": "InterfaceType"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "initialize_position",
+      "discriminator": [
+        3
+      ],
+      "accounts": [
+        {
+          "name": "fee_payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "owner"
+        },
+        {
+          "name": "meta"
+        },
+        {
+          "name": "position",
+          "writable": true
+        },
+        {
+          "name": "system_program"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "mint",
+      "discriminator": [
+        1
+      ],
+      "accounts": [
+        {
+          "name": "depositor",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "meta",
+          "writable": true
+        },
+        {
+          "name": "mint_sy",
+          "writable": true
+        },
+        {
+          "name": "yield_bearing_mint"
+        },
+        {
+          "name": "token_base_depositor",
+          "docs": [
+            "Depositor's base asset token account"
+          ],
+          "writable": true
+        },
+        {
+          "name": "token_yield_bearing_escrow",
+          "docs": [
+            "SY robot's base token account"
+          ],
+          "writable": true
+        },
+        {
+          "name": "token_sy_depositor",
+          "writable": true
+        },
+        {
+          "name": "base_token_program"
+        },
+        {
+          "name": "token_program"
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
+          "type": "u64"
+        }
+      ],
+      "returns": {
+        "defined": {
+          "name": "MintSyReturnData"
+        }
+      }
+    },
+    {
+      "name": "modify_hook",
+      "discriminator": [
+        12
+      ],
+      "accounts": [
+        {
+          "name": "signer",
+          "signer": true
+        },
+        {
+          "name": "fee_payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "meta",
+          "writable": true
+        },
+        {
+          "name": "system_program",
+          "docs": [
+            "Needed for realloc'ing the emission tracker"
+          ]
+        },
+        {
+          "name": "admin_state"
+        }
+      ],
+      "args": [
+        {
+          "name": "hook",
+          "type": {
+            "defined": {
+              "name": "Hook"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "modify_ore_interface_account",
+      "discriminator": [
+        11
+      ],
+      "accounts": [
+        {
+          "name": "signer",
+          "signer": true
+        },
+        {
+          "name": "meta",
+          "writable": true
+        },
+        {
+          "name": "admin_state"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "realloc_sy_meta",
+      "discriminator": [
+        14
+      ],
+      "accounts": [
+        {
+          "name": "meta",
+          "writable": true
+        },
+        {
+          "name": "signer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "admin_state"
+        },
+        {
+          "name": "system_program"
+        },
+        {
+          "name": "rent"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "redeem",
+      "discriminator": [
+        2
+      ],
+      "accounts": [
+        {
+          "name": "signer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "meta",
+          "writable": true
+        },
+        {
+          "name": "token_base_dst",
+          "writable": true
+        },
+        {
+          "name": "token_yield_bearing_escrow",
+          "writable": true
+        },
+        {
+          "name": "token_sy_signer",
+          "writable": true
+        },
+        {
+          "name": "mint_sy",
+          "writable": true
+        },
+        {
+          "name": "yield_bearing_mint"
+        },
+        {
+          "name": "base_token_program",
+          "docs": [
+            "Base token program"
+          ]
+        },
+        {
+          "name": "token_program",
+          "docs": [
+            "SY token program"
+          ]
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
+          "type": "u64"
+        }
+      ],
+      "returns": {
+        "defined": {
+          "name": "RedeemSyReturnData"
+        }
+      }
+    },
+    {
+      "name": "update_data_stream",
+      "docs": [
+        "Updates the exchange rate for a ChainlinkDataStream interface by verifying",
+        "a signed report from the Chainlink Data Streams API via CPI to the Chainlink",
+        "Verifier program."
+      ],
+      "discriminator": [
+        13
+      ],
+      "accounts": [
+        {
+          "name": "user",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "meta",
+          "writable": true
+        },
+        {
+          "name": "verifier_account"
+        },
+        {
+          "name": "access_controller"
+        },
+        {
+          "name": "config_account"
+        },
+        {
+          "name": "verifier_program_id"
+        }
+      ],
+      "args": [
+        {
+          "name": "signed_report",
+          "type": "bytes"
+        }
+      ]
+    },
+    {
+      "name": "withdraw",
+      "discriminator": [
+        6
+      ],
+      "accounts": [
+        {
+          "name": "owner",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "meta",
+          "writable": true
+        },
+        {
+          "name": "mint_sy"
+        },
+        {
+          "name": "position",
+          "writable": true
+        },
+        {
+          "name": "token_sy_escrow",
+          "docs": [
+            "Escrow pool of SY tokens"
+          ],
+          "writable": true
+        },
+        {
+          "name": "token_sy_dst",
+          "docs": [
+            "Destination for SY tokens withdrawn"
+          ],
+          "writable": true
+        },
+        {
+          "name": "token_program"
+        },
+        {
+          "name": "system_program"
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
+          "type": "u64"
+        }
+      ],
+      "returns": {
+        "defined": {
+          "name": "SyState"
+        }
+      }
+    }
+  ],
+  "accounts": [
+    {
+      "name": "Admin",
+      "discriminator": [
+        244,
+        158,
+        220,
+        65,
+        8,
+        73,
+        4,
+        65
+      ]
+    },
+    {
+      "name": "Position",
+      "discriminator": [
+        170,
+        188,
+        143,
+        228,
+        122,
+        64,
+        247,
+        208
+      ]
+    },
+    {
+      "name": "SyMeta",
+      "discriminator": [
+        254,
+        147,
+        136,
+        16,
+        163,
+        203,
+        98,
+        93
+      ]
+    }
+  ],
+  "errors": [
+    {
+      "code": 6000,
+      "name": "MintAmountTooLow",
+      "msg": "The mint amount is too low"
+    },
+    {
+      "code": 6001,
+      "name": "PositionAmountTooLow",
+      "msg": "The position amount is too low"
+    },
+    {
+      "code": 6002,
+      "name": "RedeemAmountTooLow",
+      "msg": "The redeem amount is too low"
+    },
+    {
+      "code": 6003,
+      "name": "NoRewardsForMeta",
+      "msg": "No rewards for meta"
+    },
+    {
+      "code": 6004,
+      "name": "InvalidPriceFeed",
+      "msg": "Invalid price feed"
+    },
+    {
+      "code": 6005,
+      "name": "ExponentNotNegative",
+      "msg": "Pyth Exponent is not negative"
+    },
+    {
+      "code": 6006,
+      "name": "InvalidAccount",
+      "msg": "Invalid account"
+    },
+    {
+      "code": 6007,
+      "name": "InvalidInterfaceType",
+      "msg": "Invalid interface type - expected ChainlinkDataStream"
+    },
+    {
+      "code": 6008,
+      "name": "InvalidFeedHash",
+      "msg": "Invalid feed hash - does not match expected value"
+    },
+    {
+      "code": 6009,
+      "name": "InvalidVerifierProgram",
+      "msg": "Invalid verifier program ID"
+    },
+    {
+      "code": 6010,
+      "name": "NoReportData",
+      "msg": "No valid report data found from Chainlink verifier"
+    },
+    {
+      "code": 6011,
+      "name": "InvalidReportData",
+      "msg": "Invalid report data format"
+    },
+    {
+      "code": 6012,
+      "name": "ObservationsTimestampTooOld",
+      "msg": "Observations timestamp is too old"
+    },
+    {
+      "code": 6013,
+      "name": "ObservationsTimestampOutsideWindow",
+      "msg": "Observations timestamp is outside window"
+    },
+    {
+      "code": 6014,
+      "name": "InterfaceTimestampOutsideWindow",
+      "msg": "Interface timestamp is outside window, run update_data_stream instruction"
+    }
+  ],
+  "types": [
+    {
+      "name": "Admin",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "uber_admin",
+            "type": "pubkey"
+          },
+          {
+            "name": "proposed_uber_admin",
+            "type": {
+              "option": "pubkey"
+            }
+          },
+          {
+            "name": "principles",
+            "type": {
+              "defined": {
+                "name": "Principles"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "Amount",
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "All"
+          },
+          {
+            "name": "Some",
+            "fields": [
+              "u64"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "Hook",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "enabled",
+            "type": "bool"
+          },
+          {
+            "name": "interface_emissions_accounts_until",
+            "type": "u8"
+          },
+          {
+            "name": "program_id",
+            "type": "pubkey"
+          },
+          {
+            "name": "pre_mint_hook_discriminator",
+            "type": "bytes"
+          },
+          {
+            "name": "post_redeem_hook_discriminator",
+            "type": "bytes"
+          }
+        ]
+      }
+    },
+    {
+      "name": "InterfaceType",
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "Pyth",
+            "fields": [
+              {
+                "name": "last_slot",
+                "docs": [
+                  "The last slot the price feed was updated"
+                ],
+                "type": "u64"
+              },
+              {
+                "name": "maximum_age_seconds",
+                "docs": [
+                  "Maximum age in seconds of the price feed"
+                ],
+                "type": "u64"
+              }
+            ]
+          },
+          {
+            "name": "SplStakePool"
+          },
+          {
+            "name": "One"
+          },
+          {
+            "name": "Fragmetric"
+          },
+          {
+            "name": "Meteora"
+          },
+          {
+            "name": "FragmetricSupportedAsset"
+          },
+          {
+            "name": "Sanctum"
+          },
+          {
+            "name": "JupiterPerps",
+            "fields": [
+              {
+                "name": "last_fee_usd_reset_unix_timestamp",
+                "docs": [
+                  "The last timestamp the realized_fee_usd was reset"
+                ],
+                "type": "u32"
+              },
+              {
+                "name": "last_realized_fee_usd",
+                "docs": [
+                  "The last seen realized_fee_usd"
+                ],
+                "type": "u64"
+              },
+              {
+                "name": "last_aum_usd",
+                "docs": [
+                  "The last seen aum_usd"
+                ],
+                "type": "u128"
+              },
+              {
+                "name": "last_realized_fee_usd_update_unix_timestamp",
+                "docs": [
+                  "Last time last_realized_fee_usd was updated in the Exponent generic standard"
+                ],
+                "type": "u32"
+              }
+            ]
+          },
+          {
+            "name": "Adrena",
+            "fields": [
+              {
+                "name": "previous_total_fees",
+                "docs": [
+                  "Previous total fees from all custodies"
+                ],
+                "type": "u64"
+              }
+            ]
+          },
+          {
+            "name": "HyloLpToken"
+          },
+          {
+            "name": "JupiterLend",
+            "fields": [
+              {
+                "name": "_padding",
+                "type": {
+                  "array": [
+                    "u8",
+                    128
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "name": "KaminoVault",
+            "fields": [
+              {
+                "name": "_padding",
+                "type": {
+                  "array": [
+                    "u8",
+                    128
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "name": "Solstice",
+            "fields": [
+              {
+                "name": "_padding",
+                "type": {
+                  "array": [
+                    "u8",
+                    128
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "name": "Reflect",
+            "fields": [
+              {
+                "name": "_padding",
+                "type": {
+                  "array": [
+                    "u8",
+                    128
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "name": "Ore"
+          },
+          {
+            "name": "Chainlink",
+            "fields": [
+              {
+                "name": "_padding",
+                "type": {
+                  "array": [
+                    "u8",
+                    128
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "name": "ChainlinkDataStream",
+            "fields": [
+              {
+                "name": "feed_hash",
+                "docs": [
+                  "The 32-byte feed hash identifying the Chainlink Data Stream"
+                ],
+                "type": {
+                  "array": [
+                    "u8",
+                    32
+                  ]
+                }
+              },
+              {
+                "name": "last_streamed_exchange_rate",
+                "type": {
+                  "defined": {
+                    "name": "Number"
+                  }
+                }
+              },
+              {
+                "name": "decimals",
+                "type": "u8"
+              },
+              {
+                "name": "last_slot",
+                "docs": [
+                  "The last slot this cached exchange rate was consumed by mint/redeem logic"
+                ],
+                "type": "u64"
+              },
+              {
+                "name": "last_streamed_timestamp",
+                "type": "u32"
+              },
+              {
+                "name": "freshness_window_seconds",
+                "type": "u32"
+              }
+            ]
+          },
+          {
+            "name": "Scope",
+            "fields": [
+              {
+                "name": "price_chain",
+                "type": {
+                  "array": [
+                    "u16",
+                    4
+                  ]
+                }
+              },
+              {
+                "name": "maximum_age_seconds",
+                "type": "u64"
+              }
+            ]
+          },
+          {
+            "name": "SolsticeGlamVault",
+            "fields": [
+              {
+                "name": "_padding",
+                "type": {
+                  "array": [
+                    "u8",
+                    128
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "MintSyReturnData",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "sy_out_amount",
+            "type": "u64"
+          },
+          {
+            "name": "exchange_rate",
+            "type": {
+              "defined": {
+                "name": "Number"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "Number",
+      "docs": [
+        "High precision number, stored as 4 u64 words in little endian"
+      ],
+      "repr": {
+        "kind": "c"
+      },
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "array": [
+              "u64",
+              4
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "Position",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "owner",
+            "type": "pubkey"
+          },
+          {
+            "name": "meta",
+            "type": "pubkey"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          },
+          {
+            "name": "reward_indexes",
+            "type": {
+              "vec": {
+                "defined": {
+                  "name": "Reward"
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "PositionState",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "owner",
+            "type": "pubkey"
+          },
+          {
+            "name": "sy_balance",
+            "type": "u64"
+          },
+          {
+            "name": "emissions",
+            "type": {
+              "vec": {
+                "defined": {
+                  "name": "sy_common::Emission"
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "PrincipleDetails",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "administrators",
+            "type": {
+              "vec": "pubkey"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "Principles",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "hot_admin",
+            "type": {
+              "defined": {
+                "name": "PrincipleDetails"
+              }
+            }
+          },
+          {
+            "name": "cold_admin",
+            "type": {
+              "defined": {
+                "name": "PrincipleDetails"
+              }
+            }
+          },
+          {
+            "name": "pause_admin",
+            "type": {
+              "defined": {
+                "name": "PrincipleDetails"
+              }
+            }
+          },
+          {
+            "name": "reserved1",
+            "type": {
+              "defined": {
+                "name": "PrincipleDetails"
+              }
+            }
+          },
+          {
+            "name": "reserved2",
+            "type": {
+              "defined": {
+                "name": "PrincipleDetails"
+              }
+            }
+          },
+          {
+            "name": "reserved3",
+            "type": {
+              "defined": {
+                "name": "PrincipleDetails"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "RedeemSyReturnData",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "base_out_amount",
+            "type": "u64"
+          },
+          {
+            "name": "exchange_rate",
+            "type": {
+              "defined": {
+                "name": "Number"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "Reward",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "last_seen_share_index",
+            "type": {
+              "defined": {
+                "name": "Number"
+              }
+            }
+          },
+          {
+            "name": "claimable_rewards_amount",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "SyMeta",
+      "docs": [
+        "Metadata for an SY token"
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "mint_sy",
+            "docs": [
+              "Mint for the SY token"
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "token_sy_escrow",
+            "docs": [
+              "Escrow account where SY gets deposited"
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "max_sy_supply",
+            "docs": [
+              "Maximum supply of SY tokens"
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "min_mint_size",
+            "docs": [
+              "Minimum size of SY tokens that can be made from minting",
+              "This is to prevent dust from being minted, or from rounding errors"
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "min_redeem_size",
+            "docs": [
+              "Minimum size of SY tokens that can be redeemed",
+              "This is to prevent dust from being redeemed, or from rounding errors"
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "self_address_bump",
+            "docs": [
+              "Bump for the self address to this PDA"
+            ],
+            "type": {
+              "array": [
+                "u8",
+                1
+              ]
+            }
+          },
+          {
+            "name": "index",
+            "docs": [
+              "Index of the SY token"
+            ],
+            "type": {
+              "defined": {
+                "name": "Number"
+              }
+            }
+          },
+          {
+            "name": "yield_bearing_mint",
+            "docs": [
+              "Yield bearing mint id"
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "interface_type",
+            "docs": [
+              "Type of interface being used"
+            ],
+            "type": {
+              "defined": {
+                "name": "InterfaceType"
+              }
+            }
+          },
+          {
+            "name": "hook",
+            "docs": [
+              "Info for pre mint and post redeem hooks"
+            ],
+            "type": {
+              "defined": {
+                "name": "Hook"
+              }
+            }
+          },
+          {
+            "name": "interface_accounts",
+            "type": {
+              "vec": "pubkey"
+            }
+          },
+          {
+            "name": "emissions",
+            "docs": [
+              "List of emissions"
+            ],
+            "type": {
+              "vec": {
+                "defined": {
+                  "name": "generic_standard::state::sy_meta::Emission"
+                }
+              }
+            }
+          },
+          {
+            "name": "last_slot_cached",
+            "docs": [
+              "Last slot where index was cached"
+            ],
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "SyState",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "exchange_rate",
+            "type": {
+              "defined": {
+                "name": "Number"
+              }
+            }
+          },
+          {
+            "name": "emission_indexes",
+            "type": {
+              "vec": {
+                "defined": {
+                  "name": "Number"
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "generic_standard::state::sy_meta::Emission",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "mint",
+            "docs": [
+              "Mint of the emission"
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "index",
+            "docs": [
+              "Index of the emission"
+            ],
+            "type": {
+              "defined": {
+                "name": "Number"
+              }
+            }
+          },
+          {
+            "name": "last_seen_total_accrued_emissions",
+            "docs": [
+              "How many emissions have been earned by the SY pool over its lifetime"
+            ],
+            "type": "u128"
+          },
+          {
+            "name": "total_claimed_emissions",
+            "docs": [
+              "How many emissions have been withdrawn by SY users over its lifetime"
+            ],
+            "type": "u128"
+          },
+          {
+            "name": "token_program",
+            "type": "pubkey"
+          },
+          {
+            "name": "escrow_account",
+            "docs": [
+              "Token account that holds collected emissions in escrow"
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "treasury_emission",
+            "docs": [
+              "Treasury emission comes from the emissions of SY that has not been staked and can be withdrawn by the Admin key"
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "last_seen_index",
+            "docs": [
+              "Used for staging treasury earnings from unstaked SY"
+            ],
+            "type": {
+              "defined": {
+                "name": "Number"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "sy_common::Emission",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "amount_claimable",
+            "type": "u64"
+          },
+          {
+            "name": "last_seen_emission_index",
+            "type": {
+              "defined": {
+                "name": "Number"
+              }
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "constants": [
+    {
+      "name": "POSITION_BASE_SEED",
+      "type": "bytes",
+      "value": "[112, 111, 115, 105, 116, 105, 111, 110]"
+    },
+    {
+      "name": "RECEIPT_MINT_BASE_SEED",
+      "type": "bytes",
+      "value": "[103, 101, 110, 101, 114, 105, 99, 95, 116, 111, 107, 101, 110]"
+    },
+    {
+      "name": "SY_ESCROW_SEED",
+      "type": "bytes",
+      "value": "[115, 121, 95, 101, 115, 99, 114, 111, 119]"
+    },
+    {
+      "name": "SY_META_SEED",
+      "type": "bytes",
+      "value": "[109, 101, 116, 97]"
+    }
+  ]
+}

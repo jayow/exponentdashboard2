@@ -54,12 +54,24 @@ def _mints_to_snapshot(con: duckdb.DuckDBPyConnection) -> list[tuple[str, str, s
           SELECT market_key, yt_mint AS mint, 'YT' AS leg FROM main_core.dim_markets WHERE yt_mint IS NOT NULL
           UNION ALL
           SELECT market_key, lp_mint AS mint, 'LP' AS leg FROM main_core.dim_markets WHERE lp_mint IS NOT NULL
+          UNION ALL
+          -- Tranching LPs (sr/jr risk-tranche shares). Use latest snapshot from
+          -- raw_tranche_states; seed_id is the per-vault tag (e.g. 'onycC101').
+          SELECT t.seed_id AS market_key, t.mint_lp_senior AS mint, 'TRANCHE_SR' AS leg
+          FROM main.raw_tranche_states t
+          WHERE t.snapshot_date = (SELECT MAX(snapshot_date) FROM main.raw_tranche_states)
+            AND t.mint_lp_senior IS NOT NULL
+          UNION ALL
+          SELECT t.seed_id AS market_key, t.mint_lp_junior AS mint, 'TRANCHE_JR' AS leg
+          FROM main.raw_tranche_states t
+          WHERE t.snapshot_date = (SELECT MAX(snapshot_date) FROM main.raw_tranche_states)
+            AND t.mint_lp_junior IS NOT NULL
         )
         SELECT
             l.mint,
             l.market_key,
             l.leg,
-            COALESCE(tm.decimals, dm.underlying_decimals, 6) AS decimals
+            COALESCE(tm.decimals, dm.underlying_decimals, 9) AS decimals
         FROM legs l
         LEFT JOIN main.raw_token_metadata tm ON tm.mint = l.mint
         LEFT JOIN main_core.dim_markets dm  ON dm.market_key = l.market_key

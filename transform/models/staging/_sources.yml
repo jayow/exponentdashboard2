@@ -126,6 +126,47 @@ sources:
           - name: sy_mint
             tests: [not_null]
 
+      - name: raw_tranche_states
+        description: Per-day snapshot of ExponentTranchingMarket account state (sr/jr NAV, return shares, supply, risk config). Decoded from XPTrnchoawi program. One row per (snapshot_date, tranche_vault).
+
+      - name: raw_tranche_return_curves
+        description: Piecewise-linear return-share curve for each tranche vault. 50 (x, y) breakpoints per (snapshot_date, tranche_vault).
+
+      - name: raw_tranche_lp_actions
+        description: Per-tx LP deposits/withdrawals against tranche vaults. Sweeps WrapperDeposit/WrapperWithdraw txs and decodes balance deltas per wallet+leg.
+
+      - name: raw_strategy_vault_states
+        description: Per-day snapshot of ExponentStrategyVault account state (AUM, LP supply, fees, withdrawal windows, 9-variant strategy_positions, squads_vault authority). Decoded from sVau1t program. One row per (snapshot_date, vault).
+        columns:
+          - name: snapshot_date
+            tests: [not_null]
+          - name: vault
+            tests: [not_null]
+
+      - name: raw_strategy_vault_signatures
+        description: Program-scoped tx signatures for the strategy-vault program (sVau1t). Used as the cursor input for raw_strategy_vault_actions decoding.
+        columns:
+          - name: signature
+            tests: [unique, not_null]
+
+      - name: raw_strategy_vault_actions
+        description: Per-instruction row for strategy-vault txs — deposit/queue/execute/cancel withdrawal, fast-exit, fee collection, oracle cranks (update_price/update_twap_price), governance, and anchor_event_cpi self-emits. Args decoded per 1-byte shank discriminator.
+        columns:
+          - name: signature
+            tests: [not_null]
+          - name: ix_name
+            tests: [not_null]
+
+      - name: raw_strategy_vault_holders
+        description: Per-day snapshot of LP-token holders per vault. Filters out program-internal PDAs (token_lp_escrow, fee_treasury). Forward-only history.
+        columns:
+          - name: snapshot_date
+            tests: [not_null]
+          - name: vault
+            tests: [not_null]
+          - name: holder
+            tests: [not_null]
+
       - name: raw_token_metadata
         description: Helius DAS Metaplex token metadata, keyed by mint.
         columns:

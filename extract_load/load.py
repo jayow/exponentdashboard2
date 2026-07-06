@@ -124,6 +124,311 @@ RAW_DDL = {
             PRIMARY KEY (snapshot_date, vault)
         )
     """,
+    "raw_tranche_return_curves": """
+        -- Piecewise-linear return-share curve for one tranche vault, decoded
+        -- from the ExponentTranchingMarketReturnModel account (8173 bytes,
+        -- disc 9cfb62964e7fc44d) pointed to by raw_tranche_states.return_model_storage.
+        --
+        -- Curve definition: 50 (x, y) breakpoints, both in u256/1e12 [0..1].
+        -- Anchor stores 100 × 80-byte slots; slot[i].limb[0] holds x[i] for
+        -- i in 0..50, slot[i].limb[9] holds y[i] for i in 50..99 (workflow
+        -- finding from byte-level decoder).
+        --
+        -- We DENORMALIZE: one row per (snapshot_date, vault, breakpoint_idx)
+        -- so dbt can interpolate cleanly via window functions.
+        CREATE TABLE IF NOT EXISTS raw_tranche_return_curves (
+            snapshot_date     DATE NOT NULL,
+            tranche_vault     VARCHAR NOT NULL,
+            breakpoint_idx    SMALLINT NOT NULL,
+            x_value           DOUBLE,
+            y_value           DOUBLE,
+            PRIMARY KEY (snapshot_date, tranche_vault, breakpoint_idx)
+        )
+    """,
+    "raw_tranche_lp_actions": """
+        -- Per-tx deposits / withdrawals against a tranche vault, decoded
+        -- from WrapperDeposit / WrapperWithdraw / Deposit / Withdraw txs.
+        -- Powers wallet-level position history.
+        --
+        -- One row per (signature, wallet, leg). LP amount + SY amount are
+        -- raw atoms (9 decimals for both sides today). Sign convention:
+        -- positive = into-vault (deposit), negative = out-of-vault (withdraw).
+        --
+        -- Populated by extract_load/extract_tranche_actions.py via a
+        -- watermarked getSignaturesForAddress sweep on each tranche vault PDA.
+        CREATE TABLE IF NOT EXISTS raw_tranche_lp_actions (
+            signature         VARCHAR NOT NULL,
+            tranche_vault     VARCHAR NOT NULL,
+            block_time        BIGINT NOT NULL,
+            slot              BIGINT,
+            ix_name           VARCHAR,
+            wallet            VARCHAR NOT NULL,
+            leg               VARCHAR NOT NULL, -- 'SR' or 'JR'
+            lp_mint           VARCHAR,
+            lp_amount_raw     HUGEINT,
+            sy_amount_raw     HUGEINT,
+            fetched_at        TIMESTAMP DEFAULT now(),
+            PRIMARY KEY (signature, wallet, leg)
+        )
+    """,
+    "raw_tranche_states": """
+        -- Per-snapshot tranche market state, decoded from the
+        -- ExponentTranchingMarket account (program XPTrnchoawi…). One row
+        -- per (snapshot_date, tranche_vault). USD/ratio fields are scaled
+        -- already: NAV is u256/1e21; utilization/coverage/jr_return_share
+        -- are u256/1e12 (natural fractions). LP supply + sy amounts are
+        -- raw atom u64s — caller divides by 10^lp_decimals / 10^sy_decimals.
+        --
+        -- Populated by extract_load/extract_tranche_states.py.
+        -- Layout decoded against Anchor IDL @exponent-labs/exponent-tranching-idl
+        -- (see docs/ONYC_TRANCHES_PLAN.md).
+        CREATE TABLE IF NOT EXISTS raw_tranche_states (
+            snapshot_date                  DATE NOT NULL,
+            tranche_vault                  VARCHAR NOT NULL,
+            seed_id                        VARCHAR,
+            sy_mint                        VARCHAR,
+            sy_program                     VARCHAR,
+            token_sy_escrow                VARCHAR,
+            mint_lp_senior                 VARCHAR,
+            mint_lp_junior                 VARCHAR,
+            return_model_storage           VARCHAR,
+            address_lookup_table           VARCHAR,
+            status_flags                   SMALLINT,
+            market_state                   SMALLINT,
+            sr_raw_nav_usd                 DOUBLE,
+            jr_raw_nav_usd                 DOUBLE,
+            sr_effective_nav_usd           DOUBLE,
+            jr_effective_nav_usd           DOUBLE,
+            sr_impermanent_loss            DOUBLE,
+            jr_impermanent_loss            DOUBLE,
+            utilization                    DOUBLE,
+            current_junior_return_share    DOUBLE,
+            tw_junior_return_share_accrued DOUBLE,
+            last_sync_ts                   BIGINT,
+            last_distribution_ts           BIGINT,
+            fixed_term_end_ts              BIGINT,
+            total_sr_lp_supply             UBIGINT,
+            total_jr_lp_supply             UBIGINT,
+            max_sr_lp_supply               UBIGINT,
+            max_jr_lp_supply               UBIGINT,
+            sr_sy_amount                   UBIGINT,
+            jr_sy_amount                   UBIGINT,
+            min_coverage_ratio             DOUBLE,
+            fixed_term_duration_sec        INTEGER,
+            min_deposit_amount             UBIGINT,
+            PRIMARY KEY (snapshot_date, tranche_vault)
+        )
+    """,
+    "raw_strategy_vault_states": """
+        -- Per-snapshot Exponent Strategy Vault state, decoded from the
+        -- StrategyVault account (program sVau1tXv…). One row per
+        -- (vault, snapshot_date). Squads-governed managed vault holding a
+        -- mix of underlying + strategy positions; LP mint tracks share of
+        -- AUM.
+        --
+        -- Complex nested fields (token_entries, strategy_positions) are
+        -- stored as JSON strings for downstream dbt parsing; nav_cb_state
+        -- is kept as raw hex.
+        CREATE TABLE IF NOT EXISTS raw_strategy_vault_states (
+            snapshot_date                        DATE,
+            vault                                VARCHAR,
+            slot                                 BIGINT,
+            snapshot_ts                          TIMESTAMP,
+            squads_settings                      VARCHAR,
+            squads_vault                         VARCHAR,
+            underlying_mint                      VARCHAR,
+            mint_lp                              VARCHAR,
+            token_lp_escrow                      VARCHAR,
+            fee_treasury                         VARCHAR,
+            self_address                         VARCHAR,
+            normal_withdrawal_cut_bp             INTEGER,
+            signer_bump                          INTEGER,
+            status_flags                         INTEGER,
+            lp_balance                           BIGINT,
+            aum_in_base                          BIGINT,
+            aum_in_base_in_positions             BIGINT,
+            pending_management_fee_lp            BIGINT,
+            last_management_fee_accrued_at       BIGINT,
+            pending_withdrawal_backlog_due_at    BIGINT,
+            instant_withdrawal_window_end        BIGINT,
+            instant_withdrawal_window_cap_aum    BIGINT,
+            instant_withdrawn_aum_in_window      BIGINT,
+            total_lp_staked_in_votes             BIGINT,
+            total_lp_pending_withdrawals         BIGINT,
+            max_aum_supply                       BIGINT,
+            seed_id                              VARCHAR,
+            management_fee_bps                   BIGINT,
+            fast_withdrawal_cut_bp               INTEGER,
+            reserves_share_bp                    BIGINT,
+            instant_withdrawal_window_limit_bp   BIGINT,
+            withdrawal_cancel_cooldown_seconds   BIGINT,
+            max_swap_slippage_bp                 BIGINT,
+            nav_aum_change_threshold_bps         BIGINT,
+            token_entries_json                   VARCHAR,
+            strategy_positions_json              VARCHAR,
+            nav_cb_state_hex                     VARCHAR,
+            PRIMARY KEY (vault, snapshot_date)
+        )
+    """,
+    "raw_strategy_vault_signatures": """
+        -- Watermarked getSignaturesForAddress sweep against the Strategy
+        -- Vault program (or per-vault PDA). One row per signature.
+        CREATE TABLE IF NOT EXISTS raw_strategy_vault_signatures (
+            program_id   VARCHAR,
+            signature    VARCHAR PRIMARY KEY,
+            slot         BIGINT,
+            block_time   BIGINT,
+            err          VARCHAR,
+            fetched_at   TIMESTAMP
+        )
+    """,
+    "raw_strategy_vault_actions": """
+        -- Per-instruction decoded actions against a strategy vault
+        -- (deposit/withdraw/manager ops). One row per (signature, ix_index).
+        -- lp_delta / base_delta are signed atom counts (positive = into vault).
+        CREATE TABLE IF NOT EXISTS raw_strategy_vault_actions (
+            signature             VARCHAR,
+            ix_index              INTEGER,
+            slot                  BIGINT,
+            block_time            BIGINT,
+            vault                 VARCHAR,
+            ix_name               VARCHAR,
+            ix_discriminator_hex  VARCHAR,
+            actor                 VARCHAR,
+            lp_delta              BIGINT,
+            base_delta            BIGINT,
+            program_return_hex    VARCHAR,
+            args_json             VARCHAR,
+            tx_success            BOOLEAN,
+            PRIMARY KEY (signature, ix_index)
+        )
+    """,
+    "raw_strategy_vault_holders": """
+        -- Forward-only per-day holder snapshot for strategy-vault LP mints.
+        -- One row per (vault, holder, snapshot_date).
+        CREATE TABLE IF NOT EXISTS raw_strategy_vault_holders (
+            vault         VARCHAR,
+            mint_lp       VARCHAR,
+            holder        VARCHAR,
+            lp_amount     BIGINT,
+            snapshot_date DATE,
+            snapshot_ts   TIMESTAMP,
+            slot          BIGINT,
+            PRIMARY KEY (vault, holder, snapshot_date)
+        )
+    """,
+    "raw_strategy_vault_obligations": """
+        -- Kamino K-Lend obligations referenced by strategy-vault
+        -- strategy_positions. One row per (vault, obligation, snapshot_date)
+        -- with USD-quoted value summary (K-Lend Fraction fields ÷ 2^60).
+        -- deposits_json / borrows_json hold per-reserve breakdowns.
+        CREATE TABLE IF NOT EXISTS raw_strategy_vault_obligations (
+            snapshot_date           DATE,
+            vault                   VARCHAR,
+            obligation              VARCHAR,
+            lending_market          VARCHAR,
+            collateral_value        DOUBLE,
+            debt_value              DOUBLE,
+            allowed_borrow_value    DOUBLE,
+            unhealthy_borrow_value  DOUBLE,
+            deposits_json           VARCHAR,
+            borrows_json            VARCHAR,
+            snapshot_ts             TIMESTAMP,
+            PRIMARY KEY (vault, obligation, snapshot_date)
+        )
+    """,
+    "raw_strategy_vault_proposals": """
+        -- Current on-chain ActionProposal accounts (vault governance).
+        -- Full-replace each run (proposals are lifecycle accounts). Actions
+        -- are structural summaries; pubkey→symbol resolution happens in
+        -- serve. parse_error marks header-only rows (older action layouts).
+        CREATE TABLE IF NOT EXISTS raw_strategy_vault_proposals (
+            account             VARCHAR,
+            vault               VARCHAR,
+            proposal_id         BIGINT,
+            proposer            VARCHAR,
+            status              VARCHAR,
+            created_at          BIGINT,
+            voting_ends_at      BIGINT,
+            timelock_seconds    BIGINT,
+            executable_at       BIGINT,
+            reject_votes        BIGINT,
+            opt_out_votes       BIGINT,
+            lp_supply_snapshot  BIGINT,
+            n_actions           INTEGER,
+            actions_json        VARCHAR,
+            parse_error         VARCHAR,
+            fetch_ts            TIMESTAMP,
+            PRIMARY KEY (vault, proposal_id)
+        )
+    """,
+    "raw_strategy_vault_executions": """
+        -- One row per policy-gated execution tx (identified via
+        -- validate_interaction_hook): manager's actual DeFi legs. types are
+        -- instruction-discriminator verbs; asset/amount is the squads
+        -- vault's largest token delta; deltas_json keeps all mint deltas.
+        CREATE TABLE IF NOT EXISTS raw_strategy_vault_executions (
+            signature    VARCHAR PRIMARY KEY,
+            vault        VARCHAR,
+            block_time   BIGINT,
+            types        VARCHAR,
+            program_ids  VARCHAR,
+            asset_mint   VARCHAR,
+            amount_ui    DOUBLE,
+            deltas_json  VARCHAR,
+            fetch_ts     TIMESTAMP
+        )
+    """,
+    "raw_strategy_vault_withdrawals": """
+        -- Current on-chain withdrawal queue (WithdrawalAccount PDAs), one
+        -- row per open request. Full-replace each run (accounts close on
+        -- execute). Payout timing comes from vault state's
+        -- pending_withdrawal_backlog_due_at, not from these rows.
+        CREATE TABLE IF NOT EXISTS raw_strategy_vault_withdrawals (
+            account              VARCHAR PRIMARY KEY,
+            vault                VARCHAR,
+            owner                VARCHAR,
+            lp_amount_requested  BIGINT,
+            lp_amount_remaining  BIGINT,
+            n_fills              INTEGER,
+            created_at           BIGINT,
+            updated_at           BIGINT,
+            fills_json           VARCHAR,
+            fetch_ts             TIMESTAMP
+        )
+    """,
+    "raw_strategy_vault_registry": """
+        -- Exponent's managed-strategy registry (api.exponent.finance
+        -- /strategies/managed): curated names, strategist, deposit/quote
+        -- tokens, capacity, fees, and Exponent's own windowed APYs from
+        -- their lpPrice history. One row per (address, fetch_date);
+        -- payload_json keeps the full API object.
+        CREATE TABLE IF NOT EXISTS raw_strategy_vault_registry (
+            fetch_date       DATE,
+            address          VARCHAR,
+            name             VARCHAR,
+            strategist       VARCHAR,
+            profile          VARCHAR,
+            description      VARCHAR,
+            deposit_mint     VARCHAR,
+            deposit_ticker   VARCHAR,
+            quote_ticker     VARCHAR,
+            apy_3d           DOUBLE,
+            apy_7d           DOUBLE,
+            apy_30d          DOUBLE,
+            apy_current      DOUBLE,
+            pt_weight        DOUBLE,
+            lp_price         DOUBLE,
+            tvl              DOUBLE,
+            exchange_rate    DOUBLE,
+            capacity         DOUBLE,
+            management_fee   DOUBLE,
+            performance_fee  DOUBLE,
+            payload_json     VARCHAR,
+            fetch_ts         TIMESTAMP,
+            PRIMARY KEY (address, fetch_date)
+        )
+    """,
     "raw_market_three_states": """
         -- Per-CLMM-market state needed for unclaimed-yield computation:
         --   • ticks_account     — PDA holding the tick array (raw_clmm_ticks)
@@ -449,6 +754,10 @@ COLUMN_MIGRATIONS: list[tuple[str, str, str]] = [
     ("raw_positions",  "clmm_farm_staged",          "UBIGINT"),
     ("raw_positions",  "clmm_total_lp_share",       "DOUBLE"),
     ("raw_v2_markets", "sy_decimals",               "SMALLINT"),
+    # Pool SY exchange rate (decoded from XP1BRL AMM pool account, u64 LE at
+    # byte offset 97..105 / 1e12). Powers underlying APY derivation when
+    # multiple snapshots accumulate.
+    ("raw_pool_state", "current_sy_exchange_rate",   "DOUBLE"),
 ]
 
 # Tables that had breaking schema changes — drop + recreate (data loss is OK
