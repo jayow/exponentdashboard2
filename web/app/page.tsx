@@ -5,16 +5,18 @@ import { TvlByPlatform } from '@/components/TvlByPlatform';
 import { BigChart } from '@/components/BigChart';
 import { MarketsList } from '@/components/MarketsList';
 import { UsersAnalytics } from '@/components/UsersAnalytics';
+import { TranchingAnalytics } from '@/components/TranchingAnalytics';
+import { ManagedStrategies } from '@/components/ManagedStrategies';
+import { StrategyVaultAnalytics } from '@/components/StrategyVaultAnalytics';
 
-type Tab = 'markets' | 'users';
+type Tab = 'markets' | 'users' | 'tranching' | 'strategies' | 'vaults';
 
 const TABS: { key: Tab; label: string }[] = [
-  { key: 'markets', label: 'Markets' },
-  // Users tab now includes leaderboard, cohorts, growth, retention,
-  // whale activity, and per-market holder concentration as sub-views.
-  // "Holders" used to be a separate tab — merged in to match v1 where
-  // holders and users are the same population.
-  { key: 'users',   label: 'Users' },
+  { key: 'markets',    label: 'Markets' },
+  { key: 'users',      label: 'Users' },
+  { key: 'tranching',  label: 'Tranching' },
+  { key: 'strategies', label: 'Strategies' },
+  { key: 'vaults',     label: 'Strategy Vaults' },
 ];
 
 export default function HomePage() {
@@ -55,8 +57,11 @@ export default function HomePage() {
           })}
         </div>
 
-        {tab === 'markets' && <MarketsList />}
-        {tab === 'users'   && <UsersAnalytics />}
+        {tab === 'markets'    && <MarketsList />}
+        {tab === 'users'      && <UsersAnalytics />}
+        {tab === 'tranching'  && <TranchingAnalytics />}
+        {tab === 'strategies' && <ManagedStrategies />}
+        {tab === 'vaults'     && <StrategyVaultAnalytics />}
       </div>
     </main>
   );
