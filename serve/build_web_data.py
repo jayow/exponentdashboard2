@@ -2061,7 +2061,12 @@ def build_strategy_vault_json(con: duckdb.DuckDBPyConnection) -> dict:
             "idleRatio":              float(row["idle_ratio"]) if row["idle_ratio"] is not None else None,
             "fastExitUtilization":    float(row["fast_exit_utilization"]) if row["fast_exit_utilization"] is not None else None,
             "pendingWithdrawRatio":   float(row["pending_withdraw_ratio"]) if row["pending_withdraw_ratio"] is not None else None,
-            "managementFeeBps":       row["management_fee_bps"],
+            # On-chain management_fee_bps is misnamed: the u64 is the fee
+            # fraction × 1e6 (ppm), NOT bps — verified against Exponent's
+            # API (Solstice raw 15000 ↔ managementFee 0.015 = 150 bps).
+            # ÷100 converts ppm → true bps so the UI's fmtBp renders right.
+            "managementFeeBps":       (row["management_fee_bps"] / 100)
+                                      if row["management_fee_bps"] is not None else None,
             "normalWithdrawalCutBp":  row["normal_withdrawal_cut_bp"],
             "fastWithdrawalCutBp":    row["fast_withdrawal_cut_bp"],
             "snapshotDate":           str(snap_date) if snap_date is not None else None,

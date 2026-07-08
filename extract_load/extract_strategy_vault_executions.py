@@ -172,6 +172,13 @@ async def run(limit: int | None = None) -> dict:
                     continue
                 verbs, programs = _classify(tx)
                 deltas = _squads_deltas(tx, squads)
+                # Setup transactions (init user metadata / obligation /
+                # yield position) move no tokens and match no verb — label
+                # them so they render meaningfully AND stay distinct from
+                # the self-heal predicate above (empty types + empty deltas
+                # marks only rows written without a squads mapping).
+                if not verbs and not deltas:
+                    verbs = ["Setup"]
                 primary = deltas[0] if deltas else None
                 rows.append((
                     sig, vault, int(block_time or 0),
