@@ -18,15 +18,6 @@ install:
 	cd transform && dbt deps
 
 extract:
-	python3 -m extract_load.extract_markets
-	python3 -m extract_load.extract_signatures
-	python3 -m extract_load.extract_transactions
-	python3 -m extract_load.extract_token_metadata
-	python3 -m extract_load.extract_prices
-	python3 -m extract_load.extract_positions
-	python3 -m extract_load.extract_pool_state
-	python3 -m extract_load.extract_holders
-	python3 -m extract_load.extract_anchor_events
 	python3 -m extract_load.extract_strategy_vault_registry
 	python3 -m extract_load.extract_strategy_vault_states
 	python3 -m extract_load.extract_strategy_vault_obligations
@@ -36,6 +27,15 @@ extract:
 	python3 -m extract_load.extract_strategy_vault_actions
 	python3 -m extract_load.extract_strategy_vault_executions
 	python3 -m extract_load.extract_strategy_vault_holders
+	python3 -m extract_load.extract_markets
+	python3 -m extract_load.extract_signatures
+	python3 -m extract_load.extract_transactions
+	python3 -m extract_load.extract_token_metadata
+	python3 -m extract_load.extract_prices
+	python3 -m extract_load.extract_positions
+	python3 -m extract_load.extract_pool_state
+	python3 -m extract_load.extract_holders
+	python3 -m extract_load.extract_anchor_events
 
 transform:
 	cd transform && DBT_PROFILES_DIR=. dbt build

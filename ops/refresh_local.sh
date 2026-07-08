@@ -150,6 +150,19 @@ run() {
   fi
 }
 
+# Strategy vaults FIRST — their getProgramAccounts calls are the most
+# 429-prone, so run them while the RPC key is cold (2026-07-07/08 GHA runs
+# 429'd all gPA extractors after an hour of tx fetching). states before
+# obligations/holders; actions after signatures; executions after both.
+run extract_sv_registry     "$PY" -m extract_load.extract_strategy_vault_registry
+run extract_sv_states       "$PY" -m extract_load.extract_strategy_vault_states
+run extract_sv_obligations  "$PY" -m extract_load.extract_strategy_vault_obligations
+run extract_sv_proposals    "$PY" -m extract_load.extract_strategy_vault_proposals
+run extract_sv_withdrawals  "$PY" -m extract_load.extract_strategy_vault_withdrawals
+run extract_sv_signatures   "$PY" -m extract_load.extract_strategy_vault_signatures
+run extract_sv_actions      "$PY" -m extract_load.extract_strategy_vault_actions
+run extract_sv_executions   "$PY" -m extract_load.extract_strategy_vault_executions
+run extract_sv_holders      "$PY" -m extract_load.extract_strategy_vault_holders
 run extract_markets         "$PY" -m extract_load.extract_markets
 run extract_signatures      "$PY" -m extract_load.extract_signatures
 run extract_transactions    "$PY" -m extract_load.extract_transactions
@@ -170,17 +183,6 @@ run extract_anchor_events   "$PY" -m extract_load.extract_anchor_events
 run extract_lst_rates       "$PY" -m extract_load.extract_lst_rates
 run extract_v2_markets      "$PY" -m extract_load.extract_v2_markets
 run extract_v2_books        "$PY" -m extract_load.extract_v2_books
-# Strategy vaults: states before obligations/holders (both read the latest
-# states snapshot); actions consumes the signatures cursor.
-run extract_sv_registry     "$PY" -m extract_load.extract_strategy_vault_registry
-run extract_sv_states       "$PY" -m extract_load.extract_strategy_vault_states
-run extract_sv_obligations  "$PY" -m extract_load.extract_strategy_vault_obligations
-run extract_sv_proposals    "$PY" -m extract_load.extract_strategy_vault_proposals
-run extract_sv_withdrawals  "$PY" -m extract_load.extract_strategy_vault_withdrawals
-run extract_sv_signatures   "$PY" -m extract_load.extract_strategy_vault_signatures
-run extract_sv_actions      "$PY" -m extract_load.extract_strategy_vault_actions
-run extract_sv_executions   "$PY" -m extract_load.extract_strategy_vault_executions
-run extract_sv_holders      "$PY" -m extract_load.extract_strategy_vault_holders
 
 if [ $failed -gt 0 ]; then
   echo ""

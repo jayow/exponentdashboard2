@@ -81,6 +81,9 @@ jobs:
           SOLANA_RPC_URLS=${{ secrets.SOLANA_RPC_URLS }}
           WAREHOUSE_PATH=data/warehouse.duckdb
           EOF
+          # Cloud RTT (<15ms) bursts past Helius's undocumented per-method
+          # getProgramAccounts cap — halve the client-side gPA pacing on CI.
+          echo "HELIUS_GPA_RPS_CAP=1" >> "$GITHUB_ENV"
 
       # ── Run the refresh pipeline ─────────────────────────────────────
       # Each step is allowed to fail with `|| true` so we can compact +
@@ -106,6 +109,21 @@ jobs:
               failed=$((failed + 1))
             fi
           }
+          # Strategy-vault extractors go FIRST: their getProgramAccounts
+          # calls are the most 429-prone, so run them while the RPC key is
+          # cold rather than after an hour of tx fetching (2026-07-07/08
+          # runs 429'd every gPA extractor and emptied prod's Strategies
+          # tab). states before obligations/holders; actions after
+          # signatures; executions after actions + states.
+          run extract_sv_registry     python -m extract_load.extract_strategy_vault_registry
+          run extract_sv_states       python -m extract_load.extract_strategy_vault_states
+          run extract_sv_obligations  python -m extract_load.extract_strategy_vault_obligations
+          run extract_sv_proposals    python -m extract_load.extract_strategy_vault_proposals
+          run extract_sv_withdrawals  python -m extract_load.extract_strategy_vault_withdrawals
+          run extract_sv_signatures   python -m extract_load.extract_strategy_vault_signatures
+          run extract_sv_actions      python -m extract_load.extract_strategy_vault_actions
+          run extract_sv_executions   python -m extract_load.extract_strategy_vault_executions
+          run extract_sv_holders      python -m extract_load.extract_strategy_vault_holders
           run extract_markets         python -m extract_load.extract_markets
           run extract_signatures      python -m extract_load.extract_signatures
           run extract_transactions    python -m extract_load.extract_transactions
@@ -118,17 +136,6 @@ jobs:
           run extract_lst_rates       python -m extract_load.extract_lst_rates
           run extract_v2_markets      python -m extract_load.extract_v2_markets
           run extract_v2_books        python -m extract_load.extract_v2_books
-          # Strategy vaults: states before obligations/holders (both read the
-          # latest states snapshot); actions consumes the signatures cursor.
-          run extract_sv_registry     python -m extract_load.extract_strategy_vault_registry
-          run extract_sv_states       python -m extract_load.extract_strategy_vault_states
-          run extract_sv_obligations  python -m extract_load.extract_strategy_vault_obligations
-          run extract_sv_proposals    python -m extract_load.extract_strategy_vault_proposals
-          run extract_sv_withdrawals  python -m extract_load.extract_strategy_vault_withdrawals
-          run extract_sv_signatures   python -m extract_load.extract_strategy_vault_signatures
-          run extract_sv_actions      python -m extract_load.extract_strategy_vault_actions
-          run extract_sv_executions   python -m extract_load.extract_strategy_vault_executions
-          run extract_sv_holders      python -m extract_load.extract_strategy_vault_holders
           if [ $failed -gt 0 ]; then
             echo "::warning::$failed extractor(s) failed — dbt + serve will run on partial data"
           fi
@@ -160,6 +167,14 @@ jobs:
           size=$(stat -c %s web/public/tvl.json 2>/dev/null || echo 0)
           if [ "$size" -lt 100000 ]; then
             echo "::error::tvl.json too small ($size bytes) — refusing to publish"
+            ok=false
+          fi
+          # strategy_vault.json must carry vaults — an empty array means the
+          # gPA extractors failed (e.g. RPC 429) and publishing would wipe
+          # the Strategies tab on prod (happened 2026-07-06..08).
+          sv_count=$(python -c "import json; print(len(json.load(open('web/public/strategy_vault.json'))['vaults']))" 2>/dev/null || echo 0)
+          if [ "$sv_count" -lt 1 ]; then
+            echo "::error::strategy_vault.json has $sv_count vaults — refusing to publish"
             ok=false
           fi
           echo "ok=$ok" >> "$GITHUB_OUTPUT"

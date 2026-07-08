@@ -170,10 +170,12 @@ class SolanaRpcClient:
             sem.release()
 
     @retry(
-        # 8 attempts with backoff up to 60s gives ~3 min of total wait
-        # (1+2+4+8+16+32+60+60). Sized to ride out Helius's worst bursts.
+        # 11 attempts with backoff capped at 60s gives ~7 min of total wait
+        # (1+2+4+8+16+32+60×5). Sized after the 2026-07-07/08 GHA runs where
+        # Helius kept 429ing getProgramAccounts for >2 min straight and the
+        # old 8-attempt budget gave up (emptying the Strategies tab on prod).
         # Wait strategy below honors Retry-After header when present.
-        stop=stop_after_attempt(8),
+        stop=stop_after_attempt(11),
         wait=_wait_with_retry_after,
         retry=retry_if_exception_type((TransientHTTPError, httpx.RequestError)),
         reraise=True,

@@ -134,6 +134,14 @@ async def run(limit: int | None = None) -> dict:
             WHERE snapshot_date = (SELECT MAX(snapshot_date)
                                    FROM raw_strategy_vault_states)
         """).fetchall())
+        # Self-heal: rows with no verbs AND no deltas are the signature of a
+        # run where the squads mapping was unavailable (states extractor had
+        # failed, e.g. RPC 429 on GHA) — drop them so they reprocess below.
+        con.execute("""
+            DELETE FROM raw_strategy_vault_executions
+            WHERE (types IS NULL OR types = '')
+              AND (deltas_json IS NULL OR deltas_json = '[]')
+        """)
         work = con.execute("""
             SELECT DISTINCT a.signature, a.vault, a.block_time
             FROM raw_strategy_vault_actions a
@@ -157,8 +165,13 @@ async def run(limit: int | None = None) -> dict:
             for (sig, vault, block_time), tx in zip(chunk, txs):
                 if tx is None:
                     continue
+                squads = squads_by_vault.get(vault)
+                if not squads:
+                    # No squads mapping (states snapshot missing this vault) —
+                    # skip so the tx reprocesses once states are available.
+                    continue
                 verbs, programs = _classify(tx)
-                deltas = _squads_deltas(tx, squads_by_vault.get(vault, ""))
+                deltas = _squads_deltas(tx, squads)
                 primary = deltas[0] if deltas else None
                 rows.append((
                     sig, vault, int(block_time or 0),
