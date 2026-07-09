@@ -15,10 +15,11 @@ concurrency:
 jobs:
   refresh:
     runs-on: ubuntu-latest
-    # 120: the pipeline outgrew 60 (daily runs were cancelled at 1h00m from
-    # 2026-07-03), and the strategy-vault executions extractor does a one-time
-    # ~17.6K-tx backfill on warehouses that predate its table.
-    timeout-minutes: 120
+    # 180: 60 was outgrown (cancelled at 1h from 2026-07-03); then the
+    # 2026-07-08 429-hardening (gPA throttle + extra retries) slowed runs
+    # enough to hit 120 too. Reverted the throttle below; 180 leaves margin
+    # for Helius 429 retry loops without the run getting killed mid-commit.
+    timeout-minutes: 180
     permissions:
       contents: write
 
@@ -81,9 +82,12 @@ jobs:
           SOLANA_RPC_URLS=${{ secrets.SOLANA_RPC_URLS }}
           WAREHOUSE_PATH=data/warehouse.duckdb
           EOF
-          # Cloud RTT (<15ms) bursts past Helius's undocumented per-method
-          # getProgramAccounts cap — halve the client-side gPA pacing on CI.
-          echo "HELIUS_GPA_RPS_CAP=1" >> "$GITHUB_ENV"
+          # NOTE: an earlier HELIUS_GPA_RPS_CAP=1 here halved gPA throughput
+          # and (with 11 retries) pushed runs past the 120-min timeout — they
+          # were cancelled mid-run and never committed. Reverted to the
+          # default cap (2). Strategy extractors run FIRST (cold key) and the
+          # publish guard blocks empty strategy_vault.json, so occasional
+          # 429s degrade gracefully instead of needing aggressive throttling.
 
       # ── Run the refresh pipeline ─────────────────────────────────────
       # Each step is allowed to fail with `|| true` so we can compact +
