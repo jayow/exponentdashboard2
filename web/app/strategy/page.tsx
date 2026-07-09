@@ -334,6 +334,35 @@ function StrategyDetail({ vault }: { vault: Vault }) {
                   <Row label="Net" v={`$${fmtUnits(o.netValue)}`} />
                   <Row label="LTV (max / liq)"
                        v={`${fmtPct(o.ltv, 1)} (${fmtPct(o.maxLtv, 0)} / ${fmtPct(o.liqLtv, 0)})`} />
+                  {o.collateral && o.collateral.length > 0 && (
+                    <div className="pt-1">
+                      <div className="text-[10px] text-white/35 mb-0.5">
+                        Collateral legs{o.collateral.length > 1 ? ` (${o.collateral.length} loops)` : ''}
+                      </div>
+                      {o.collateral.map(c => (
+                        <div key={c.symbol} className="flex justify-between pl-2">
+                          <span className="text-white/50">
+                            {c.symbol}
+                            {c.ramping && <span className="text-white/30 text-[9px] ml-1.5">ramping</span>}
+                          </span>
+                          <span className="text-white/70 tabular-nums">
+                            {c.ramping ? '—' : `$${fmtUnits(c.valueUi)}`}
+                          </span>
+                        </div>
+                      ))}
+                      {o.borrows && o.borrows.length > 0 && (
+                        <>
+                          <div className="text-[10px] text-white/35 mt-1 mb-0.5">Borrowed</div>
+                          {o.borrows.map(b => (
+                            <div key={b.symbol} className="flex justify-between pl-2">
+                              <span className="text-white/50">{b.symbol}</span>
+                              <span className="text-white/70 tabular-nums">${fmtUnits(b.valueUi)}</span>
+                            </div>
+                          ))}
+                        </>
+                      )}
+                    </div>
+                  )}
                 </div>
               ))}
               {obligations.length === 0 && (

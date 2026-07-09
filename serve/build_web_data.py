@@ -1776,10 +1776,36 @@ def build_strategy_vault_json(con: duckdb.DuckDBPyConnection) -> dict:
 
     # Kamino obligation snapshots (may be absent on warehouses where the
     # obligations extractor hasn't run yet — treat as no data).
+    # mint → symbol for obligation legs (deposits/borrows reference reserve
+    # liquidity mints resolved by the obligations extractor).
+    _oblig_sym = dict(con.execute(
+        "SELECT mint, symbol FROM main.raw_token_metadata WHERE symbol IS NOT NULL"
+    ).fetchall())
+
+    def _oblig_legs(legs_json: str | None) -> list[dict]:
+        out = []
+        for leg in json.loads(legs_json or "[]"):
+            mv = float(leg.get("market_value") or 0)
+            # amount is deposited_amount (deposits) or borrowed_amount (borrows)
+            amt = float(leg.get("deposited_amount") or leg.get("borrowed_amount") or 0)
+            if mv <= 0 and amt <= 0:
+                continue
+            mint = leg.get("mint")
+            out.append({
+                "symbol": _oblig_sym.get(mint) or (mint[:4] + "…" if mint else "?"),
+                "valueUi": mv,
+                # a freshly-deposited leg Kamino hasn't priced yet (real
+                # position, market_value still 0) — flag so the UI can label it
+                "ramping": mv <= 0 and amt > 0,
+            })
+        out.sort(key=lambda x: -x["valueUi"])
+        return out
+
     try:
         oblig_rows = con.execute("""
             SELECT vault, obligation, collateral_value, debt_value,
-                   allowed_borrow_value, unhealthy_borrow_value
+                   allowed_borrow_value, unhealthy_borrow_value,
+                   deposits_json, borrows_json
             FROM main.raw_strategy_vault_obligations
             WHERE snapshot_date = (SELECT MAX(snapshot_date)
                                    FROM main.raw_strategy_vault_obligations)
@@ -1787,12 +1813,14 @@ def build_strategy_vault_json(con: duckdb.DuckDBPyConnection) -> dict:
     except duckdb.Error:
         oblig_rows = []
     obligs_by_vault: dict[str, list[dict]] = {}
-    for vault, obligation, coll, debt, allowed, unhealthy in oblig_rows:
+    for (vault, obligation, coll, debt, allowed, unhealthy,
+         deposits_json, borrows_json) in oblig_rows:
         coll = float(coll or 0)
         debt = float(debt or 0)
         if coll == 0 and debt == 0:
             continue
         net = coll - debt
+        collateral_legs = _oblig_legs(deposits_json)
         obligs_by_vault.setdefault(vault, []).append({
             "obligation":      obligation,
             "collateralValue": coll,
@@ -1802,6 +1830,9 @@ def build_strategy_vault_json(con: duckdb.DuckDBPyConnection) -> dict:
             "maxLtv":          (float(allowed or 0) / coll) if coll > 0 else None,
             "liqLtv":          (float(unhealthy or 0) / coll) if coll > 0 else None,
             "leverage":        (coll / net) if net > 0 else None,
+            "collateral":      collateral_legs,
+            "borrows":         _oblig_legs(borrows_json),
+            "loopCount":       len(collateral_legs),
         })
 
     def _position_tokens(vault_pk: str, te_json: str | None,

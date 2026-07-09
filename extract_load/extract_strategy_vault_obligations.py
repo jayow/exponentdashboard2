@@ -123,6 +123,27 @@ def _obligations_to_snapshot(con) -> list[tuple[str, str]]:
     return pairs
 
 
+async def _resolve_reserve_mints(reserves: list[str]) -> dict[str, str]:
+    """reserve pubkey → liquidity mint (Kamino Reserve.liquidity.mint_pubkey
+    at byte offset 128)."""
+    if not reserves:
+        return {}
+    out: dict[str, str] = {}
+    async with SolanaRpcClient(RPC_ENDPOINTS) as client:
+        for i in range(0, len(reserves), 100):
+            chunk = reserves[i:i + 100]
+            accts = await client.get_multiple_accounts(chunk)
+            for reserve, acct in zip(chunk, accts):
+                if acct is None:
+                    continue
+                data_field = acct["data"]
+                data_b64 = data_field[0] if isinstance(data_field, list) else data_field
+                raw = base64.b64decode(data_b64)
+                if len(raw) >= 160:
+                    out[reserve] = base58.b58encode(raw[128:160]).decode()
+    return out
+
+
 async def run() -> dict:
     if not RPC_ENDPOINTS:
         raise RuntimeError("No SOLANA_RPC_URLS configured in .env")
@@ -145,7 +166,11 @@ async def run() -> dict:
         for i in range(0, len(addresses), 100):
             accounts.extend(await client.get_multiple_accounts(addresses[i:i + 100]))
 
-    out_rows = []
+    # Decode obligations first so we know every reserve referenced, then
+    # resolve reserve → liquidity mint (Kamino Reserve.liquidity.mint_pubkey
+    # at offset 128) so per-leg deposits/borrows can be labeled by asset.
+    decoded_pairs = []
+    reserve_set: set[str] = set()
     for (vault, obligation), acct in zip(pairs, accounts):
         if acct is None:
             rprint(f"  [yellow]warn[/yellow] obligation {obligation[:8]}… not found")
@@ -157,6 +182,17 @@ async def run() -> dict:
         except Exception as e:
             rprint(f"  [yellow]warn[/yellow] obligation {obligation[:8]}… decode failed: {e}")
             continue
+        for leg in d["deposits"] + d["borrows"]:
+            reserve_set.add(leg["reserve"])
+        decoded_pairs.append((vault, obligation, d))
+
+    reserve_mint = await _resolve_reserve_mints(sorted(reserve_set))
+    for d_all in (d for _, _, d in decoded_pairs):
+        for leg in d_all["deposits"] + d_all["borrows"]:
+            leg["mint"] = reserve_mint.get(leg["reserve"])
+
+    out_rows = []
+    for vault, obligation, d in decoded_pairs:
         out_rows.append((
             snapshot_date, vault, obligation, d["lending_market"],
             d["collateral_value"], d["debt_value"],

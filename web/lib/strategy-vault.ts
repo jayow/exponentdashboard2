@@ -42,6 +42,8 @@ export type PositionToken = {
   kind: 'idle' | 'position';
 };
 
+export type ObligationLeg = { symbol: string; valueUi: number; ramping?: boolean };
+
 export type PositionObligation = {
   obligation: string;
   collateralValue: number;
@@ -51,6 +53,9 @@ export type PositionObligation = {
   maxLtv: number | null;
   liqLtv: number | null;
   leverage: number | null;
+  collateral?: ObligationLeg[];
+  borrows?: ObligationLeg[];
+  loopCount?: number;
 };
 
 export type Positions = { tokens: PositionToken[]; obligations: PositionObligation[] };
