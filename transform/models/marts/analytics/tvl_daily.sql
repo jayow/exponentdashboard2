@@ -27,8 +27,9 @@ with mkt_supply_ptyt as (
     group by 1, 2, 3, 4, 5
 ),
 mkt_to_sy as (
-    -- Each market_key → its sy_mint
-    select market_key, sy_mint, interface_type, ticker, platform, underlying_mint
+    -- Each market_key → its sy_mint (+ maturity, to drop expired YT below)
+    select market_key, sy_mint, interface_type, ticker, platform,
+           underlying_mint, maturity_date
     from {{ ref('stg_markets') }} where sy_mint is not null
 ),
 -- v2-only markets (e.g. kUSDG-10AUG26, BulkSOL-31OCT26): the XPBook
@@ -58,7 +59,18 @@ mkt_supply as (
     select * from v2_only_supply
 ),
 mkt_supply_sy as (
-    select s.*, m.sy_mint, s.pt_supply + s.yt_supply as ptyt_supply
+    -- Attribution weight = PT + YT supply, BUT once a market matures its YT
+    -- is worthless and holders never burn it (the mint supply persists), so
+    -- counting expired YT would pull a large phantom share of the shared-SY
+    -- TVL to a dead market (e.g. USX-01JUN26 kept 45M YT and grabbed ~$19M
+    -- of wUSX after maturity). Post-maturity, weight by unredeemed PT only —
+    -- the real remaining claim on the SY backing; the rest flows to active
+    -- siblings.
+    select
+        s.*, m.sy_mint,
+        s.pt_supply
+          + case when m.maturity_date is null or s.date < m.maturity_date
+                 then s.yt_supply else 0 end               as ptyt_supply
     from mkt_supply s
     join mkt_to_sy m using (market_key)
 ),
