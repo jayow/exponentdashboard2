@@ -3,7 +3,7 @@ import { Fragment, Suspense, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import {
-  AreaChart, Area, BarChart, Bar, ComposedChart, LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer,
+  AreaChart, Area, BarChart, Bar, ComposedChart, LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine,
 } from 'recharts';
 import type { V2OrderbookData, V2MarketBook, V2Book, V2OrderRow } from '@/lib/types';
 
@@ -234,9 +234,10 @@ function MarketDetailView() {
     if (metric !== 'iy') return null;
     const s = (tvl?.byMarket?.[marketKey]?.impliedYieldSeries ?? [])
       .filter((v): v is number => v != null && isFinite(v));
-    const book = v2Market?.books?.[activeBookIdx];
-    const bids = (book?.bids ?? []).filter(o => isFinite(o.apy) && o.sizeSy > 0);
-    const asks = (book?.asks ?? []).filter(o => isFinite(o.apy) && o.sizeSy > 0);
+    // Aggregate the ladder across ALL books of the market (BulkSOL runs two).
+    const allBooks = v2Market?.books ?? [];
+    const bids = allBooks.flatMap(b => b.bids ?? []).filter(o => isFinite(o.apy) && o.sizeSy > 0);
+    const asks = allBooks.flatMap(b => b.asks ?? []).filter(o => isFinite(o.apy) && o.sizeSy > 0);
 
     // Anchor the yield axis on where the action is, not on dust limit orders
     // (far-out offers can sit at absurd APYs and would blow up the scale).
@@ -244,18 +245,21 @@ function MarketDetailView() {
     // orders within ±20 percentage points of that center.
     const anchor = s.length
       ? (Math.min(...s) + Math.max(...s)) / 2
-      : (book?.bestBidApy != null && book?.bestAskApy != null
-          ? (book.bestBidApy + book.bestAskApy) / 2
-          : 0.05);
+      : (v2Market?.midApy ?? 0.05);
     const near = (o: { apy: number }) => Math.abs(o.apy - anchor) <= 0.20;
     const nBids = bids.filter(near), nAsks = asks.filter(near);
     const vals = [...s, ...nBids.map(o => o.apy), ...nAsks.map(o => o.apy)];
+    // Keep the current best bid/ask in view so the reference lines land inside.
+    if (v2Market?.bestBidApy != null && Math.abs(v2Market.bestBidApy - anchor) <= 0.20) vals.push(v2Market.bestBidApy);
+    if (v2Market?.bestAskApy != null && Math.abs(v2Market.bestAskApy - anchor) <= 0.20) vals.push(v2Market.bestAskApy);
     if (!vals.length) return { domain: [anchor - 0.05, anchor + 0.05] as [number, number], bins: [], maxSize: 0 };
     let lo = Math.min(...vals), hi = Math.max(...vals);
     const pad = (hi - lo) * 0.15 || 0.01;
     lo -= pad; hi += pad;
 
-    const N = 18;
+    // Fine-grained bins: ~10bps of implied yield each, clamped to a sane
+    // count so bars stay ≥2px on the 220px plot.
+    const N = Math.max(24, Math.min(80, Math.round((hi - lo) / 0.001)));
     const bins = Array.from({ length: N }, (_, i) => ({
       iy: lo + ((i + 0.5) * (hi - lo)) / N,
       bid: 0, ask: 0, bidN: 0, askN: 0,
@@ -493,6 +497,15 @@ function MarketDetailView() {
                            tickFormatter={(v: number) => `${(v * 100).toFixed(1)}%`} width={52} />
                     <Tooltip contentStyle={{ background: '#0a0a0a', border: '1px solid rgba(255,255,255,0.15)', fontSize: 11 }}
                              formatter={(v: any) => v == null ? '—' : `${(Number(v) * 100).toFixed(2)}%`} />
+                    {/* Live book context: current best bid / best ask levels */}
+                    {showDepth && v2Market?.bestBidApy != null && (
+                      <ReferenceLine y={v2Market.bestBidApy} stroke="#4ade80" strokeDasharray="4 3" strokeOpacity={0.5}
+                        label={{ value: `bid ${(v2Market.bestBidApy * 100).toFixed(2)}%`, position: 'insideRight', fill: '#4ade80', fontSize: 10, opacity: 0.8 }} />
+                    )}
+                    {showDepth && v2Market?.bestAskApy != null && (
+                      <ReferenceLine y={v2Market.bestAskApy} stroke="#f87171" strokeDasharray="4 3" strokeOpacity={0.5}
+                        label={{ value: `ask ${(v2Market.bestAskApy * 100).toFixed(2)}%`, position: 'insideRight', fill: '#f87171', fontSize: 10, opacity: 0.8 }} />
+                    )}
                     <Line type="monotone" dataKey="IY" stroke="#38bdf8" strokeWidth={1.6}
                           dot={false} connectNulls isAnimationActive={false} />
                   </LineChart>
@@ -520,19 +533,26 @@ function MarketDetailView() {
                         const top = yOf(b.iy) - binH / 2;
                         return (
                           <Fragment key={i}>
-                            {b.bidN > 0.01 && (
+                            {b.bid > 0 && (
                               <div className="absolute left-0 bg-emerald-400/80 rounded-sm"
-                                   style={{ top, height: Math.max(1, binH - 1.5), width: `${b.bidN * 100}%` }}
+                                   style={{ top, height: Math.max(1.5, binH - 1), width: `${Math.max(1.5, b.bidN * 100)}%` }}
                                    title={`${(b.iy * 100).toFixed(2)}% · ${fmtCount(b.bid, '').trim()} SY bids`} />
                             )}
-                            {b.askN > 0.01 && (
+                            {b.ask > 0 && (
                               <div className="absolute left-0 bg-rose-400/80 rounded-sm"
-                                   style={{ top, height: Math.max(1, binH - 1.5), width: `${b.askN * 100}%` }}
+                                   style={{ top, height: Math.max(1.5, binH - 1), width: `${Math.max(1.5, b.askN * 100)}%` }}
                                    title={`${(b.iy * 100).toFixed(2)}% · ${fmtCount(b.ask, '').trim()} SY asks`} />
                             )}
                           </Fragment>
                         );
                       })}
+                    </div>
+                    {/* Book stats — mid / spread / resting size per side */}
+                    <div className="text-[9px] text-white/35 text-center leading-relaxed -mt-4">
+                      {v2Market.midApy != null && <>mid {(v2Market.midApy * 100).toFixed(2)}%</>}
+                      {v2Market.spreadBps != null && <> · {Math.round(v2Market.spreadBps)}bps spread</>}
+                      <br />
+                      {fmtCount(v2Market.totalBidSizeSy ?? 0, '').trim()} bid · {fmtCount(v2Market.totalAskSizeSy ?? 0, '').trim()} ask SY
                     </div>
                   </div>
                 );
