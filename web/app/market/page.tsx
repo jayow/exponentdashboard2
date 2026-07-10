@@ -130,6 +130,9 @@ function MarketDetailView() {
   const [volumeShare, setVolumeShare] = useState<boolean>(false);
   // Implied Yield tab — overlay a bid/ask order-book depth profile on the IY axis.
   const [showDepth, setShowDepth] = useState<boolean>(true);
+  // Y-axis zoom exponent: 0 = auto domain; each step halves the visible
+  // yield range around the book mid (depth bins re-bin finer as you zoom).
+  const [iyZoom, setIyZoom] = useState<number>(0);
   const [search, setSearch] = useState('');
 
   useEffect(() => {
@@ -145,6 +148,9 @@ function MarketDetailView() {
       })
       .catch(e => setErr(String(e)));
   }, []);
+
+  // Zoom is per-market context — reset when navigating between markets.
+  useEffect(() => { setIyZoom(0); }, [marketKey]);
 
   const v2Market: V2MarketBook | null = v2?.byMarket[marketKey] ?? null;
 
@@ -257,6 +263,15 @@ function MarketDetailView() {
     const pad = (hi - lo) * 0.15 || 0.01;
     lo -= pad; hi += pad;
 
+    // Zoom: shrink the window around the live book mid (falling back to the
+    // latest traded value) — each step halves the range. Bin width shrinks
+    // with the domain, so zooming also raises depth-profile resolution.
+    if (iyZoom > 0) {
+      const center = v2Market?.midApy ?? (s.length ? s[s.length - 1] : (lo + hi) / 2);
+      const half = ((hi - lo) / 2) * Math.pow(0.5, iyZoom);
+      lo = center - half; hi = center + half;
+    }
+
     // Fine-grained bins: ~10bps of implied yield each, clamped to a sane
     // count so bars stay ≥2px on the 220px plot.
     const N = Math.max(24, Math.min(80, Math.round((hi - lo) / 0.001)));
@@ -279,7 +294,7 @@ function MarketDetailView() {
     bins.forEach(b => { b.bidN = b.bid / bidMax; b.askN = b.ask / askMax; });
     const hasOrders = bidMax > 1e-9 || askMax > 1e-9;
     return { domain: [lo, hi] as [number, number], bins, hasOrders };
-  }, [metric, tvl, marketKey, v2Market, activeBookIdx]);
+  }, [metric, tvl, marketKey, v2Market, activeBookIdx, iyZoom]);
 
   if (err) return <div className="mx-auto max-w-[1400px] px-4 py-10 text-red-400">Error: {err}</div>;
   if (!holders || !tvl || !positions) return <div className="mx-auto max-w-[1400px] px-4 py-10 text-white/50">Loading…</div>;
@@ -460,6 +475,22 @@ function MarketDetailView() {
                 Share%
               </button>
             )}
+            {metric === 'iy' && (
+              <span className="flex items-center gap-0.5 mr-2">
+                <button onClick={() => setIyZoom(z => Math.min(4, z + 1))} disabled={iyZoom >= 4}
+                  className={`px-1.5 py-1 transition ${iyZoom >= 4 ? 'text-white/15' : 'text-white/40 hover:text-white'}`}
+                  title="Zoom in on the yield axis (around the live book mid)">＋</button>
+                <button onClick={() => setIyZoom(z => Math.max(0, z - 1))} disabled={iyZoom <= 0}
+                  className={`px-1.5 py-1 transition ${iyZoom <= 0 ? 'text-white/15' : 'text-white/40 hover:text-white'}`}
+                  title="Zoom out">−</button>
+                {iyZoom > 0 && (
+                  <button onClick={() => setIyZoom(0)}
+                    className="px-1.5 py-1 text-white/40 hover:text-white text-[10px]" title="Reset zoom">
+                    {Math.pow(2, iyZoom)}×
+                  </button>
+                )}
+              </span>
+            )}
             {metric === 'iy' && v2Market && (
               <button onClick={() => setShowDepth(v => !v)}
                 className={`px-2 py-1 mr-2 transition ${showDepth ? 'text-white' : 'text-white/30 hover:text-white/60'}`}
@@ -493,18 +524,23 @@ function MarketDetailView() {
                   <LineChart data={chartData as any} margin={{ top: 10, right: 4, left: 0, bottom: 0 }}>
                     <XAxis dataKey="date" tick={{ fill: '#888', fontSize: 11 }} />
                     <YAxis domain={iyView ? iyView.domain : ['auto', 'auto']}
+                           allowDataOverflow={iyZoom > 0}
                            tick={{ fill: '#888', fontSize: 11 }}
                            tickFormatter={(v: number) => `${(v * 100).toFixed(1)}%`} width={52} />
                     <Tooltip contentStyle={{ background: '#0a0a0a', border: '1px solid rgba(255,255,255,0.15)', fontSize: 11 }}
                              formatter={(v: any) => v == null ? '—' : `${(Number(v) * 100).toFixed(2)}%`} />
-                    {/* Live book context: current best bid / best ask levels */}
-                    {showDepth && v2Market?.bestBidApy != null && (
+                    {/* Live book context: current best bid / best ask levels.
+                        Labels on opposite corners so a tight spread can't
+                        overlap them; hidden if outside the zoomed domain. */}
+                    {showDepth && v2Market?.bestBidApy != null && iyView
+                      && v2Market.bestBidApy >= iyView.domain[0] && v2Market.bestBidApy <= iyView.domain[1] && (
                       <ReferenceLine y={v2Market.bestBidApy} stroke="#4ade80" strokeDasharray="4 3" strokeOpacity={0.5}
-                        label={{ value: `bid ${(v2Market.bestBidApy * 100).toFixed(2)}%`, position: 'insideRight', fill: '#4ade80', fontSize: 10, opacity: 0.8 }} />
+                        label={{ value: `bid ${(v2Market.bestBidApy * 100).toFixed(2)}%`, position: 'insideBottomLeft', fill: '#4ade80', fontSize: 10, opacity: 0.85 }} />
                     )}
-                    {showDepth && v2Market?.bestAskApy != null && (
+                    {showDepth && v2Market?.bestAskApy != null && iyView
+                      && v2Market.bestAskApy >= iyView.domain[0] && v2Market.bestAskApy <= iyView.domain[1] && (
                       <ReferenceLine y={v2Market.bestAskApy} stroke="#f87171" strokeDasharray="4 3" strokeOpacity={0.5}
-                        label={{ value: `ask ${(v2Market.bestAskApy * 100).toFixed(2)}%`, position: 'insideRight', fill: '#f87171', fontSize: 10, opacity: 0.8 }} />
+                        label={{ value: `ask ${(v2Market.bestAskApy * 100).toFixed(2)}%`, position: 'insideTopRight', fill: '#f87171', fontSize: 10, opacity: 0.85 }} />
                     )}
                     <Line type="monotone" dataKey="IY" stroke="#38bdf8" strokeWidth={1.6}
                           dot={false} connectNulls isAnimationActive={false} />
