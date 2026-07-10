@@ -404,6 +404,23 @@ def build_tvl_json(con: duckdb.DuckDBPyConnection) -> dict:
            FROM ranked_window WHERE rn = 1"""
     ).fetchall():
         implied_yield_past_by_market[mk] = (math.exp(float(llir)) - 1.0, snap_date)
+    # Daily implied-yield HISTORY per (market, date) — from the trade-derived
+    # int_implied_prices_daily pt_price_ratio, annualized by days-to-maturity
+    # at each date: IY = (1/pt_ratio)^(365/days_remaining) − 1. This is the
+    # market's traded implied APY per day (gaps on no-trade days). Distinct
+    # from the scalar `impliedYield` above, which is today's SDK-curve value.
+    iy_series_by_market: dict[str, dict[str, float]] = {}
+    for mk, d, iy in con.execute(
+        """SELECT ip.market_key, ip.date::VARCHAR,
+                  pow(1.0 / ip.pt_price_ratio,
+                      365.0 / GREATEST(DATE_DIFF('day', ip.date, m.maturity_date), 1)) - 1.0
+           FROM main_intermediate.int_implied_prices_daily ip
+           JOIN main_core.dim_markets m USING (market_key)
+           WHERE ip.pt_price_ratio > 0 AND ip.pt_price_ratio < 1
+             AND m.maturity_date IS NOT NULL
+             AND ip.date < m.maturity_date"""
+    ).fetchall():
+        iy_series_by_market.setdefault(mk, {})[d] = float(iy)
     # LP USD per (market, date) — keyed for fast lookup in per-market breakdown
     lp_per_market = {(r[0], r[1]): float(r[2] or 0) for r in con.execute("""
         SELECT market_key, date::VARCHAR, SUM(usd_value)
@@ -493,6 +510,9 @@ def build_tvl_json(con: duckdb.DuckDBPyConnection) -> dict:
             # "Past 12 Days" while history is sparse during early Railway runs).
             "impliedYield7dAgo":     (implied_yield_past_by_market.get(mk) or (None, None))[0],
             "impliedYield7dAgoDate": (implied_yield_past_by_market.get(mk) or (None, None))[1],
+            # Daily traded implied-yield series (aligned to `dates`; null on
+            # no-trade days). Powers the Implied Yield chart on the market page.
+            "impliedYieldSeries": [iy_series_by_market.get(mk, {}).get(d) for d in dates],
             "tvlUsd": usd,
             "tvlUnderlying": und,
             "principalUsd": principal,
@@ -1288,6 +1308,24 @@ def build_market_holders_json(con: duckdb.DuckDBPyConnection) -> dict:
         WHERE rk <= 500
         ORDER BY market_key, leg, rk
     """).fetchall()
+    # Exact entry implied-yield per (market, leg, holder) + market average,
+    # from holder_entry_iy (volume-weighted over the holder's buy trades).
+    try:
+        entry_iy_rows = con.execute("""
+            SELECT market_key, leg, holder, avg_entry_iy, n_buys,
+                   market_avg_entry_iy, market_priced_holders
+            FROM main_analytics.holder_entry_iy
+        """).fetchall()
+    except duckdb.Error:
+        entry_iy_rows = []
+    entry_iy_by_holder: dict[tuple, dict] = {}
+    market_entry_iy: dict[str, dict] = {}
+    for mk, leg, holder, aiy, nb, m_aiy, m_n in entry_iy_rows:
+        entry_iy_by_holder[(mk, leg, holder)] = {"iy": float(aiy), "nBuys": int(nb)}
+        market_entry_iy[f"{mk}:{leg}"] = {
+            "avgEntryIy": float(m_aiy) if m_aiy is not None else None,
+            "pricedHolders": int(m_n or 0),
+        }
     out: dict[str, dict] = {}
     for mk, leg, owner, amount, share_pct, usd, total_bal, rk, price in rows:
         key = f"{mk}:{leg}"
@@ -1295,14 +1333,19 @@ def build_market_holders_json(con: duckdb.DuckDBPyConnection) -> dict:
             "market": mk, "leg": leg, "holders": 0,
             "totalBalance": float(total_bal or 0),
             "totalUsd": float((total_bal or 0) * (price or 0)),
+            "avgEntryIy": (market_entry_iy.get(key) or {}).get("avgEntryIy"),
+            "pricedHolders": (market_entry_iy.get(key) or {}).get("pricedHolders", 0),
             "top": [],
         })
         e["holders"] += 1
+        eiy = entry_iy_by_holder.get((mk, leg, owner))
         e["top"].append({
             "owner": owner,
             "balance": float(amount or 0),
             "usd": float(usd or 0),
             "sharePct": float(share_pct or 0),
+            "entryIy": eiy["iy"] if eiy else None,
+            "entryBuys": eiy["nBuys"] if eiy else 0,
         })
     # nHolders from holders_snapshot (full count, not just top 500)
     counts = dict(con.execute("""

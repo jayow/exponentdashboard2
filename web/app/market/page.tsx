@@ -3,14 +3,16 @@ import { Fragment, Suspense, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import {
-  AreaChart, Area, BarChart, Bar, ComposedChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer,
+  AreaChart, Area, BarChart, Bar, ComposedChart, LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer,
 } from 'recharts';
 import type { V2OrderbookData, V2MarketBook, V2Book, V2OrderRow } from '@/lib/types';
 
-type Holder = { owner: string; balance: number; usd: number; sharePct: number };
+type Holder = { owner: string; balance: number; usd: number; sharePct: number;
+  entryIy?: number | null; entryBuys?: number };
 type Snapshot = {
   market: string; leg: string; holders: number;
   totalBalance: number; totalUsd: number; top: Holder[];
+  avgEntryIy?: number | null; pricedHolders?: number;
 };
 type MarketHoldersData = {
   meta: any;
@@ -28,6 +30,8 @@ type TvlByMarket = Record<string, {
   // Past-snapshot implied APY for the 7d delta. Sparse during early daily
   // history — `…Date` carries the actual lookback so we can label honestly.
   impliedYield7dAgo?: number | null; impliedYield7dAgoDate?: string | null;
+  // Daily traded implied-yield series (aligned to dates; null on no-trade days).
+  impliedYieldSeries?: (number | null)[];
 }>;
 type ApLeg = { byMarket: Record<string, number[]>; totals: number[] };
 type ApTicker = { underlyingMint: string; latest: Record<string, number>; legs: Record<string, ApLeg> };
@@ -40,7 +44,7 @@ type Volume = { dates: string[]; byMarket?: Record<string, {
 }> };
 
 type Range = '30d' | '90d' | '1y' | 'all';
-type Metric = 'tvl' | 'breakdown' | 'positions' | 'volume' | 'holders' | 'orderbook';
+type Metric = 'tvl' | 'iy' | 'breakdown' | 'positions' | 'volume' | 'holders' | 'orderbook';
 type Leg = 'PT' | 'YT' | 'LP';
 
 const BREAKDOWN_COLOR = {
@@ -124,6 +128,8 @@ function MarketDetailView() {
   const [range, setRange] = useState<Range>('30d');
   // Volume tab — toggle bars between absolute USD and per-day share %.
   const [volumeShare, setVolumeShare] = useState<boolean>(false);
+  // Implied Yield tab — overlay a bid/ask order-book depth profile on the IY axis.
+  const [showDepth, setShowDepth] = useState<boolean>(true);
   const [search, setSearch] = useState('');
 
   useEffect(() => {
@@ -150,6 +156,11 @@ function MarketDetailView() {
     const dates = tvl.dates.slice(start);
     if (metric === 'tvl') {
       return dates.map((d, i) => ({ date: d, TVL: tvlSeries[start + i] || 0 }));
+    }
+    if (metric === 'iy') {
+      const s = tvl.byMarket?.[marketKey]?.impliedYieldSeries ?? [];
+      // Keep nulls so the line breaks on no-trade days instead of dropping to 0.
+      return dates.map((d, i) => ({ date: d, IY: s[start + i] ?? null }));
     }
     if (metric === 'breakdown') {
       const m = tvl.byMarket?.[marketKey];
@@ -208,6 +219,38 @@ function MarketDetailView() {
     }
     return [];
   }, [tvl, positions, volume, holders, metric, range, marketKey, ticker, tvlSeries, tickerData]);
+
+  // Implied-yield chart y-domain + order-book depth profile (feature ②).
+  // Bins the current bid/ask offers by their implied yield (apy) so the
+  // right-side histogram lines up with the IY axis of the line chart —
+  // showing where limit-order size clusters on the yield curve.
+  const iyView = useMemo(() => {
+    if (metric !== 'iy') return null;
+    const s = (tvl?.byMarket?.[marketKey]?.impliedYieldSeries ?? [])
+      .filter((v): v is number => v != null && isFinite(v));
+    const book = v2Market?.books?.[activeBookIdx];
+    const bids = book?.bids ?? [];
+    const asks = book?.asks ?? [];
+    const apys = [...bids, ...asks].map(o => o.apy).filter(a => isFinite(a));
+    const vals = [...s, ...apys];
+    if (!vals.length) return { domain: [0, 0.1] as [number, number], bins: [], maxSize: 0 };
+    let lo = Math.min(...vals), hi = Math.max(...vals);
+    const pad = (hi - lo) * 0.1 || 0.01;
+    lo = Math.max(0, lo - pad); hi = hi + pad;
+    const N = 24;
+    const bins = Array.from({ length: N }, (_, i) => ({
+      iy: lo + ((i + 0.5) * (hi - lo)) / N,
+      bid: 0, ask: 0,
+    }));
+    const put = (o: { apy: number; sizeSy: number }, key: 'bid' | 'ask') => {
+      const idx = Math.min(N - 1, Math.max(0, Math.floor(((o.apy - lo) / (hi - lo)) * N)));
+      bins[idx][key] += o.sizeSy;
+    };
+    bids.forEach(o => put(o, 'bid'));
+    asks.forEach(o => put(o, 'ask'));
+    const maxSize = Math.max(0, ...bins.map(b => Math.max(b.bid, b.ask)));
+    return { domain: [lo, hi] as [number, number], bins, maxSize };
+  }, [metric, tvl, marketKey, v2Market, activeBookIdx]);
 
   if (err) return <div className="mx-auto max-w-[1400px] px-4 py-10 text-red-400">Error: {err}</div>;
   if (!holders || !tvl || !positions) return <div className="mx-auto max-w-[1400px] px-4 py-10 text-white/50">Loading…</div>;
@@ -361,9 +404,10 @@ function MarketDetailView() {
 
         <div className="flex items-center justify-between mb-3 flex-wrap gap-3">
           <div className="flex items-center gap-5 flex-wrap text-[13px]">
-            {(['tvl', 'breakdown', 'positions', 'volume', 'holders', 'orderbook'] as Metric[]).map(m => {
+            {(['tvl', 'iy', 'breakdown', 'positions', 'volume', 'holders', 'orderbook'] as Metric[]).map(m => {
               if (m === 'orderbook' && !v2Market) return null;
               const label = m === 'tvl' ? 'TVL'
+                : m === 'iy' ? 'Implied Yield'
                 : m === 'breakdown' ? 'Breakdown'
                 : m === 'positions' ? 'Positions'
                 : m === 'volume' ? 'Volume'
@@ -387,6 +431,13 @@ function MarketDetailView() {
                 Share%
               </button>
             )}
+            {metric === 'iy' && v2Market && (
+              <button onClick={() => setShowDepth(v => !v)}
+                className={`px-2 py-1 mr-2 transition ${showDepth ? 'text-white' : 'text-white/30 hover:text-white/60'}`}
+                title="Overlay bid/ask limit-order depth on the yield axis">
+                Depth
+              </button>
+            )}
             {(['30d', '90d', '1y', 'all'] as Range[]).map(r => (
               <button key={r} onClick={() => setRange(r)}
                 className={`px-2 py-1 tabular-nums transition ${range === r ? 'text-white' : 'text-white/30 hover:text-white/60'}`}>
@@ -402,6 +453,42 @@ function MarketDetailView() {
               activeBookIdx={activeBookIdx}
               setActiveBookIdx={setActiveBookIdx}
             />
+          ) : metric === 'iy' ? (
+            <div className="flex gap-2" style={{ height: 260 }}>
+              <div className="flex-1 min-w-0">
+                <ResponsiveContainer width="100%" height={260}>
+                  <LineChart data={chartData as any} margin={{ top: 10, right: 4, left: 0, bottom: 0 }}>
+                    <XAxis dataKey="date" tick={{ fill: '#888', fontSize: 11 }} />
+                    <YAxis domain={iyView ? iyView.domain : ['auto', 'auto']}
+                           tick={{ fill: '#888', fontSize: 11 }}
+                           tickFormatter={(v: number) => `${(v * 100).toFixed(1)}%`} width={52} />
+                    <Tooltip contentStyle={{ background: '#0a0a0a', border: '1px solid rgba(255,255,255,0.15)', fontSize: 11 }}
+                             formatter={(v: any) => v == null ? '—' : `${(Number(v) * 100).toFixed(2)}%`} />
+                    <Line type="monotone" dataKey="IY" stroke="#38bdf8" strokeWidth={1.6}
+                          dot={false} connectNulls isAnimationActive={false} />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+              {showDepth && v2Market && iyView && iyView.bins.length > 0 && iyView.maxSize > 0 && (
+                <div style={{ width: 132 }} className="shrink-0">
+                  <div className="text-[9px] uppercase tracking-[0.14em] text-white/30 text-center mb-1">
+                    Limit orders
+                  </div>
+                  <ResponsiveContainer width="100%" height={244}>
+                    <BarChart data={iyView.bins} layout="vertical"
+                              margin={{ top: 6, right: 6, left: 0, bottom: 18 }} barCategoryGap={1}>
+                      <XAxis type="number" hide domain={[0, iyView.maxSize]} />
+                      <YAxis type="number" dataKey="iy" domain={iyView.domain} hide reversed={false} />
+                      <Tooltip contentStyle={{ background: '#0a0a0a', border: '1px solid rgba(255,255,255,0.15)', fontSize: 11 }}
+                               formatter={(v: any, n: any) => [`${fmtCount(Number(v), '').trim()} SY`, n]}
+                               labelFormatter={(v: any) => `${(Number(v) * 100).toFixed(2)}% IY`} />
+                      <Bar dataKey="bid" name="Bids" fill="#4ade80" fillOpacity={0.75} isAnimationActive={false} />
+                      <Bar dataKey="ask" name="Asks" fill="#f87171" fillOpacity={0.75} isAnimationActive={false} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
+            </div>
           ) : (
           <ResponsiveContainer width="100%" height={260}>
             {metric === 'positions' ? (
@@ -488,6 +575,19 @@ function MarketDetailView() {
         })}
       </div>
 
+      {cur && (cur.avgEntryIy != null || (cur.pricedHolders ?? 0) > 0) && (
+        <div className="mb-3 text-[13px] text-white/60">
+          Avg entry implied yield ({tab}):{' '}
+          <span className="text-white tabular-nums">
+            {cur.avgEntryIy != null ? `${(cur.avgEntryIy * 100).toFixed(2)}%` : '—'}
+          </span>
+          <span className="text-white/30"> · across {cur.pricedHolders ?? 0} traders</span>
+          <span className="text-white/25 ml-2 text-[11px]">
+            (holders who acquired on-market; minters excluded)
+          </span>
+        </div>
+      )}
+
       <div className="mb-3">
         <input value={search} onChange={e => setSearch(e.target.value)}
           placeholder="Search wallet address…"
@@ -503,12 +603,13 @@ function MarketDetailView() {
               <th className="px-4 py-2 text-left">Wallet</th>
               <th className="px-4 py-2 text-right">Balance</th>
               <th className="px-4 py-2 text-right">Value</th>
+              <th className="px-4 py-2 text-right" title="Volume-weighted implied yield at which this holder bought on-market. — = acquired by minting/transfer, no market entry.">Entry IY</th>
               <th className="px-4 py-2 text-right">Share</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-white/5 text-[13px]">
             {!cur?.top?.length && (
-              <tr><td className="px-4 py-3 text-white/30" colSpan={5}>No holders for {tab}.</td></tr>
+              <tr><td className="px-4 py-3 text-white/30" colSpan={6}>No holders for {tab}.</td></tr>
             )}
             {cur?.top?.filter(h => !search || h.owner.toLowerCase().includes(search.toLowerCase())).map((h, i) => (
               <tr key={h.owner} className="hover:bg-white/5 cursor-pointer"
@@ -526,6 +627,10 @@ function MarketDetailView() {
                 </td>
                 <td className="px-4 py-1.5 text-right tabular-nums text-emerald-400/80">
                   {h.usd > 0 ? fmtUsd(h.usd) : '–'}
+                </td>
+                <td className="px-4 py-1.5 text-right tabular-nums text-sky-300/80"
+                    title={h.entryBuys ? `${h.entryBuys} buy${h.entryBuys > 1 ? 's' : ''}` : undefined}>
+                  {h.entryIy != null ? `${(h.entryIy * 100).toFixed(2)}%` : <span className="text-white/20">—</span>}
                 </td>
                 <td className="px-4 py-1.5 text-right tabular-nums text-white/50">
                   <div className="flex items-center justify-end gap-2">
