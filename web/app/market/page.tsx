@@ -478,6 +478,10 @@ function MarketDetailView() {
               activeBookIdx={activeBookIdx}
               setActiveBookIdx={setActiveBookIdx}
             />
+          ) : metric === 'iy' && !(chartData as any[]).some((r: any) => r.IY != null) ? (
+            <div className="h-[260px] flex items-center justify-center text-white/30 text-sm">
+              No implied-yield history for this market yet — it accrues one point per daily refresh, plus trade-derived backfill.
+            </div>
           ) : metric === 'iy' ? (
             <div className="flex gap-2" style={{ height: 260 }}>
               <div className="flex-1 min-w-0">
