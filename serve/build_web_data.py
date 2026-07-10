@@ -404,21 +404,17 @@ def build_tvl_json(con: duckdb.DuckDBPyConnection) -> dict:
            FROM ranked_window WHERE rn = 1"""
     ).fetchall():
         implied_yield_past_by_market[mk] = (math.exp(float(llir)) - 1.0, snap_date)
-    # Daily implied-yield HISTORY per (market, date) — from the trade-derived
-    # int_implied_prices_daily pt_price_ratio, annualized by days-to-maturity
-    # at each date: IY = (1/pt_ratio)^(365/days_remaining) − 1. This is the
-    # market's traded implied APY per day (gaps on no-trade days). Distinct
-    # from the scalar `impliedYield` above, which is today's SDK-curve value.
+    # Daily implied-yield HISTORY per (market, date) — int_market_iy_daily:
+    # SDK-curve snapshots (canonical, matches Exponent's Implied APY) with
+    # YT-derived trade IY backfilling pre-snapshot dates. NOT the old
+    # int_implied_prices_daily median — its PT-mixed prices are skewed 3–5×
+    # on SY-wrapper markets (weUSX/wONyc accrue an exchange rate, so PT
+    # prices in raw underlying run low and annualization amplifies it).
     iy_series_by_market: dict[str, dict[str, float]] = {}
     for mk, d, iy in con.execute(
-        """SELECT ip.market_key, ip.date::VARCHAR,
-                  pow(1.0 / ip.pt_price_ratio,
-                      365.0 / GREATEST(DATE_DIFF('day', ip.date, m.maturity_date), 1)) - 1.0
-           FROM main_intermediate.int_implied_prices_daily ip
-           JOIN main_core.dim_markets m USING (market_key)
-           WHERE ip.pt_price_ratio > 0 AND ip.pt_price_ratio < 1
-             AND m.maturity_date IS NOT NULL
-             AND ip.date < m.maturity_date"""
+        """SELECT market_key, date::VARCHAR, iy
+           FROM main_intermediate.int_market_iy_daily
+           WHERE iy > -0.9 AND iy < 5"""
     ).fetchall():
         iy_series_by_market.setdefault(mk, {})[d] = float(iy)
     # LP USD per (market, date) — keyed for fast lookup in per-market breakdown
