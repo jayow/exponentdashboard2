@@ -115,9 +115,17 @@ if [ -n "${RAILWAY_PROJECT_ID:-}" ] && [ ! -d .git ]; then
   git config user.name  "${GIT_COMMITTER_NAME:-railway-bot}"
   git config user.email "${GIT_COMMITTER_EMAIL:-railway-bot@users.noreply.github.com}"
   if [ -n "${GH_TOKEN:-}" ]; then
+    # Fail FAST if the token is dead — otherwise the run burns an hour of
+    # extraction and only discovers the expired token at the final push.
+    if ! curl -sf -o /dev/null -H "Authorization: Bearer ${GH_TOKEN}" \
+         https://api.github.com/repos/jayow/exponentdashboard2; then
+      echo "FATAL: GH_TOKEN is invalid or expired — update the Railway service variable."
+      exit 1
+    fi
     git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/jayow/exponentdashboard2.git"
   else
-    git remote add origin "https://github.com/jayow/exponentdashboard2.git"
+    echo "FATAL: GH_TOKEN is not set — the refresh cannot push. Set it in Railway service variables."
+    exit 1
   fi
   # Fetch origin's main branch and align HEAD with it without touching files
   # (the working tree IS the commit Railway built from; --mixed only updates
@@ -220,7 +228,23 @@ if git diff --cached --quiet; then
   echo "No JSON changes to commit."
 else
   git commit -m "chore: local refresh $(date -u +%Y-%m-%d)"
-  git push origin HEAD:main && echo "Pushed."
+  # Rebase onto origin before pushing: GHA's nightly run now finishes AFTER
+  # this job starts (its runs crossed past 01:00 UTC as the pipeline grew),
+  # so main has usually moved since our bootstrap and a bare push is
+  # non-fast-forward — this killed every Railway publish at the last step.
+  # -X theirs keeps OUR freshly-built JSONs on conflict (during a rebase,
+  # 'theirs' = the commit being replayed, i.e. ours — and this build is the
+  # newer one). Two attempts, then give up loudly but exit 0: this is the
+  # backup runner; the primary already published today.
+  pushed=false
+  for attempt in 1 2; do
+    git fetch -q origin main || true
+    git rebase -X theirs FETCH_HEAD >/dev/null 2>&1 || { git rebase --abort 2>/dev/null; break; }
+    if git push origin HEAD:main; then pushed=true; echo "Pushed."; break; fi
+  done
+  if [ "$pushed" != true ]; then
+    echo "WARN: push failed after rebase+retry — main moved again or auth issue. Backup publish skipped."
+  fi
 fi
 
 echo ""
