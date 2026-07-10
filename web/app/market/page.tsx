@@ -133,6 +133,8 @@ function MarketDetailView() {
   // Y-axis zoom exponent: 0 = auto domain; each step halves the visible
   // yield range around the book mid (depth bins re-bin finer as you zoom).
   const [iyZoom, setIyZoom] = useState<number>(0);
+  // Hovered depth-profile bin (snapped to nearest non-empty level).
+  const [depthHover, setDepthHover] = useState<{ i: number; y: number } | null>(null);
   const [search, setSearch] = useState('');
 
   useEffect(() => {
@@ -535,12 +537,12 @@ function MarketDetailView() {
                     {showDepth && v2Market?.bestBidApy != null && iyView
                       && v2Market.bestBidApy >= iyView.domain[0] && v2Market.bestBidApy <= iyView.domain[1] && (
                       <ReferenceLine y={v2Market.bestBidApy} stroke="#4ade80" strokeDasharray="4 3" strokeOpacity={0.5}
-                        label={{ value: `bid ${(v2Market.bestBidApy * 100).toFixed(2)}%`, position: 'insideBottomLeft', fill: '#4ade80', fontSize: 10, opacity: 0.85 }} />
+                        label={{ value: `bid ${(v2Market.bestBidApy * 100).toFixed(2)}%`, position: 'center', dy: 9, fill: '#4ade80', fontSize: 10, opacity: 0.9 }} />
                     )}
                     {showDepth && v2Market?.bestAskApy != null && iyView
                       && v2Market.bestAskApy >= iyView.domain[0] && v2Market.bestAskApy <= iyView.domain[1] && (
                       <ReferenceLine y={v2Market.bestAskApy} stroke="#f87171" strokeDasharray="4 3" strokeOpacity={0.5}
-                        label={{ value: `ask ${(v2Market.bestAskApy * 100).toFixed(2)}%`, position: 'insideTopRight', fill: '#f87171', fontSize: 10, opacity: 0.85 }} />
+                        label={{ value: `ask ${(v2Market.bestAskApy * 100).toFixed(2)}%`, position: 'center', dy: -7, fill: '#f87171', fontSize: 10, opacity: 0.9 }} />
                     )}
                     <Line type="monotone" dataKey="IY" stroke="#38bdf8" strokeWidth={1.6}
                           dot={false} connectNulls isAnimationActive={false} />
@@ -564,24 +566,56 @@ function MarketDetailView() {
                       <span><span className="text-emerald-400">■</span> bids</span>
                       <span><span className="text-rose-400">■</span> asks</span>
                     </div>
-                    <div className="relative" style={{ height: 260 }}>
+                    <div className="relative" style={{ height: 260 }}
+                         onMouseLeave={() => setDepthHover(null)}
+                         onMouseMove={e => {
+                           // Snap to the nearest non-empty level within ±4
+                           // bins of the cursor — no pixel-perfect aim needed.
+                           const rect = e.currentTarget.getBoundingClientRect();
+                           const y = e.clientY - rect.top;
+                           const frac = 1 - (y - PLOT_TOP) / PLOT_H;
+                           const raw = Math.round(frac * N - 0.5);
+                           let best: number | null = null;
+                           for (let d = 0; d <= 4; d++) {
+                             for (const i of [raw - d, raw + d]) {
+                               if (i >= 0 && i < N && (iyView.bins[i].bid > 0 || iyView.bins[i].ask > 0)) { best = i; break; }
+                             }
+                             if (best != null) break;
+                           }
+                           setDepthHover(best == null ? null : { i: best, y: yOf(iyView.bins[best].iy) });
+                         }}>
                       {iyView.bins.map((b, i) => {
                         const top = yOf(b.iy) - binH / 2;
+                        const hot = depthHover?.i === i;
                         return (
                           <Fragment key={i}>
+                            {(b.bid > 0 || b.ask > 0) && hot && (
+                              <div className="absolute left-0 right-0 bg-white/10 rounded-sm pointer-events-none"
+                                   style={{ top: top - 1, height: binH + 2 }} />
+                            )}
                             {b.bid > 0 && (
-                              <div className="absolute left-0 bg-emerald-400/80 rounded-sm"
-                                   style={{ top, height: Math.max(1.5, binH - 1), width: `${Math.max(1.5, b.bidN * 100)}%` }}
-                                   title={`${(b.iy * 100).toFixed(2)}% · ${fmtCount(b.bid, '').trim()} SY bids`} />
+                              <div className={`absolute left-0 rounded-sm ${hot ? 'bg-emerald-300' : 'bg-emerald-400/80'}`}
+                                   style={{ top, height: Math.max(1.5, binH - 1), width: `${Math.max(1.5, b.bidN * 100)}%` }} />
                             )}
                             {b.ask > 0 && (
-                              <div className="absolute left-0 bg-rose-400/80 rounded-sm"
-                                   style={{ top, height: Math.max(1.5, binH - 1), width: `${Math.max(1.5, b.askN * 100)}%` }}
-                                   title={`${(b.iy * 100).toFixed(2)}% · ${fmtCount(b.ask, '').trim()} SY asks`} />
+                              <div className={`absolute left-0 rounded-sm ${hot ? 'bg-rose-300' : 'bg-rose-400/80'}`}
+                                   style={{ top, height: Math.max(1.5, binH - 1), width: `${Math.max(1.5, b.askN * 100)}%` }} />
                             )}
                           </Fragment>
                         );
                       })}
+                      {depthHover != null && iyView.bins[depthHover.i] && (() => {
+                        const b = iyView.bins[depthHover.i];
+                        const above = depthHover.y > 60;
+                        return (
+                          <div className="absolute right-0 z-20 pointer-events-none bg-[#0a0a0a] border border-white/15 rounded px-2 py-1 text-[10px] leading-relaxed whitespace-nowrap"
+                               style={above ? { bottom: 260 - depthHover.y + 6 } : { top: depthHover.y + 6 }}>
+                            <span className="text-white/80 tabular-nums">{(b.iy * 100).toFixed(2)}% IY</span>
+                            {b.bid > 0 && <><br /><span className="text-emerald-400">{fmtCount(b.bid, '').trim()} SY bids</span></>}
+                            {b.ask > 0 && <><br /><span className="text-rose-400">{fmtCount(b.ask, '').trim()} SY asks</span></>}
+                          </div>
+                        );
+                      })()}
                     </div>
                     {/* Book stats — mid / spread / resting size per side */}
                     <div className="text-[9px] text-white/35 text-center leading-relaxed -mt-4">
