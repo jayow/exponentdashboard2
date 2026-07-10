@@ -160,7 +160,13 @@ function MarketDetailView() {
     if (metric === 'iy') {
       const s = tvl.byMarket?.[marketKey]?.impliedYieldSeries ?? [];
       // Keep nulls so the line breaks on no-trade days instead of dropping to 0.
-      return dates.map((d, i) => ({ date: d, IY: s[start + i] ?? null }));
+      const rows = dates.map((d, i) => ({ date: d, IY: s[start + i] ?? null }));
+      // IY history is sparser than TVL history — trim leading/trailing empty
+      // dates so the line fills the chart instead of hugging one edge.
+      let a = 0, b = rows.length - 1;
+      while (a <= b && rows[a].IY == null) a++;
+      while (b >= a && rows[b].IY == null) b--;
+      return a <= b ? rows.slice(a, b + 1) : rows;
     }
     if (metric === 'breakdown') {
       const m = tvl.byMarket?.[marketKey];
@@ -229,27 +235,46 @@ function MarketDetailView() {
     const s = (tvl?.byMarket?.[marketKey]?.impliedYieldSeries ?? [])
       .filter((v): v is number => v != null && isFinite(v));
     const book = v2Market?.books?.[activeBookIdx];
-    const bids = book?.bids ?? [];
-    const asks = book?.asks ?? [];
-    const apys = [...bids, ...asks].map(o => o.apy).filter(a => isFinite(a));
-    const vals = [...s, ...apys];
-    if (!vals.length) return { domain: [0, 0.1] as [number, number], bins: [], maxSize: 0 };
+    const bids = (book?.bids ?? []).filter(o => isFinite(o.apy) && o.sizeSy > 0);
+    const asks = (book?.asks ?? []).filter(o => isFinite(o.apy) && o.sizeSy > 0);
+
+    // Anchor the yield axis on where the action is, not on dust limit orders
+    // (far-out offers can sit at absurd APYs and would blow up the scale).
+    // Center = traded IY range if we have it, else the bid/ask mid; keep
+    // orders within ±20 percentage points of that center.
+    const anchor = s.length
+      ? (Math.min(...s) + Math.max(...s)) / 2
+      : (book?.bestBidApy != null && book?.bestAskApy != null
+          ? (book.bestBidApy + book.bestAskApy) / 2
+          : 0.05);
+    const near = (o: { apy: number }) => Math.abs(o.apy - anchor) <= 0.20;
+    const nBids = bids.filter(near), nAsks = asks.filter(near);
+    const vals = [...s, ...nBids.map(o => o.apy), ...nAsks.map(o => o.apy)];
+    if (!vals.length) return { domain: [anchor - 0.05, anchor + 0.05] as [number, number], bins: [], maxSize: 0 };
     let lo = Math.min(...vals), hi = Math.max(...vals);
-    const pad = (hi - lo) * 0.1 || 0.01;
-    lo = Math.max(0, lo - pad); hi = hi + pad;
-    const N = 24;
+    const pad = (hi - lo) * 0.15 || 0.01;
+    lo -= pad; hi += pad;
+
+    const N = 18;
     const bins = Array.from({ length: N }, (_, i) => ({
       iy: lo + ((i + 0.5) * (hi - lo)) / N,
-      bid: 0, ask: 0,
+      bid: 0, ask: 0, bidN: 0, askN: 0,
     }));
     const put = (o: { apy: number; sizeSy: number }, key: 'bid' | 'ask') => {
+      if (o.apy < lo || o.apy > hi) return;      // drop out-of-view dust
       const idx = Math.min(N - 1, Math.max(0, Math.floor(((o.apy - lo) / (hi - lo)) * N)));
       bins[idx][key] += o.sizeSy;
     };
-    bids.forEach(o => put(o, 'bid'));
-    asks.forEach(o => put(o, 'ask'));
-    const maxSize = Math.max(0, ...bins.map(b => Math.max(b.bid, b.ask)));
-    return { domain: [lo, hi] as [number, number], bins, maxSize };
+    nBids.forEach(o => put(o, 'bid'));
+    nAsks.forEach(o => put(o, 'ask'));
+    // Ask size can dwarf bid size (5M vs 79K here), so normalise EACH side to
+    // its own max — the profile shows where orders cluster on the yield curve
+    // (shape), not bid-vs-ask absolute magnitude. Raw sizes stay for tooltips.
+    const bidMax = Math.max(1e-9, ...bins.map(b => b.bid));
+    const askMax = Math.max(1e-9, ...bins.map(b => b.ask));
+    bins.forEach(b => { b.bidN = b.bid / bidMax; b.askN = b.ask / askMax; });
+    const hasOrders = bidMax > 1e-9 || askMax > 1e-9;
+    return { domain: [lo, hi] as [number, number], bins, hasOrders };
   }, [metric, tvl, marketKey, v2Market, activeBookIdx]);
 
   if (err) return <div className="mx-auto max-w-[1400px] px-4 py-10 text-red-400">Error: {err}</div>;
@@ -469,25 +494,45 @@ function MarketDetailView() {
                   </LineChart>
                 </ResponsiveContainer>
               </div>
-              {showDepth && v2Market && iyView && iyView.bins.length > 0 && iyView.maxSize > 0 && (
-                <div style={{ width: 132 }} className="shrink-0">
-                  <div className="text-[9px] uppercase tracking-[0.14em] text-white/30 text-center mb-1">
-                    Limit orders
+              {showDepth && v2Market && iyView && iyView.hasOrders && (() => {
+                // Custom div profile — recharts vertical bars are category-
+                // positioned, not value-positioned, so they won't align to the
+                // line's numeric axis. We map each bin's IY to the exact same
+                // plot area (top 10px, height 220px = 260 − 30px x-axis) as the
+                // LineChart so bars line up with the yield the line is at.
+                const [lo, hi] = iyView.domain;
+                const PLOT_TOP = 10, PLOT_H = 220;
+                const N = iyView.bins.length;
+                const binH = PLOT_H / N;
+                const yOf = (iy: number) => PLOT_TOP + (1 - (iy - lo) / (hi - lo)) * PLOT_H;
+                return (
+                  <div style={{ width: 140 }} className="shrink-0 relative" title="Limit-order size by implied yield (each side scaled to its own max)">
+                    <div className="absolute top-0 left-0 right-0 z-10 text-[9px] uppercase tracking-[0.14em] text-white/30 text-center flex justify-center gap-3">
+                      <span><span className="text-emerald-400">■</span> bids</span>
+                      <span><span className="text-rose-400">■</span> asks</span>
+                    </div>
+                    <div className="relative" style={{ height: 260 }}>
+                      {iyView.bins.map((b, i) => {
+                        const top = yOf(b.iy) - binH / 2;
+                        return (
+                          <Fragment key={i}>
+                            {b.bidN > 0.01 && (
+                              <div className="absolute left-0 bg-emerald-400/80 rounded-sm"
+                                   style={{ top, height: Math.max(1, binH - 1.5), width: `${b.bidN * 100}%` }}
+                                   title={`${(b.iy * 100).toFixed(2)}% · ${fmtCount(b.bid, '').trim()} SY bids`} />
+                            )}
+                            {b.askN > 0.01 && (
+                              <div className="absolute left-0 bg-rose-400/80 rounded-sm"
+                                   style={{ top, height: Math.max(1, binH - 1.5), width: `${b.askN * 100}%` }}
+                                   title={`${(b.iy * 100).toFixed(2)}% · ${fmtCount(b.ask, '').trim()} SY asks`} />
+                            )}
+                          </Fragment>
+                        );
+                      })}
+                    </div>
                   </div>
-                  <ResponsiveContainer width="100%" height={244}>
-                    <BarChart data={iyView.bins} layout="vertical"
-                              margin={{ top: 6, right: 6, left: 0, bottom: 18 }} barCategoryGap={1}>
-                      <XAxis type="number" hide domain={[0, iyView.maxSize]} />
-                      <YAxis type="number" dataKey="iy" domain={iyView.domain} hide reversed={false} />
-                      <Tooltip contentStyle={{ background: '#0a0a0a', border: '1px solid rgba(255,255,255,0.15)', fontSize: 11 }}
-                               formatter={(v: any, n: any) => [`${fmtCount(Number(v), '').trim()} SY`, n]}
-                               labelFormatter={(v: any) => `${(Number(v) * 100).toFixed(2)}% IY`} />
-                      <Bar dataKey="bid" name="Bids" fill="#4ade80" fillOpacity={0.75} isAnimationActive={false} />
-                      <Bar dataKey="ask" name="Asks" fill="#f87171" fillOpacity={0.75} isAnimationActive={false} />
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
-              )}
+                );
+              })()}
             </div>
           ) : (
           <ResponsiveContainer width="100%" height={260}>
