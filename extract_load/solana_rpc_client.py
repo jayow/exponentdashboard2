@@ -227,7 +227,13 @@ class SolanaRpcClient:
             # silently treat this as "zero accounts" — indistinguishable
             # from an empty-but-valid result. Raise so tenacity retries and
             # rotates to the next endpoint in the pool instead.
-            if isinstance(data, dict) and "error" in data:
+            # EXCEPT getAsset: Helius DAS reports a missing asset ("Asset
+            # Not Found") as a JSON-RPC error too. That's a normal per-mint
+            # miss, not an endpoint fault — get_asset's contract is to
+            # return None for it, so pass the body through unchanged rather
+            # than burning ~4 min of retries per unmetadata'd mint.
+            is_get_asset = isinstance(body, dict) and body.get("method") == "getAsset"
+            if isinstance(data, dict) and "error" in data and not is_get_asset:
                 raise TransientHTTPError(f"JSON-RPC error from {url}: {data['error']}")
             return data
 
