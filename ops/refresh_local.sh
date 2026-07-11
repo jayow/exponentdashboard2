@@ -223,7 +223,7 @@ fi
 
 echo ""
 echo "--- commit + push ---"
-git add web/public/*.json web/public/wallet/ web/public/strategy-txns/
+git add web/public/*.json web/public/wallet/ web/public/strategy-txns/ extract_load/known_vaults.json
 if git diff --cached --quiet; then
   echo "No JSON changes to commit."
 else

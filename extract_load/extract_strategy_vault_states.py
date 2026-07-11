@@ -14,7 +14,9 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import os
 from datetime import datetime, timezone
+from pathlib import Path
 
 import base58
 import httpx
@@ -32,6 +34,88 @@ from .strategy_vault_decode import (
 
 U64_MAX = 2**64 - 1
 INT64_MAX = 2**63 - 1
+
+# Committed fallback vault list — anchored to this module's directory so it
+# resolves regardless of the process cwd (CI runs from repo root, but be safe).
+KNOWN_VAULTS_FILE = Path(__file__).resolve().parent / "known_vaults.json"
+
+
+def _load_committed_vaults() -> list[str]:
+    """Vault pubkeys from the committed known_vaults.json. [] if missing/bad."""
+    try:
+        with open(KNOWN_VAULTS_FILE) as f:
+            return list(json.load(f).get("vaults") or [])
+    except (OSError, json.JSONDecodeError):
+        return []
+
+
+def _resolve_known_vaults(con) -> tuple[list[str], str]:
+    """Pick a vault list for the gMA fallback, freshest source first.
+
+      (a) raw_strategy_vault_states     — every vault ever discovered on-chain
+      (b) committed known_vaults.json   — survives an empty CI warehouse cache
+      (c) raw_strategy_vault_registry   — managed subset (~3), always API-fresh
+    First non-empty wins. Returns (vaults, source_label).
+    """
+    from_states = [
+        r[0]
+        for r in con.execute(
+            "SELECT DISTINCT vault FROM raw_strategy_vault_states"
+        ).fetchall()
+    ]
+    if from_states:
+        return from_states, "warehouse raw_strategy_vault_states"
+
+    from_file = _load_committed_vaults()
+    if from_file:
+        return from_file, "committed known_vaults.json"
+
+    from_registry = [
+        r[0]
+        for r in con.execute(
+            "SELECT DISTINCT address FROM raw_strategy_vault_registry "
+            "WHERE fetch_date = (SELECT max(fetch_date) FROM raw_strategy_vault_registry)"
+        ).fetchall()
+    ]
+    if from_registry:
+        return from_registry, "warehouse raw_strategy_vault_registry (managed subset)"
+
+    return [], "none"
+
+
+def _self_heal_known_vaults(vaults: list[str], snapshot_date_str: str) -> None:
+    """Rewrite the committed known_vaults.json after a successful gPA
+    discovery so the fallback list stays current as Exponent adds vaults.
+
+    No-op if the discovered set is empty or unchanged (avoid needless churn).
+    Atomic write (temp + os.replace).
+    """
+    if not vaults:
+        return
+    new_sorted = sorted(vaults)
+    try:
+        with open(KNOWN_VAULTS_FILE) as f:
+            current = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        current = {}
+    if sorted(current.get("vaults") or []) == new_sorted:
+        return  # already current
+    payload = {
+        "_comment": current.get("_comment") or (
+            "Fallback vault list for extract_strategy_vault_states when "
+            "getProgramAccounts is 429-blocked (datacenter IPs). Regenerated "
+            "on every successful gPA discovery run."
+        ),
+        "generated_from_snapshot": snapshot_date_str,
+        "count": len(new_sorted),
+        "vaults": new_sorted,
+    }
+    tmp = KNOWN_VAULTS_FILE.with_suffix(".json.tmp")
+    with open(tmp, "w") as f:
+        json.dump(payload, f, indent=2)
+        f.write("\n")
+    os.replace(tmp, KNOWN_VAULTS_FILE)
+    rprint(f"  [dim]self-healed known_vaults.json → {len(new_sorted)} vaults[/dim]")
 
 
 def _bigint(v: int | None) -> int | None:
@@ -58,32 +142,32 @@ async def run() -> dict:
 
     disc_b58 = base58.b58encode(STRATEGY_VAULT_DISCRIMINATOR).decode()
 
+    gpa_ok = False
     async with SolanaRpcClient(RPC_ENDPOINTS) as client:
         try:
             accts = await client.get_program_accounts(
                 EXPONENT_STRATEGY_VAULT_PROGRAM,
                 filters=[{"memcmp": {"offset": 0, "bytes": disc_b58}}],
             )
+            gpa_ok = True
         except (TransientHTTPError, httpx.HTTPError) as gpa_err:
             # getProgramAccounts is the one call class Helius blanket-429s
             # from cloud hosts (2026-07-09..), and backup providers plan-gate
             # it — but plain RPC still works. Refresh the KNOWN vaults via
             # getMultipleAccounts instead; only new-vault discovery degrades,
             # and that self-heals on the next successful gPA run (e.g. a
-            # residential/local refresh).
+            # residential/local refresh). Vault list comes from the freshest
+            # available source — warehouse snapshots, else the committed
+            # known_vaults.json (survives an empty CI cache), else registry.
             with warehouse() as con:
-                known = [
-                    r[0]
-                    for r in con.execute(
-                        "SELECT DISTINCT vault FROM raw_strategy_vault_states"
-                    ).fetchall()
-                ]
+                known, source = _resolve_known_vaults(con)
             if not known:
-                # Nothing to fall back on — crash loudly, as before.
+                # All sources empty — nothing to fall back on. Crash loudly.
                 raise
             rprint(
-                f"  [yellow]gPA failed ({escape(str(gpa_err))}); falling back "
-                f"to getMultipleAccounts over {len(known)} known vaults[/yellow]"
+                f"  [yellow]gPA failed ({escape(str(gpa_err))}); using vault "
+                f"list from {source} ({len(known)} vaults) via "
+                f"getMultipleAccounts[/yellow]"
             )
             accts = []
             for i in range(0, len(known), 100):  # 100 = getMultipleAccounts limit
@@ -99,6 +183,11 @@ async def run() -> dict:
                     accts.append({"pubkey": pk, "account": info})
 
     rprint(f"  fetched {len(accts)} candidate vault accounts")
+
+    # Self-heal the committed fallback list from a successful gPA discovery so
+    # the CI fallback keeps working as Exponent adds vaults. No-op if unchanged.
+    if gpa_ok:
+        _self_heal_known_vaults([a["pubkey"] for a in accts], str(snapshot_date))
 
     # Slot isn't surfaced by get_program_accounts (returns result list, not
     # the {context, value} wrapper). Leave NULL per DDL — matches the
