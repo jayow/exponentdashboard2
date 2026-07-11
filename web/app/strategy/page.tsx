@@ -209,7 +209,7 @@ function StrategyDetail({ vault }: { vault: Vault }) {
       <div className="flex items-start justify-between flex-wrap gap-3">
         <div className="min-w-0">
           <div className="flex items-center gap-2.5 flex-wrap">
-            <h1 className="text-white text-xl">{vault.name ?? shortAddr(vault.address)}</h1>
+            <h1 className="text-white text-xl">{vault.name ?? 'Unnamed'}</h1>
             <span className="text-[10px] text-white/35 border border-white/10 rounded px-1.5 py-px">{sym}</span>
             {vault.depositTicker && vault.depositTicker !== sym && (
               <span className="text-[10px] text-white/35 border border-white/10 rounded px-1.5 py-px">

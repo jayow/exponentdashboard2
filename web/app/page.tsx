@@ -6,17 +6,15 @@ import { BigChart } from '@/components/BigChart';
 import { MarketsList } from '@/components/MarketsList';
 import { UsersAnalytics } from '@/components/UsersAnalytics';
 import { TranchingAnalytics } from '@/components/TranchingAnalytics';
-import { ManagedStrategies } from '@/components/ManagedStrategies';
 import { StrategyVaultAnalytics } from '@/components/StrategyVaultAnalytics';
 
-type Tab = 'markets' | 'users' | 'tranching' | 'strategies' | 'vaults';
+type Tab = 'markets' | 'users' | 'tranching' | 'strategies';
 
 const TABS: { key: Tab; label: string }[] = [
   { key: 'markets',    label: 'Markets' },
   { key: 'users',      label: 'Users' },
   { key: 'tranching',  label: 'Tranching' },
   { key: 'strategies', label: 'Strategies' },
-  { key: 'vaults',     label: 'Strategy Vaults' },
 ];
 
 function fmtUpdated(iso: string): string {
@@ -84,8 +82,7 @@ export default function HomePage() {
         {tab === 'markets'    && <MarketsList />}
         {tab === 'users'      && <UsersAnalytics />}
         {tab === 'tranching'  && <TranchingAnalytics />}
-        {tab === 'strategies' && <ManagedStrategies />}
-        {tab === 'vaults'     && <StrategyVaultAnalytics />}
+        {tab === 'strategies' && <StrategyVaultAnalytics />}
       </div>
     </main>
   );

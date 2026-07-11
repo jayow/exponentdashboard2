@@ -1767,6 +1767,28 @@ def build_strategy_vault_json(con: duckdb.DuckDBPyConnection) -> dict:
         _, u_dec = resolve_mint(row["underlying_mint"])
         lp_dec_by_vault[row["vault"]] = mint_decimals.get(row["mint_lp"], u_dec)
 
+    # Underlying USD prices, so AUM can be expressed in dollars (aumUsd) for
+    # hero stats and the $-based filter. USD-denominated vaults use the
+    # placeholder USD mint (no stg_prices row) → treat as $1.
+    price_by_mint: dict[str, float] = {}
+    try:
+        for m, px in con.execute("""
+            SELECT mint, price_usd FROM main_staging.stg_prices
+            WHERE date = (SELECT MAX(date) FROM main_staging.stg_prices)
+        """).fetchall():
+            if px is not None:
+                price_by_mint[m] = float(px)
+    except duckdb.Error:
+        pass
+    _USD_SYMS = {"USD", "USD1", "USDC", "USDT", "USX", "EUSX", "USDG", "USDE"}
+
+    def usd_price(mint: str | None, sym: str | None) -> float | None:
+        if mint and mint in price_by_mint:
+            return price_by_mint[mint]
+        if sym and sym.upper() in _USD_SYMS:  # USD-pegged deposit → $1
+            return 1.0
+        return None
+
     # Per-vault daily history. total_aum = idle base + deployed positions.
     history_rows = con.execute("""
         SELECT vault, date::VARCHAR, total_aum, lp_balance, nav_per_share,
@@ -2120,6 +2142,7 @@ def build_strategy_vault_json(con: duckdb.DuckDBPyConnection) -> dict:
             "squadsVault":            row["manager"],
             "aumInBase":              aum_base,
             "aumUi":                  aum_ui,
+            "aumUsd":                 (aum_ui * _p) if (_p := usd_price(underlying_mint, symbol)) is not None else None,
             "idleUi":                 idle_ui,
             "deployedUi":             deployed_ui,
             "lpBalance":              float(row["lp_balance"] or 0),
