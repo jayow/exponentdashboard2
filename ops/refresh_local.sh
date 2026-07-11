@@ -212,6 +212,14 @@ echo ""
 echo "--- serve.build_web_data ---"
 "$PY" -m serve.build_web_data || echo "WARN: serve.build_web_data failed (continuing)"
 
+# Accuracy gate (docs/ACCURACY.md): fast in-warehouse checks. WARN is fine
+# (known/informational); a FAIL means genuinely bad data (negative TVL, broken
+# invariant, decode error, supply-drift blow-out) → refuse to publish it.
+echo ""
+echo "--- accuracy checks ---"
+acc_fail=0
+"$PY" -m ops.accuracy_check || acc_fail=1
+
 # Railway: NULL out old raw_helius_tx.payload to keep the 5 GB volume from
 # filling up over time. Same logic the GHA workflow runs after each
 # refresh. Mac doesn't need this (40 GB+ disk, no constraint).
@@ -224,6 +232,13 @@ fi
 
 echo ""
 echo "--- commit + push ---"
+if [ "$acc_fail" = 1 ]; then
+  echo "REFUSING TO PUBLISH: accuracy checks reported a FAIL (see above / docs/ACCURACY.md)."
+  echo "Fix the data issue and re-run. web/public left uncommitted."
+  echo ""
+  echo "===== Refresh finished (publish blocked on accuracy): $(date) ====="
+  exit 1
+fi
 git add web/public/*.json web/public/wallet/ web/public/strategy-txns/ extract_load/known_vaults.json
 if git diff --cached --quiet; then
   echo "No JSON changes to commit."

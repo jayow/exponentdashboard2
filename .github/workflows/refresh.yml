@@ -189,6 +189,13 @@ jobs:
             echo "::error::strategy_vault.json has $sv_count vaults — refusing to publish"
             ok=false
           fi
+          # Accuracy gate (docs/ACCURACY.md): fast in-warehouse checks. A FAIL
+          # means genuinely bad data (negative TVL, broken invariant, decode
+          # error, supply-drift blow-out) — refuse to publish. WARNs don't block.
+          if ! python -m ops.accuracy_check; then
+            echo "::error::accuracy checks FAILED — refusing to publish (see docs/ACCURACY.md)"
+            ok=false
+          fi
           echo "ok=$ok" >> "$GITHUB_OUTPUT"
           if [ "$ok" != true ]; then
             echo "::error::publish refused — failing the job so this run shows RED instead of silently skipping the commit"
