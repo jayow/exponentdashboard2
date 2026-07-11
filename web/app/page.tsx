@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { TopStats } from '@/components/TopStats';
 import { TvlByPlatform } from '@/components/TvlByPlatform';
 import { BigChart } from '@/components/BigChart';
@@ -7,6 +7,10 @@ import { MarketsList } from '@/components/MarketsList';
 import { UsersAnalytics } from '@/components/UsersAnalytics';
 import { TranchingAnalytics } from '@/components/TranchingAnalytics';
 import { StrategyVaultAnalytics } from '@/components/StrategyVaultAnalytics';
+
+// useLayoutEffect on the client (restore scroll before paint), useEffect on the
+// server to avoid the SSR "does nothing on the server" warning.
+const useIsoLayoutEffect = typeof document !== 'undefined' ? useLayoutEffect : useEffect;
 
 type Tab = 'markets' | 'users' | 'tranching' | 'strategies';
 
@@ -29,19 +33,20 @@ function fmtUpdated(iso: string): string {
 export default function HomePage() {
   const [tab, setTabState] = useState<Tab>('markets');
   const [updatedAt, setUpdatedAt] = useState<string | null>(null);
+  const mainRef = useRef<HTMLElement>(null);
 
-  // Tab lives in the URL (?tab=) so browser-back restores it with the scroll.
+  // Persist the tab in sessionStorage (NOT the URL — writing the URL makes Next's
+  // router re-render the whole page, which flashes on every tab click).
   function setTab(t: Tab) {
     setTabState(t);
-    try {
-      window.history.replaceState(null, '', t === 'markets' ? '/' : `/?tab=${t}`);
-    } catch { /* noop */ }
+    try { sessionStorage.setItem('home:tab', t); } catch { /* noop */ }
   }
 
   useEffect(() => {
-    // Restore the active tab from the URL on load / back navigation.
-    const t = new URLSearchParams(window.location.search).get('tab') as Tab | null;
-    if (t && TABS.some((x) => x.key === t)) setTabState(t);
+    try {
+      const t = sessionStorage.getItem('home:tab') as Tab | null;
+      if (t && TABS.some((x) => x.key === t)) setTabState(t);
+    } catch { /* noop */ }
 
     fetch('/stats.json')
       .then((r) => r.json())
@@ -49,35 +54,39 @@ export default function HomePage() {
       .catch(() => {});
   }, []);
 
-  // Remember scroll position and restore it on back navigation, retrying while
-  // async content loads (which is what defeats native scroll restoration).
+  // Persist scroll + page height so a back-nav can reserve the space and land there.
   useEffect(() => {
-    const save = () => { try { sessionStorage.setItem('home:scroll', String(window.scrollY)); } catch { /* noop */ } };
-    window.addEventListener('scroll', save, { passive: true });
-
-    let y = 0;
-    try { y = Number(sessionStorage.getItem('home:scroll') || 0); } catch { /* noop */ }
-    let cancelled = !y;
-    const cancel = () => { cancelled = true; };
-    window.addEventListener('wheel', cancel, { passive: true });
-    window.addEventListener('touchmove', cancel, { passive: true });
-    let n = 0;
-    const id = setInterval(() => {
-      if (cancelled) { clearInterval(id); return; }
-      window.scrollTo(0, y);
-      if (Math.abs(window.scrollY - y) < 2 || ++n > 25) clearInterval(id);
-    }, 40);
-
-    return () => {
-      window.removeEventListener('scroll', save);
-      window.removeEventListener('wheel', cancel);
-      window.removeEventListener('touchmove', cancel);
-      clearInterval(id);
+    const save = () => {
+      try {
+        sessionStorage.setItem('home:scroll', String(window.scrollY));
+        sessionStorage.setItem('home:height', String(document.documentElement.scrollHeight));
+      } catch { /* noop */ }
     };
+    window.addEventListener('scroll', save, { passive: true });
+    return () => window.removeEventListener('scroll', save);
+  }, []);
+
+  // On back navigation, reserve the prior page height and restore scroll BEFORE
+  // paint — so the page appears already at the saved offset instead of flashing
+  // at the top and snapping down as async content loads.
+  useIsoLayoutEffect(() => {
+    let y = 0, h = 0;
+    try {
+      y = Number(sessionStorage.getItem('home:scroll') || 0);
+      h = Number(sessionStorage.getItem('home:height') || 0);
+    } catch { /* noop */ }
+    if (y < 40) return;
+    const main = mainRef.current;
+    if (main && h) main.style.minHeight = `${h}px`;
+    window.scrollTo(0, y);
+    let n = 0;
+    const pin = setInterval(() => { window.scrollTo(0, y); if (++n > 16) clearInterval(pin); }, 50);
+    const release = setTimeout(() => { if (main) main.style.minHeight = ''; }, 1000);
+    return () => { clearInterval(pin); clearTimeout(release); };
   }, []);
 
   return (
-    <main className="mx-auto max-w-[1500px] px-4 sm:px-6 py-10">
+    <main ref={mainRef} className="mx-auto max-w-[1500px] px-4 sm:px-6 py-10">
       <header className="relative mb-8">
         <div className="flex items-center justify-between gap-3">
           <div className="flex items-center gap-3">
