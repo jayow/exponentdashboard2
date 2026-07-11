@@ -17,10 +17,12 @@ import json
 from datetime import datetime, timezone
 
 import base58
+import httpx
 from rich import print as rprint
+from rich.markup import escape
 
 from .config import RPC_ENDPOINTS, EXPONENT_STRATEGY_VAULT_PROGRAM
-from .solana_rpc_client import SolanaRpcClient
+from .solana_rpc_client import SolanaRpcClient, TransientHTTPError
 from .load import warehouse
 from .strategy_vault_decode import (
     STRATEGY_VAULT_DISCRIMINATOR,
@@ -57,10 +59,44 @@ async def run() -> dict:
     disc_b58 = base58.b58encode(STRATEGY_VAULT_DISCRIMINATOR).decode()
 
     async with SolanaRpcClient(RPC_ENDPOINTS) as client:
-        accts = await client.get_program_accounts(
-            EXPONENT_STRATEGY_VAULT_PROGRAM,
-            filters=[{"memcmp": {"offset": 0, "bytes": disc_b58}}],
-        )
+        try:
+            accts = await client.get_program_accounts(
+                EXPONENT_STRATEGY_VAULT_PROGRAM,
+                filters=[{"memcmp": {"offset": 0, "bytes": disc_b58}}],
+            )
+        except (TransientHTTPError, httpx.HTTPError) as gpa_err:
+            # getProgramAccounts is the one call class Helius blanket-429s
+            # from cloud hosts (2026-07-09..), and backup providers plan-gate
+            # it — but plain RPC still works. Refresh the KNOWN vaults via
+            # getMultipleAccounts instead; only new-vault discovery degrades,
+            # and that self-heals on the next successful gPA run (e.g. a
+            # residential/local refresh).
+            with warehouse() as con:
+                known = [
+                    r[0]
+                    for r in con.execute(
+                        "SELECT DISTINCT vault FROM raw_strategy_vault_states"
+                    ).fetchall()
+                ]
+            if not known:
+                # Nothing to fall back on — crash loudly, as before.
+                raise
+            rprint(
+                f"  [yellow]gPA failed ({escape(str(gpa_err))}); falling back "
+                f"to getMultipleAccounts over {len(known)} known vaults[/yellow]"
+            )
+            accts = []
+            for i in range(0, len(known), 100):  # 100 = getMultipleAccounts limit
+                chunk = known[i : i + 100]
+                infos = await client.get_multiple_accounts(chunk)
+                for pk, info in zip(chunk, infos):
+                    if info is None:
+                        continue  # account closed since last snapshot
+                    data_field = info["data"]
+                    data_b64 = data_field[0] if isinstance(data_field, list) else data_field
+                    if not base64.b64decode(data_b64).startswith(STRATEGY_VAULT_DISCRIMINATOR):
+                        continue  # safety filter gPA's memcmp used to provide
+                    accts.append({"pubkey": pk, "account": info})
 
     rprint(f"  fetched {len(accts)} candidate vault accounts")
 
