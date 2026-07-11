@@ -1,5 +1,5 @@
 'use client';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { TopStats } from '@/components/TopStats';
 import { TvlByPlatform } from '@/components/TvlByPlatform';
 import { BigChart } from '@/components/BigChart';
@@ -19,19 +19,43 @@ const TABS: { key: Tab; label: string }[] = [
   { key: 'vaults',     label: 'Strategy Vaults' },
 ];
 
+function fmtUpdated(iso: string): string {
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '';
+  return d.toLocaleString('en-US', {
+    month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
+    timeZone: 'UTC', hour12: false,
+  }) + ' UTC';
+}
+
 export default function HomePage() {
   const [tab, setTab] = useState<Tab>('markets');
+  const [updatedAt, setUpdatedAt] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetch('/stats.json')
+      .then((r) => r.json())
+      .then((d) => setUpdatedAt(d?.meta?.generatedAt ?? null))
+      .catch(() => {});
+  }, []);
 
   return (
     <main className="mx-auto max-w-[1500px] px-4 sm:px-6 py-10">
       <header className="relative mb-8">
-        <div className="flex items-center gap-3">
-          <a href="https://app.exponent.finance" target="_blank" rel="noopener noreferrer" className="shrink-0">
-            <img src="/logos/v2-logo.svg" alt="Exponent" className="h-7" />
-          </a>
-          <span className="text-[11px] text-white/30 border-l border-white/10 pl-3">
-            by <a href="https://hanyon.app" target="_blank" rel="noopener noreferrer" className="text-white/50 hover:text-white transition">Hanyon Analytics</a>
-          </span>
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <a href="https://app.exponent.finance" target="_blank" rel="noopener noreferrer" className="shrink-0">
+              <img src="/logos/v2-logo.svg" alt="Exponent" className="h-7" />
+            </a>
+            <span className="text-[11px] text-white/30 border-l border-white/10 pl-3">
+              by <a href="https://hanyon.app" target="_blank" rel="noopener noreferrer" className="text-white/50 hover:text-white transition">Hanyon Analytics</a>
+            </span>
+          </div>
+          {updatedAt && (
+            <span className="text-[11px] text-white/30 shrink-0" title={updatedAt}>
+              Updated {fmtUpdated(updatedAt)}
+            </span>
+          )}
         </div>
       </header>
 
