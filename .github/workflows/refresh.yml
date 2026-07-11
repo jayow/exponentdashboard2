@@ -51,7 +51,7 @@ jobs:
       # v1 used (works around GHA cache's "save once" rule).
       - name: Restore warehouse cache
         id: warehouse-cache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: data/warehouse.duckdb
           key: warehouse-slim-${{ github.run_id }}
@@ -189,6 +189,10 @@ jobs:
             ok=false
           fi
           echo "ok=$ok" >> "$GITHUB_OUTPUT"
+          if [ "$ok" != true ]; then
+            echo "::error::publish refused — failing the job so this run shows RED instead of silently skipping the commit"
+            exit 1
+          fi
 
       # ── Commit refreshed JSON back to the repo ───────────────────────
       - name: Commit + push refreshed JSON
@@ -201,5 +205,31 @@ jobs:
             echo "No JSON changes to commit."
           else
             git commit -m "chore: daily refresh $(date -u +%Y-%m-%d)"
-            git push origin HEAD:${{ github.ref_name }}
+            # Rebase onto origin before pushing: a bare push fails on a
+            # non-fast-forward (e.g. the local/Railway refresh already
+            # published today). -X theirs keeps OUR freshly-built JSONs on
+            # conflict, same pattern as ops/refresh_local.sh. Two attempts,
+            # then warn without failing the job — the pipeline already ran;
+            # a lost publish here is recoverable on the next scheduled run.
+            pushed=false
+            for attempt in 1 2; do
+              git fetch -q origin main || true
+              git rebase -X theirs FETCH_HEAD >/dev/null 2>&1 || { git rebase --abort 2>/dev/null; break; }
+              if git push origin HEAD:${{ github.ref_name }}; then pushed=true; echo "Pushed."; break; fi
+            done
+            if [ "$pushed" != true ]; then
+              echo "::warning::push failed after rebase+retry — main moved again or auth issue. Publish skipped this run."
+            fi
           fi
+
+      # ── Save warehouse cache (always, even on failure/refusal) ───────
+      # A validate failure now exits the job RED (see above), which skips
+      # steps by default — this needs if: always() so today's extracted
+      # warehouse progress is preserved for tomorrow's run instead of being
+      # thrown away along with the red X.
+      - name: Save warehouse cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: data/warehouse.duckdb
+          key: warehouse-slim-${{ github.run_id }}

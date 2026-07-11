@@ -148,8 +148,22 @@ class SolanaRpcClient:
         await self.client.aclose()
 
     @asynccontextmanager
-    async def _acquire(self) -> AsyncIterator[str]:
-        """Yield the URL of the next-available endpoint, holding its semaphore."""
+    async def _acquire(self, forced_url: str | None = None) -> AsyncIterator[str]:
+        """Yield the URL of the next-available endpoint, holding its semaphore.
+
+        If forced_url is given (must be one of self.endpoints), always use
+        that endpoint instead of round-robining — still respects its
+        semaphore for concurrency control.
+        """
+        if forced_url is not None:
+            idx = self.endpoints.index(forced_url)
+            sem = self.semaphores[idx]
+            await sem.acquire()
+            try:
+                yield self.endpoints[idx]
+            finally:
+                sem.release()
+            return
         start = next(self._counter) % len(self.endpoints)
         for offset in range(len(self.endpoints)):
             idx = (start + offset) % len(self.endpoints)
@@ -180,7 +194,7 @@ class SolanaRpcClient:
         retry=retry_if_exception_type((TransientHTTPError, httpx.RequestError)),
         reraise=True,
     )
-    async def _post(self, body: Any) -> Any:
+    async def _post(self, body: Any, *, endpoint: str | None = None) -> Any:
         # Client-side rate-limit BEFORE issuing the request. Two buckets:
         # global RPC and getProgramAccounts-specific. Cloud hosts burst
         # past Helius's caps without this; residential networks pace
@@ -188,7 +202,7 @@ class SolanaRpcClient:
         await _RPC_BUCKET.acquire()
         if _is_gpa_body(body):
             await _GPA_BUCKET.acquire()
-        async with self._acquire() as url:
+        async with self._acquire(endpoint) as url:
             resp = await self.client.post(url, json=body)
             if resp.status_code in TRANSIENT_STATUS:
                 # Capture Retry-After header (RFC 7231 §7.1.3) so the retry
@@ -205,7 +219,17 @@ class SolanaRpcClient:
                     f"{resp.status_code} from {url}", retry_after=retry_after
                 )
             resp.raise_for_status()
-            return resp.json()
+            data = resp.json()
+            # Some providers return HTTP 200 with a JSON-RPC-level error
+            # object (plan-gated method, disabled method, etc) instead of a
+            # transient HTTP status. Left unchecked, callers like
+            # get_program_accounts do `result.get("result") or []` and
+            # silently treat this as "zero accounts" — indistinguishable
+            # from an empty-but-valid result. Raise so tenacity retries and
+            # rotates to the next endpoint in the pool instead.
+            if isinstance(data, dict) and "error" in data:
+                raise TransientHTTPError(f"JSON-RPC error from {url}: {data['error']}")
+            return data
 
     # ---------- High-level methods ----------
 
@@ -303,7 +327,10 @@ class SolanaRpcClient:
         Metaplex metadata account.
 
         Only works against Helius endpoints (DAS is a Helius extension).
-        Returns None silently on non-Helius RPC endpoints.
+        Pinned to the first Helius endpoint in the pool (matched by
+        hostname) so it never round-robins onto a non-Helius provider,
+        which would otherwise silently return None (data loss) for every
+        mint until the round-robin cycled back to Helius.
         """
         body = {
             "jsonrpc": "2.0",
@@ -311,7 +338,10 @@ class SolanaRpcClient:
             "method": "getAsset",
             "params": {"id": mint},
         }
-        result = await self._post(body)
+        helius_endpoint = next(
+            (e for e in self.endpoints if "helius-rpc.com" in e), None
+        )
+        result = await self._post(body, endpoint=helius_endpoint)
         return result.get("result")
 
     async def get_program_accounts(
