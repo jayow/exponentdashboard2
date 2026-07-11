@@ -171,6 +171,7 @@ run extract_sv_signatures   "$PY" -m extract_load.extract_strategy_vault_signatu
 run extract_sv_actions      "$PY" -m extract_load.extract_strategy_vault_actions
 run extract_sv_executions   "$PY" -m extract_load.extract_strategy_vault_executions
 run extract_sv_holders      "$PY" -m extract_load.extract_strategy_vault_holders
+run extract_mint_supplies   "$PY" -m extract_load.extract_mint_supplies
 run extract_markets         "$PY" -m extract_load.extract_markets
 run extract_signatures      "$PY" -m extract_load.extract_signatures
 run extract_transactions    "$PY" -m extract_load.extract_transactions

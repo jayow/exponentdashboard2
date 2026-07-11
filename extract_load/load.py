@@ -270,6 +270,44 @@ RAW_DDL = {
             PRIMARY KEY (vault, snapshot_date)
         )
     """,
+    "raw_mint_supplies": """
+        -- Authoritative on-chain token supply per mint, snapshotted daily.
+        -- Replaces the fragile tx-delta reconstruction in
+        -- int_mint_supplies_daily (which drifts whenever a mint/burn tx is
+        -- missed — USX SY was 31% understated). supply_raw is decoded
+        -- directly from the SPL Mint account (offset 36, u64); pt_supply
+        -- cross-checked against the core Vault.pt_supply field. One row per
+        -- (mint, snapshot_date). leg ∈ {SY, PT, YT}; vault = the core
+        -- Exponent Vault this mint belongs to (SY mints dedup to any one).
+        CREATE TABLE IF NOT EXISTS raw_mint_supplies (
+            snapshot_date  DATE,
+            mint           VARCHAR,
+            leg            VARCHAR,
+            vault          VARCHAR,
+            supply_raw     HUGEINT,
+            decimals       INTEGER,
+            supply_ui      DOUBLE,
+            snapshot_ts    TIMESTAMP,
+            PRIMARY KEY (mint, snapshot_date)
+        )
+    """,
+    "raw_sy_supply_history": """
+        -- Derivable-correct daily SY supply, one-time backfill for the recent
+        -- window where the tx-delta reconstruction drifted (June 2026+, from
+        -- incomplete SY mint/burn coverage). Derived from COMPLETE
+        -- mint-referencing tx coverage: per-tx net mint balance delta
+        -- (Σpost − Σpre; transfers cancel within a tx), walked backward from
+        -- today's authoritative getTokenSupply. Validated to 0.02% vs on-chain.
+        -- The model coalesces raw_mint_supplies (current) > this (recent
+        -- window) > reconstruction (correct pre-drift history).
+        CREATE TABLE IF NOT EXISTS raw_sy_supply_history (
+            mint         VARCHAR,
+            date         DATE,
+            supply_ui    DOUBLE,
+            snapshot_ts  TIMESTAMP,
+            PRIMARY KEY (mint, date)
+        )
+    """,
     "raw_strategy_vault_signatures": """
         -- Watermarked getSignaturesForAddress sweep against the Strategy
         -- Vault program (or per-vault PDA). One row per signature.

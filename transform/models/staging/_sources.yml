@@ -219,3 +219,32 @@ sources:
             tests: [not_null]
           - name: lst_per_base
             tests: [not_null]
+
+      - name: raw_mint_supplies
+        description: |
+          Authoritative on-chain token supply per mint, snapshotted daily.
+          supply_ui decoded directly from the SPL Mint account (offset 36);
+          overrides the tx-delta reconstruction in int_mint_supplies_daily,
+          which drifts (USX SY was 31% understated). leg ∈ {SY, PT, YT}.
+        columns:
+          - name: snapshot_date
+            tests: [not_null]
+          - name: mint
+            tests: [not_null]
+          - name: supply_ui
+            tests: [not_null]
+
+      - name: raw_sy_supply_history
+        description: |
+          Derivable-correct daily SY supply for the recent drifted window,
+          derived from complete mint-referencing tx coverage (per-tx net
+          balance delta, walked back from authoritative). Validated 0.02% vs
+          on-chain. Coalesced between raw_mint_supplies (current) and the
+          reconstruction (correct pre-drift history).
+        columns:
+          - name: mint
+            tests: [not_null]
+          - name: date
+            tests: [not_null]
+          - name: supply_ui
+            tests: [not_null]
