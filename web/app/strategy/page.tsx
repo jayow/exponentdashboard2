@@ -1,6 +1,6 @@
 'use client';
 import { Suspense, useEffect, useMemo, useState } from 'react';
-import Link from 'next/link';
+import { BackLink } from '@/components/BackLink';
 import { useSearchParams } from 'next/navigation';
 import {
   ActivityEvent, Proposal, StrategyTxnShard, StrategyVaultData, Vault, VaultOpGroup,
@@ -676,7 +676,7 @@ function StrategyPageInner() {
   return (
     <main className="mx-auto max-w-[1100px] px-4 sm:px-6 py-10">
       <div className="mb-6">
-        <Link href="/" className="text-[11px] text-white/40 hover:text-white">← All strategies</Link>
+        <BackLink label="← All strategies" className="text-[11px] text-white/40 hover:text-white" />
       </div>
       {err && <div className="text-sm text-rose-400/80">Failed to load strategy data: {err}</div>}
       {!err && !data && <div className="text-sm text-white/40">Loading…</div>}

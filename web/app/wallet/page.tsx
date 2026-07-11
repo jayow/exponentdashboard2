@@ -1,6 +1,7 @@
 'use client';
 import { Suspense, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
+import { BackLink } from '@/components/BackLink';
 import { useSearchParams } from 'next/navigation';
 
 type TokenChange = { symbol: string; delta: number; usd: number | null };
@@ -126,7 +127,7 @@ function WalletDetailView() {
 
   return (
     <main className="mx-auto max-w-[1400px] px-4 sm:px-6 py-10">
-      <Link href="/" className="text-[12px] text-white/30 hover:text-white/60">← Markets</Link>
+      <BackLink label="← Markets" className="text-[12px] text-white/30 hover:text-white/60" />
 
       {/* Header — address (identity) on left, hero stats inline on right.
           Items align on the baseline so the 44px headline and 22px stat

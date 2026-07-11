@@ -1,6 +1,6 @@
 'use client';
 import { Fragment, Suspense, useEffect, useMemo, useState } from 'react';
-import Link from 'next/link';
+import { BackLink } from '@/components/BackLink';
 import { useSearchParams } from 'next/navigation';
 import {
   AreaChart, Area, BarChart, Bar, ComposedChart, LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine,
@@ -378,7 +378,7 @@ function MarketDetailView() {
 
   return (
     <main className="mx-auto max-w-[1100px] px-4 sm:px-6 py-6">
-      <Link href="/" className="text-[12px] text-white/30 hover:text-white/60">← Markets</Link>
+      <BackLink label="← Markets" className="text-[12px] text-white/30 hover:text-white/60" />
 
       {/* ─── HEADER ─────────────────────────────────────────────── */}
       <header className="mt-4">

@@ -27,14 +27,53 @@ function fmtUpdated(iso: string): string {
 }
 
 export default function HomePage() {
-  const [tab, setTab] = useState<Tab>('markets');
+  const [tab, setTabState] = useState<Tab>('markets');
   const [updatedAt, setUpdatedAt] = useState<string | null>(null);
 
+  // Tab lives in the URL (?tab=) so browser-back restores it with the scroll.
+  function setTab(t: Tab) {
+    setTabState(t);
+    try {
+      window.history.replaceState(null, '', t === 'markets' ? '/' : `/?tab=${t}`);
+    } catch { /* noop */ }
+  }
+
   useEffect(() => {
+    // Restore the active tab from the URL on load / back navigation.
+    const t = new URLSearchParams(window.location.search).get('tab') as Tab | null;
+    if (t && TABS.some((x) => x.key === t)) setTabState(t);
+
     fetch('/stats.json')
       .then((r) => r.json())
       .then((d) => setUpdatedAt(d?.meta?.generatedAt ?? null))
       .catch(() => {});
+  }, []);
+
+  // Remember scroll position and restore it on back navigation, retrying while
+  // async content loads (which is what defeats native scroll restoration).
+  useEffect(() => {
+    const save = () => { try { sessionStorage.setItem('home:scroll', String(window.scrollY)); } catch { /* noop */ } };
+    window.addEventListener('scroll', save, { passive: true });
+
+    let y = 0;
+    try { y = Number(sessionStorage.getItem('home:scroll') || 0); } catch { /* noop */ }
+    let cancelled = !y;
+    const cancel = () => { cancelled = true; };
+    window.addEventListener('wheel', cancel, { passive: true });
+    window.addEventListener('touchmove', cancel, { passive: true });
+    let n = 0;
+    const id = setInterval(() => {
+      if (cancelled) { clearInterval(id); return; }
+      window.scrollTo(0, y);
+      if (Math.abs(window.scrollY - y) < 2 || ++n > 25) clearInterval(id);
+    }, 40);
+
+    return () => {
+      window.removeEventListener('scroll', save);
+      window.removeEventListener('wheel', cancel);
+      window.removeEventListener('touchmove', cancel);
+      clearInterval(id);
+    };
   }, []);
 
   return (
