@@ -103,6 +103,28 @@ def c13_volume_sides(con):
         ("WARN", f"{r[2]-r[3]:,} trades ({gap*100:.1f}% of vol) have no buy/sell direction — total OK, split undercounts")
 
 
+@check("C13d", "TVL decomposition: PT+YT+AMM+idle ≡ headline SY-TVL; idle ≥ 0")
+def c13_decomp_partition(con):
+    # tvl_decomposition splits each SY mint's headline TVL into four buckets.
+    # They must sum back to the headline (no value invented or lost), and idle
+    # (the residual) must be non-negative — a material negative means the
+    # measured AMM/tokenized legs exceed the SY that actually exists.
+    r = con.execute("""select sum(sy_total_usd),
+        sum(principal_pt_usd) + sum(farm_yt_usd)
+          + sum(amm_liquidity_usd) + sum(idle_sy_usd),
+        min(idle_sy_usd)
+        from main_analytics.tvl_decomposition""").fetchone()
+    total, parts, minidle = (r[0] or 0), (r[1] or 0), (r[2] or 0)
+    if total <= 0:
+        return "FAIL", "tvl_decomposition empty / non-positive"
+    diff = abs(parts - total)
+    if diff > 0.005 * total:
+        return "FAIL", f"buckets ${parts/1e6:.2f}M ≠ headline ${total/1e6:.2f}M (off ${diff/1e6:.2f}M)"
+    if minidle < -1000:
+        return "WARN", f"idle negative (min ${minidle:,.0f}) — pool vs supply snapshot skew"
+    return "PASS", f"PT+YT+AMM+idle=${parts/1e6:.1f}M ≡ headline; idle floor ${minidle:,.0f}"
+
+
 # ── P4: prices ───────────────────────────────────────────────────────────────
 @check("C10", "price sanity: no zero/negative/absurd; stables near $1")
 def c10_price_sanity(con):

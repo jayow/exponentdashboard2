@@ -82,7 +82,18 @@ select
             * greatest(0.0, (pm.expiration_ts - extract('epoch' from current_timestamp))) / 31536000.0
         )
     ) / power(10.0, coalesce(pm.underlying_decimals, 6))
-      * coalesce(p.price_usd, 0)               as liquidity_usd
+      * coalesce(p.price_usd, 0)               as liquidity_usd,
+    -- SY leg of the pool only (the AMM's SY-side reserve), valued the SAME way
+    -- int_sy_tvl_daily values SY supply (rate × underlying_price). Used to split
+    -- the SY-TVL residual into "real AMM liquidity" vs "idle/undeployed SY":
+    -- the PT leg is already counted in principal, so only the SY leg belongs
+    -- to the residual.
+    pm.sy_balance_raw * coalesce(r.rate, 1.0)
+      / power(10.0, coalesce(pm.underlying_decimals, 6))
+                                              as sy_leg_underlying,
+    pm.sy_balance_raw * coalesce(r.rate, 1.0)
+      / power(10.0, coalesce(pm.underlying_decimals, 6))
+      * coalesce(p.price_usd, 0)               as sy_leg_usd
 from pool_market pm
 left join latest_sy_rate r       on r.sy_mint = pm.mint_sy
 left join latest_underlying_price p on p.underlying_mint = pm.underlying_mint
