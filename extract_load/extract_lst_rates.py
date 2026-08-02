@@ -258,16 +258,17 @@ async def run() -> dict:
 
     now = datetime.now(timezone.utc)
     with warehouse() as con:
-        con.executemany("""
-            INSERT INTO raw_lst_rates
-                (snapshot_date, lst_mint, base_mint, lst_per_base, slot, fetched_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-            ON CONFLICT (snapshot_date, lst_mint) DO UPDATE SET
-                base_mint    = excluded.base_mint,
-                lst_per_base = excluded.lst_per_base,
-                slot         = excluded.slot,
-                fetched_at   = excluded.fetched_at
-        """, [(snap, r.lst_mint, r.base_mint, r.lst_per_base, r.slot, now) for r in rows])
+        if rows:
+            con.executemany("""
+                INSERT INTO raw_lst_rates
+                    (snapshot_date, lst_mint, base_mint, lst_per_base, slot, fetched_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT (snapshot_date, lst_mint) DO UPDATE SET
+                    base_mint    = excluded.base_mint,
+                    lst_per_base = excluded.lst_per_base,
+                    slot         = excluded.slot,
+                    fetched_at   = excluded.fetched_at
+            """, [(snap, r.lst_mint, r.base_mint, r.lst_per_base, r.slot, now) for r in rows])
 
     rprint(f"[green]Wrote raw_lst_rates[/green]: {len(rows)} rows  ({len(failures)} failures)")
     return {"rows": len(rows), "failures": failures, "date": str(snap)}

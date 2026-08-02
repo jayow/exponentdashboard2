@@ -191,11 +191,12 @@ async def run(limit: int | None = None) -> dict:
             rprint(f"  {min(i + CHUNK, len(work))}/{len(work)}")
 
     with warehouse() as con:
-        con.executemany(
-            "INSERT OR IGNORE INTO raw_strategy_vault_executions VALUES "
-            "(?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            rows,
-        )
+        if rows:
+            con.executemany(
+                "INSERT OR IGNORE INTO raw_strategy_vault_executions VALUES "
+                "(?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                rows,
+            )
     rprint(f"Wrote {len(rows)} execution row(s)")
     return {"executions": len(rows)}
 

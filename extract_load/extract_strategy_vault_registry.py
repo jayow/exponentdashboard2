@@ -75,11 +75,12 @@ def run() -> dict:
             "DELETE FROM raw_strategy_vault_registry WHERE fetch_date = ?",
             [fetch_date],
         )
-        con.executemany(
-            "INSERT INTO raw_strategy_vault_registry VALUES "
-            "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            rows,
-        )
+        if rows:
+            con.executemany(
+                "INSERT INTO raw_strategy_vault_registry VALUES "
+                "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                rows,
+            )
 
     rprint(f"Wrote {len(rows)} registry row(s)")
     return {"strategies": len(rows)}
