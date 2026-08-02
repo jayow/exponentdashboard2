@@ -26,6 +26,13 @@ with all_prices as (
     select mint, date, close_usd, open_usd, high_usd, low_usd, volume_usd, source
     from {{ ref('int_lst_prices') }}
     where close_usd is not null
+    union all
+    -- Tranche LP tokens (srONyc/jrONyc) priced off on-chain effective NAV.
+    -- Nothing external quotes these, so without this they have no price at
+    -- all and their markets drop out of tvl_daily entirely.
+    select mint, date, close_usd, open_usd, high_usd, low_usd, volume_usd, source
+    from {{ ref('int_tranche_prices') }}
+    where close_usd is not null
 ),
 ranked as (
     select
@@ -33,11 +40,12 @@ ranked as (
         row_number() over (
             partition by mint, date
             order by case source
-                       when 'pyth'     then 0
-                       when 'jupiter'  then 1
-                       when 'stable'   then 2
-                       when 'lst_rate' then 3
-                       else 4 end
+                       when 'pyth'        then 0
+                       when 'jupiter'     then 1
+                       when 'stable'      then 2
+                       when 'lst_rate'    then 3
+                       when 'tranche_nav' then 4
+                       else 5 end
         ) as rk
     from all_prices
 ),

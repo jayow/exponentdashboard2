@@ -9,8 +9,16 @@
 -- sy_mint level is the only way to avoid 4-6× double-counting per market.
 --
 -- SY exchange rate is derived empirically from observed deposit txs (see
--- stg_sy_exchange_rates). On Exponent it's ≡ 1.0 across every SY mint; we
--- still flow it through as data so any future rebasing SY is auto-detected.
+-- stg_sy_exchange_rates) and comes out ≡ 1.0 here. That is NOT because
+-- Exponent's own rates are 1.0 — api.exponent.finance/markets reports
+-- syExchangeRate up to 1.13 (ONyc 1.130, BulkSOL 1.094, eUSX 1.040; only
+-- USX/hyUSD/xSOL are truly 1.0). We deliberately do not apply that rate:
+-- our price feed already prices the *wrapper*, so the accrual is in the
+-- price and applying the rate again would double-count. Verified
+-- 2026-08-02 across all 12 active markets: our implied price ÷ Exponent's
+-- syExchangeRate lands on the underlying asset price (ONyc 0.9988, eUSX
+-- 0.9980, USX 0.9993, SOL-family all ≈ spot SOL). Flow the rate through as
+-- data anyway so a future genuinely-rebasing SY is auto-detected.
 {{ config(materialized='table') }}
 
 with recon as (

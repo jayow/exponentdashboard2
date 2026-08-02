@@ -44,19 +44,47 @@ filled as (
     from date_axis d
     left join daily_delta c
       on c.market_key = d.market_key and c.leg = d.leg and c.date = d.date
+),
+recon as (
+    select
+        f.market_key,
+        f.leg,
+        f.mint,
+        f.date,
+        -- Look up ticker/platform/underlying from dim_markets (avoids fill-forward gymnastics)
+        m.ticker,
+        m.platform,
+        m.underlying_mint,
+        m.underlying_decimals,
+        f.daily_delta_ui,
+        sum(f.daily_delta_ui) over (partition by f.market_key, f.leg order by f.date) as recon_supply_ui
+    from filled f
+    left join {{ ref('dim_markets') }} m using (market_key)
 )
+-- Authoritative overlay. The cumulative-delta reconstruction above misses
+-- mint/burn events it never saw a tx for, and the drift is severe and
+-- one-sided: on 2026-08-02, 34 YT legs reconstructed to 0 against real
+-- on-chain supply (one 39.5M YT), and USX SY came out 33% low — which put
+-- principal above SY-TVL and tripped C13b (an "impossible" state). Prefer
+-- the on-chain SPL mint supply snapshot (extract_mint_supplies) on any date
+-- we have one; fall back to reconstruction elsewhere. Same precedence
+-- int_sy_tvl_daily already applied for SY — this extends it to PT/YT so the
+-- decomposition and the PT+YT attribution weights in tvl_daily stop being
+-- computed off drifted supplies. raw_mint_supplies is unique on
+-- (mint, leg, snapshot_date), so this join cannot fan out. It carries no LP
+-- leg, so LP stays reconstruction-only.
 select
-    f.market_key,
-    f.leg,
-    f.mint,
-    f.date,
-    -- Look up ticker/platform/underlying from dim_markets (avoids fill-forward gymnastics)
-    m.ticker,
-    m.platform,
-    m.underlying_mint,
-    m.underlying_decimals,
-    f.daily_delta_ui,
-    sum(f.daily_delta_ui) over (partition by f.market_key, f.leg order by f.date) as supply_ui
-from filled f
-left join {{ ref('dim_markets') }} m using (market_key)
-order by f.market_key, f.leg, f.date
+    r.market_key,
+    r.leg,
+    r.mint,
+    r.date,
+    r.ticker,
+    r.platform,
+    r.underlying_mint,
+    r.underlying_decimals,
+    r.daily_delta_ui,
+    coalesce(a.supply_ui, r.recon_supply_ui) as supply_ui
+from recon r
+left join {{ source('raw', 'raw_mint_supplies') }} a
+    on a.mint = r.mint and a.leg = r.leg and a.snapshot_date = r.date
+order by r.market_key, r.leg, r.date
