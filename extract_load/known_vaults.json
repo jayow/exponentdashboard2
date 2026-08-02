@@ -1,7 +1,7 @@
 {
   "_comment": "Fallback vault list for extract_strategy_vault_states when getProgramAccounts is 429-blocked (datacenter IPs). Regenerated on every successful gPA discovery run. Sourced from raw_strategy_vault_states latest snapshot.",
-  "generated_from_snapshot": "2026-07-11",
-  "count": 59,
+  "generated_from_snapshot": "2026-08-01",
+  "count": 61,
   "vaults": [
     "2BKGCfGFbVqrnezBwAEZkgDoTrwPeeYJ98ZFm4T5PM8T",
     "2W6XKfA2cADpUNwdJwV88UoRMiWv13UgYSe8vXQ9s2cB",
@@ -47,9 +47,11 @@
     "EQTWu3GUpzCGuNDKft1NwM29TURBt4dgF9D77SYG21TD",
     "ERwXivfRJByKMHpiFFT85gSF83AJy4Sg6CWTYe5cjnXR",
     "EWdVNHLMrkvJkM4BvGMVi3k3Ss2M9NXDE5HnhFuUtm8E",
+    "EsTx9ToYW2k1DsTw6ccpmP3RrXQriod114hcM7U5ZKaR",
     "F7PB6U9oaw9SXazoq6TLf1j8LEjDzhJXeLUt34fkvcTm",
     "F7ekbk2uWGGvp71bJdmqs7P1d5xAt46qyMj2R5W4XEVR",
     "FEp6J5VefSAwALtWiMjRoiLMHFQxFETBvgK6kVGADvi7",
+    "FbroEQdABHJqKv7QzZHviEqBHQsRLRdeHZg9shK1t9kt",
     "FkEjJAdaMQC8jDhDMChQHPHpNaTP4N7kVNjJbhffrepi",
     "FsN1suGzcw28PZThWwRTdHpWADM27rZAZ5tsHNVgfdFV",
     "Fxp2jNUpBZ8KLYF5XmZZeYnB5GDWzHj4zqma3X7w1427",
