@@ -95,9 +95,100 @@ Every published surface, its primitive, its checks, and current risk.
 - **On new metric:** classify its primitive (P1–P5) and wire the matching checks
   before shipping. A P3 (reconstruction) must ship with a C7 anchor.
 
+## Supply: where the number comes from, and how to verify it
+
+**`getTokenSupply` is the oracle, not a data source.** The indexer's job is to
+derive supply from on-chain events and *agree* with it. If it disagrees, the
+indexer is wrong — reaching for the direct read as the answer patches the
+symptom and leaves history broken. That distinction is the whole lesson of the
+2026-08-02 incident below.
+
+Precedence actually applied (`int_mint_supplies_daily` → `int_sy_tvl_daily`):
+
+1. **`raw_mint_supplies`** — on-chain SPL Mint supply (`extract_mint_supplies`).
+   Authoritative, but point-in-time: only exists for dates we snapshotted, and
+   there is no historical form of the call. Treat as a **safety net**, not the
+   thing holding the numbers up.
+2. **`raw_sy_supply_history`** — derivable-correct daily SY supply
+   (`extract_sy_supply_history`). Anchors on today's authoritative read and
+   walks *backward* through real mint/burn txs. This is how you legitimately
+   backfill: never copy a current value across past dates — supply genuinely
+   moves (USX SY was 54.7M on 07-11 and 52.7M on 08-02), so flat-lining it
+   invents movement that looks plausible.
+3. **`int_mint_supplies_daily`** — cumulative tx-delta reconstruction. P3, and
+   only as good as signature coverage. **This is the one that should be right**;
+   1 and 2 exist because it wasn't.
+
+Verification ladder, weakest to strongest:
+
+- **Internal invariants** (C13b etc.) — cheap, catches impossible states, but
+  passing proves only self-consistency.
+- **`getTokenSupply`** — direct chain read. Settles whether a supply is right.
+- **`api.exponent.finance/markets`** — `totalMarketSize` is PT supply in
+  underlying units; `syExchangeRate` is the wrapper's accrual. Best per-market
+  cross-check; 12/12 markets matched on 2026-08-02, 11 to the cent.
+- **DefiLlama** — same formula as ours (supply × rate × underlying price) per
+  their adapter. Useful, but a mismatch is not automatically ours: on
+  2026-08-02 we sat ~8% under theirs while matching Exponent itself exactly.
+
+Do **not** apply `syExchangeRate` on top of our price. Our feed prices the
+*wrapper*, so accrual is already in it; applying the rate again double-counts.
+Verified per-market: our implied price ÷ Exponent's rate lands on the
+underlying asset price (ONyc 0.9988, eUSX 0.9980, USX 0.9993).
+
+## Incident 2026-08-02: SY supply 33% low (root cause: watch-address gap)
+
+Worth reading before touching supply, because every instinct here was wrong at
+least once.
+
+**Symptom.** C13b FAIL — principal $94.1M > SY TVL $89.9M, an impossible state
+(PT is a claim on SY, so SY ⊇ PT). Downstream, Solstice's headline TVL read
+$33.5M against a true $59.8M, manufacturing a three-week "decline" and an
+OnRe-overtakes-Solstice crossover **that never happened**.
+
+**Root cause.** `extract_signatures` watched vault / ammPool / clmmOrderbook /
+pool / ptMint / ytMint — but **not `syMint`**. Wrapping underlying → SY touches
+the SY program and the SY mint but need not touch any watched address, so those
+txs never entered `raw_signatures`. Measured: **127 of the last 1000 USX SY-mint
+txs missing (12.7%)**; C6 later found 24.3% on another mint. Since
+`int_mint_supplies_daily` sums tx deltas, missing mint/burn legs made SY
+reconstruct 33% low — while PT, whose mint *was* watched, stayed accurate to
+0.04%. That asymmetry is the tell, and it is exactly why principal exceeded SY.
+
+**Why the obvious fixes don't work.**
+- *Copy today's supply backward* — fabricates movement (see above).
+- *Anchor at the last good snapshot and add reconstruction deltas* — the deltas
+  are wrong too, not just the level: reconstruction showed −9.4M over the
+  window against −2.0M actual.
+- *Overlay authoritative snapshots* — what was done first. Makes today's number
+  read correctly while the indexer stays broken, so history stays broken. Keep
+  it, but as a safety net.
+
+**Fixes applied.** `syMint` added to the watch list (root cause);
+`int_mint_supplies_daily` overlays authoritative for PT/YT as well as SY;
+`extract_sy_supply_history` re-run to rebuild the drifted window; **C6
+implemented** (see below); Makefile brought to extractor parity with
+`refresh.yml` — it was missing `extract_mint_supplies`, so `make refresh`
+silently produced no authoritative snapshot at all and the 21-day-stale one let
+the drift through unseen.
+
+**C6 was the check that would have caught this on day one.** It was in the
+catalog and the harness docstring claimed `--deep` ran it, but it had never been
+implemented — only C1 and C5 had. Now implemented. A coverage gap is upstream of
+every P3 reconstruction: C7 tells you the total drifted, C6 tells you *why*.
+**Run `--deep` when supply looks off; C7 alone will not name the cause.**
+
 ## Harness
 
 `ops/accuracy_check.py`:
 - default: runs all in-warehouse checks, prints a PASS/FAIL table, exits non-zero on any FAIL.
-- `--deep`: additionally runs the RPC on-chain reconciliation checks (C1/C2/C5/C6).
+- `--deep`: additionally runs the RPC on-chain reconciliation checks. **Implemented:
+  C1, C5, C6.** C2 is still catalog-only — do not assume a catalog entry is wired
+  up; that assumption is what let the SY bug run unseen (see incident above).
 - `--json`: machine-readable output for wiring into the refresh pipeline's validate step.
+
+Note the default run is deliberately RPC-free so it can gate every refresh, but
+that means **it cannot detect a coverage gap** — C6 needs the chain. Nothing in
+the daily pipeline will catch a new watch-address hole; run `--deep` after
+adding a market type, changing `watch_addresses()`, or whenever a P3 number
+looks off.

@@ -247,10 +247,64 @@ def deep_checks(con):
         ok += abs(delta - notl) < max(1.0, notl * 0.01)
     # Occasional misses = routed/flash trades where the signer's underlying nets
     # out and notional is attributed differently. Systemic (<80%) = a real bug.
+    #
+    # KNOWN FALSE POSITIVE — 'tradePt'. This heuristic assumes the signer's
+    # balance change in underlying_mint equals the trade notional. That holds
+    # for direct underlying swaps but NOT for PT trades: the user swaps PT↔SY
+    # and the underlying only moves as a fee. Investigated 2026-08-03 on a
+    # 15-trade sample — all 7 mismatches were USX tradePt, and every one came
+    # in at a ratio of 1.0000e-4 of our notional, i.e. exactly 1 bp. Five
+    # separate trades landing on the same 1e-4 is a fee, not drift, so our
+    # notional is right and this check is measuring the wrong leg. Left as-is
+    # rather than special-cased because the ratio is itself a useful signal:
+    # mismatches clustered at exactly 1 bp = fine, mismatches at arbitrary
+    # ratios = investigate. Read the ratios before believing a C5 FAIL.
     rate = ok / len(trades) if trades else 0
     out.append(("C5", "sample trades vs on-chain notional",
                 "PASS" if rate == 1 else "WARN" if rate >= 0.8 else "FAIL",
-                f"{ok}/{len(trades)} exact" + ("" if rate == 1 else " (rest = routed-trade edge case)")))
+                f"{ok}/{len(trades)} exact" + ("" if rate == 1 else
+                " (check the mismatch ratios — ~1e-4 on tradePt is the fee leg, not a bug)")))
+    # C6: signature coverage. The catalog has always listed this and the
+    # module docstring always claimed --deep ran it, but it was never
+    # implemented — and it is the check that would have caught the 2026-08-02
+    # SY bug on day one. extract_signatures watched vault/pool/PT/YT but not
+    # syMint, so wrap-to-SY txs (which touch the SY program and SY mint but no
+    # other watched address) never entered raw_signatures: 127 of the last
+    # 1000 USX SY-mint txs were missing. int_mint_supplies_daily sums tx
+    # deltas, so those missing mint/burn legs made SY reconstruct 33% low.
+    # A coverage gap is upstream of every P3 reconstruction — C7 only tells
+    # you the total drifted, this tells you *why*.
+    cov = con.execute("""select mint, supply_ui from main.raw_mint_supplies
+        where leg='SY' and snapshot_date=(select max(snapshot_date) from main.raw_mint_supplies)
+        order by supply_ui desc limit 4""").fetchall()
+    # Only txs at or before our newest indexed tx are *indexable*. Comparing the
+    # raw last-N against raw_signatures measures staleness, not coverage: on the
+    # 2026-08-03 verification run the pipeline was 5h48m behind, 414 of the last
+    # 1000 ONyc sigs postdated our data, and C6 read 45.8% "missing" on an
+    # indexer whose true coverage was 100% on everything it could have seen.
+    # A stale pipeline is a real problem, but it is C4/C9's problem — this check
+    # answers "are we blind to txs we should have?", which is a different fix
+    # (watch_addresses) from "are we behind?" (run the refresh).
+    cutoff = con.execute("select max(block_time) from main_staging.stg_token_changes").fetchone()[0] or 0
+    worst_gap, worst_mint, worst_n = 0.0, "", 0
+    for mint, _sup in cov:
+        rows = rpc("getSignaturesForAddress", [mint, {"limit": 1000}])
+        sigs = [s["signature"] for s in rows if s.get("blockTime") and s["blockTime"] <= cutoff]
+        if len(sigs) < 20:      # too few indexable to judge; skip rather than cry wolf
+            continue
+        have = con.execute(
+            "select count(*) from main.raw_signatures where signature in "
+            f"({','.join('?' * len(sigs))})", sigs).fetchone()[0]
+        gap = (len(sigs) - have) / len(sigs)
+        if gap > worst_gap:
+            worst_gap, worst_mint, worst_n = gap, mint, len(sigs)
+    # Sub-1% is normal walk lag: a full backfill paginates backward from its
+    # start, so txs landing mid-walk are only picked up next incremental run.
+    out.append(("C6", "signature coverage: raw_signatures vs getSignaturesForAddress (indexable window)",
+                "PASS" if worst_gap < 0.01 else "WARN" if worst_gap < 0.05 else "FAIL",
+                "all watched mints ≥99% covered" if worst_gap < 0.01 else
+                f"{worst_gap*100:.1f}% of {worst_n} indexable txs missing on {worst_mint[:8]} "
+                f"— watch-address gap in extract_signatures (not supply math, not staleness)"))
     return out
 
 

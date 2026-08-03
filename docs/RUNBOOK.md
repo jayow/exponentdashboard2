@@ -17,6 +17,23 @@ make all          # extract (incremental) → transform (incremental) → serve 
 make refresh      # same as 'all' but writes a timestamped log to data/logs/refresh.log
 ```
 
+> **Keep the Makefile's `extract` target in sync with `.github/workflows/refresh.yml`
+> and `ops/refresh_local.sh`.** They are three hand-maintained copies of one list and
+> they drifted: the Makefile was missing `extract_mint_supplies`, `extract_tranche_states`,
+> `extract_tranche_actions`, `extract_lst_rates`, `extract_v2_markets`, `extract_v2_books`.
+> Because `extract_mint_supplies` never ran, `make refresh` produced **no authoritative
+> supply snapshot** — the one thing that catches reconstruction drift — and a 21-day-stale
+> snapshot let a 33% SY error reach production. Nothing warns you about this; the run
+> exits 0. After editing any of the three, diff them:
+>
+> ```bash
+> diff <(sed -n '/^extract:/,/^$/p' Makefile | grep -o 'extract_load\.[a-z_0-9]*' | sort) \
+>      <(grep -oE 'extract_load\.extract_[a-z_0-9]+' .github/workflows/refresh.yml | sort -u)
+> ```
+>
+> `make refresh` also does **not** run `ops.accuracy_check` (only `refresh.yml` does),
+> so a local refresh publishes nothing-checked unless you run it yourself.
+
 Both are idempotent and safe to run repeatedly. Performance:
 - First full backfill: ~4 h (568K txs from Helius)
 - Steady-state incremental: **~2 min** total
@@ -80,6 +97,59 @@ make full-rebuild  # cd transform && dbt build --full-refresh
 
 This re-processes all 568K txs (~8 min). Subsequent `make refresh` runs go
 back to incremental.
+
+## Supply drift / coverage backfill
+
+Run this when C7 warns, C13b fails, or a supply looks wrong. Full background in
+`docs/ACCURACY.md` (incident 2026-08-02).
+
+**Diagnose first — do not skip to the backfill.** C7 says a number drifted; it
+does not say why. The cause is usually a *signature coverage* gap upstream:
+
+```bash
+python -m ops.accuracy_check --deep      # C6 names the mint and the % missing
+```
+
+If C6 reports missing txs, the indexer is not seeing them — fix
+`watch_addresses()` in `extract_load/extract_signatures.py` before backfilling,
+or you will re-derive from the same incomplete data. (`syMint` was missing until
+2026-08-02; that single omission put SY 33% low.)
+
+Then, in order:
+
+```bash
+# 1. Newly-watched addresses have no scan_state -> full walk to genesis.
+python -m extract_load.extract_signatures
+python -m extract_load.extract_transactions
+cd transform && DBT_PROFILES_DIR=. dbt build && cd ..
+python -m ops.accuracy_check --deep       # C6 should now be clean
+
+# 2. Only if history is still wrong (the reconstruction cannot be repaired
+#    from tx data alone). Anchors on today's authoritative supply and walks
+#    backward through real mint/burn txs -- 60d window, ~1h, run locally.
+python -m extract_load.extract_mint_supplies     # fresh anchor FIRST
+python -m extract_load.extract_sy_supply_history # DELETEs + rewrites the table
+```
+
+Step 1 is the real fix: with complete tx coverage the reconstruction is correct
+for *all* history by itself. Step 2 is a workaround that only covers SY, only
+inside its window, and only for dates it derives.
+
+**Back up before step 2** — it drops the whole table:
+
+```sql
+CREATE OR REPLACE TABLE main.raw_sy_supply_history_bak AS
+  SELECT * FROM main.raw_sy_supply_history;
+```
+
+**Validate the backfill against an anchor it did not use.** The walk-backward
+starts from today, so an authoritative snapshot from a *past* date is an
+independent test: derived supply on that date must match `raw_mint_supplies`.
+If it doesn't, the derivation has a hole — do not ship it.
+
+Never "backfill" by writing today's supply across past dates. Supply genuinely
+moves (USX SY: 54.7M on 07-11, 52.7M on 08-02), so that invents movement, and
+it invents it in a shape plausible enough to survive review.
 
 ## Adding a new metric
 

@@ -32,8 +32,8 @@ from rich.progress import (
     TimeRemainingColumn,
 )
 
-from .config import RPC_ENDPOINTS, EXTRACT_BATCH_SIZE
-from .solana_rpc_client import SolanaRpcClient
+from .config import RPC_ENDPOINTS, EXTRACT_BATCH_SIZE, EXTRACT_CONCURRENCY
+from .solana_rpc_client import SolanaRpcClient, TransientHTTPError
 from .load import warehouse
 
 
@@ -111,43 +111,86 @@ async def run(*, limit: int | None = None, order: str = "desc") -> dict:
                 task = bar.add_task("fetching", total=total, rate=0.0)
                 started = datetime.now(timezone.utc)
 
-                for i in range(0, total, EXTRACT_BATCH_SIZE):
-                    batch = targets[i : i + EXTRACT_BATCH_SIZE]
-                    sigs = [s for s, _ in batch]
+                # Fetch WAVE_SIZE batches concurrently, then insert the wave's
+                # rows serially. Until 2026-08-03 this loop awaited one batch at
+                # a time, which left the whole client idle: SolanaRpcClient holds
+                # 2 semaphore slots per endpoint (4 concurrent across a 2-key
+                # pool) and a 15 rps token budget, and a sequential caller used
+                # 1 slot and ~0.23 rps — 1.5% of the budget. A measured batch is
+                # ~2.5s on the wire, so the 45,659-sig SY-coverage backfill took
+                # 4h+ when the network work alone was ~30 min. EXTRACT_CONCURRENCY
+                # already existed in config for exactly this and was never wired
+                # up here.
+                #
+                # Waves rather than one gather over all batches: results are held
+                # in memory until inserted, and 45k txs at ~33 KB each is >1 GB.
+                # A wave caps that at WAVE_SIZE × 15 × 33 KB.
+                #
+                # Inserts stay serial and on the main coroutine — the DuckDB
+                # connection is not safe to use concurrently, and asyncio does
+                # not protect it (the awaits above are the only yield points).
+                WAVE_SIZE = max(1, EXTRACT_CONCURRENCY * 2)
+
+                async def _fetch(idx: int, batch: list) -> tuple:
+                    """Return (idx, batch, txs, error) — never raises, so one bad
+                    batch cannot cancel its whole wave via gather.
+
+                    Catches TransientHTTPError as well as HTTPStatusError. The
+                    sequential loop only caught the latter, which was survivable
+                    only because it was slow enough never to exhaust the retry
+                    budget; concurrency made 429s routine on free-tier keys and
+                    the uncaught TransientHTTPError killed an entire run at the
+                    first exhausted batch. Skipping is safe — extract_transactions
+                    anti-joins raw_signatures against raw_helius_tx, so anything
+                    dropped here is simply refetched next run."""
                     try:
-                        txs = await client.get_transactions(sigs)
-                    except httpx.HTTPStatusError as e:
-                        # Permanent (non-transient) error after retries exhausted:
-                        # log + skip this batch, keep going. Re-running will retry
-                        # via the same anti-join.
-                        body_preview = (e.response.text or "")[:200].replace("\n", " ")
-                        rprint(
-                            f"[yellow]skip batch[/yellow] sigs[{i}..{i+len(batch)}] "
-                            f"status={e.response.status_code} body={body_preview!r}"
-                        )
-                        failed_batches += 1
-                        elapsed = (datetime.now(timezone.utc) - started).total_seconds() or 0.001
-                        rate = (i + len(batch)) / elapsed
-                        bar.update(task, advance=len(batch), rate=rate)
-                        continue
+                        return idx, batch, await client.get_transactions([s for s, _ in batch]), None
+                    except (httpx.HTTPStatusError, TransientHTTPError) as e:
+                        return idx, batch, None, e
 
-                    rows: list[tuple] = []
-                    for (sig, _bt), tx in zip(batch, txs):
-                        if tx is None:
-                            missing += 1
+                starts = list(range(0, total, EXTRACT_BATCH_SIZE))
+                for w in range(0, len(starts), WAVE_SIZE):
+                    wave = [(i, targets[i : i + EXTRACT_BATCH_SIZE]) for i in starts[w : w + WAVE_SIZE]]
+                    results = await asyncio.gather(*(_fetch(i, b) for i, b in wave))
+
+                    for i, batch, txs, err in results:
+                        if err is not None:
+                            # Error after retries exhausted: log + skip this batch,
+                            # keep going. Re-running retries it via the same
+                            # anti-join. TransientHTTPError carries no .response
+                            # (unlike HTTPStatusError), so read it defensively —
+                            # blindly touching .response turns a skippable batch
+                            # into an AttributeError that kills the run.
+                            resp = getattr(err, "response", None)
+                            if resp is not None:
+                                detail = (f"status={resp.status_code} "
+                                          f"body={(resp.text or '')[:200].replace(chr(10), ' ')!r}")
+                            else:
+                                detail = f"{type(err).__name__}: {str(err)[:200]}"
+                            rprint(
+                                f"[yellow]skip batch[/yellow] sigs[{i}..{i+len(batch)}] {detail}"
+                            )
+                            failed_batches += 1
+                            elapsed = (datetime.now(timezone.utc) - started).total_seconds() or 0.001
+                            bar.update(task, advance=len(batch), rate=fetched / elapsed)
                             continue
-                        rows.append((
-                            sig,
-                            tx.get("blockTime"),
-                            tx.get("slot"),
-                            json.dumps(tx),
-                        ))
-                    _insert_chunk(con, rows)
-                    fetched += len(rows)
 
-                    elapsed = (datetime.now(timezone.utc) - started).total_seconds() or 0.001
-                    rate = (i + len(batch)) / elapsed
-                    bar.update(task, advance=len(batch), rate=rate)
+                        rows: list[tuple] = []
+                        for (sig, _bt), tx in zip(batch, txs):
+                            if tx is None:
+                                missing += 1
+                                continue
+                            rows.append((
+                                sig,
+                                tx.get("blockTime"),
+                                tx.get("slot"),
+                                json.dumps(tx),
+                            ))
+                        _insert_chunk(con, rows)
+                        fetched += len(rows)
+
+                        elapsed = (datetime.now(timezone.utc) - started).total_seconds() or 0.001
+                        bar.update(task, advance=len(batch), rate=fetched / elapsed)
 
         rprint(
             f"[green]Done[/green]  fetched={fetched:,}  missing_from_rpc={missing:,}  "

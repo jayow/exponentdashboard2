@@ -3,7 +3,7 @@
 Watch addresses (deduped):
   - Exponent core program
   - Exponent CLMM program
-  - Per-market addresses from raw_markets: vault, pool, ptMint, ytMint
+  - Per-market addresses from raw_markets: vault, pool, ptMint, ytMint, syMint
     (catches anything an ALT might hide from the program-level scan).
 
 Modes:
@@ -200,13 +200,15 @@ def watch_addresses(
                        payload->>'$.clmmOrderbook'  as clmm_orderbook,
                        payload->>'$.pool'           as pool,
                        payload->>'$.ptMint'         as pt_mint,
-                       payload->>'$.ytMint'         as yt_mint
+                       payload->>'$.ytMint'         as yt_mint,
+                       payload->>'$.syMint'         as sy_mint
                 FROM raw_markets
                 """
             ).fetchall()
         except duckdb.Error:
             rows = []
-        for market_key, vault, amm_pool, clmm_orderbook, pool, pt_mint, yt_mint in rows:
+        for (market_key, vault, amm_pool, clmm_orderbook, pool, pt_mint, yt_mint,
+             sy_mint) in rows:
             if vault:
                 out.append((vault, f"vault:{market_key}"))
             if amm_pool:
@@ -220,6 +222,20 @@ def watch_addresses(
                 out.append((pt_mint, f"pt:{market_key}"))
             if yt_mint:
                 out.append((yt_mint, f"yt:{market_key}"))
+            # SY mints were missing here until 2026-08-02, and that was the
+            # root cause of the SY-supply drift — not a supply-math bug.
+            # Wrapping underlying → SY hits the SY program and the SY mint but
+            # need not touch the vault/pool/PT/YT addresses above, so those
+            # txs never entered raw_signatures: measured 127 of the last 1000
+            # USX SY-mint txs missing (12.7%). int_mint_supplies_daily sums
+            # tx deltas, so the missing mint/burn legs made SY reconstruct 33%
+            # low while PT (watched) stayed accurate to 0.04% — which put
+            # principal above SY-TVL and tripped C13b. Watching the SY mint
+            # closes the coverage gap at the source; the authoritative
+            # overlay in int_mint_supplies_daily stays as a safety net, not
+            # as the thing holding the numbers up.
+            if sy_mint:
+                out.append((sy_mint, f"sy:{market_key}"))
     # Dedup by address (preserve first-seen label)
     seen: set[str] = set()
     deduped: list[tuple[str, str]] = []
